@@ -320,13 +320,34 @@ stat signatures again, and only then unlinks the source. Any mismatch/error reta
 the source. SQLite fullfsync and macOS F_FULLFSYNC are used for this boundary.
 After a crash, a prior verification receipt never authorizes removal without fresh
 verification. This is selective file removal, not device formatting: unselected
-`.LRF`, hidden, unsupported and skipped files remain. No physical DJI was connected
-for testing. The `prototype-20260926T171304898633Z` build adds explicit proxy import
+`.LRF`, hidden, unsupported and skipped files remain.
+The `prototype-20260926T171304898633Z` build adds explicit proxy import
 and cleanup controls. 34 Python tests passed on Linux and macOS, including proxy
 keep/skip/removal and retention after destination corruption. Native integration
-checks passed and the app's signature remained valid afterward. Physical DJI
-verification requires the camera/card to be connected; English semantic speech
-retrieval is next after that priority.
+checks passed and the app's signature remained valid afterward.
+
+Camera imports default to **Eject camera/card after successful import**. Only
+external source volumes on a different disk from the destination qualify. The
+worker rechecks volume UUID, mount point and device identifiers before normal
+whole-disk eject. Failed, stopped and empty imports do not eject. Eject failures
+report that copies are saved but manual eject is needed. Wait for
+**Safe to unplug — device ejected** before disconnecting.
+
+Disconnection retains partial attempts. Reconnect and choose the same source and
+device folder to retry: saved bytes are compared with the source before resuming;
+source removal always requires fresh verification. Recovery cannot prevent device
+filesystem damage from disconnecting during a filesystem write.
+
+Physical DJI checks passed using the user's new MP4, JPG and LRF: skip-photo/keep
+video-and-proxy, import-and-keep all three, then verified removal of all three and
+successful whole-device eject. Copies remain in Originals and `.mami-proxies`.
+Evidence and hashes are saved on the Mac in
+`prototype-20260926T181327963381Z/physical-dji-offload-check.json`. This build is
+running; Photos fetching resumed and its signature strictly verifies after launch.
+36 Python tests passed on Linux/macOS and native integration passed. Mid-copy
+disconnect/reconnect recovery was simulated in a regression test; physical cable
+removal during transfer has not been tested. English semantic speech retrieval
+is the next priority.
 The retained `prototype-20260926T100312588736Z/removal-check` fixture passed on
 the Mac with real video bytes, F_FULLFSYNC, a durable removal receipt, and keep/
 skip/proxy retention. The 33 Python checks include a real process crash after

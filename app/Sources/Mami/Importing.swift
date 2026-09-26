@@ -17,11 +17,13 @@ import SwiftUI
         let bytes_done: Int64
         let bytes_total: Int64
         let error: String?
+        let ejection: String?
     }
     @Published var source: URL?
     @Published var device = "DJI-Pocket-4P"
     @Published var removeSource = false
     @Published var includeProxies = false
+    @Published var ejectAfter = true
     @Published var policies: [String: String] = [:]
     @Published private(set) var sourceFiles: [String] = []
     @Published private(set) var listing = false
@@ -108,6 +110,7 @@ import SwiftUI
                                "--catalog", Catalog.standard.database.path]
             if removeSource { task.arguments?.append("--remove-source") }
             if includeProxies && !photos { task.arguments?.append("--include-proxies") }
+            if ejectAfter && !photos { task.arguments?.append("--eject-after") }
             if photos { task.arguments?.append("--direct-destination") }
             let policyDirectory = Catalog.standard.directory.appendingPathComponent("import-policies")
             try FileManager.default.createDirectory(at: policyDirectory, withIntermediateDirectories: true)
@@ -218,6 +221,7 @@ struct ImportSheet: View {
             Text("Each removal requires freshly matching SHA-256 hashes of both the source and the saved copy. This also applies to duplicates. Skipped files stay on the device.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Include DJI .LRF proxy files", isOn: $importing.includeProxies).disabled(importing.running)
+            Toggle("Eject camera/card after successful import", isOn: $importing.ejectAfter).disabled(importing.running)
             Text("Off: proxies stay untouched. On: proxies are copied into Originals/.mami-proxies/device/year/date, outside the media grid. The same remove-after-verification and per-file exceptions apply.")
                 .font(.caption).foregroundStyle(.secondary)
             if importing.listing { ProgressView("Listing source files…") }
@@ -254,6 +258,7 @@ struct ImportSheet: View {
                 Text("\(value.done) of \(value.total) files checked · \(value.copied) copied · \(value.duplicates) already imported · \(value.failed) need attention · \(value.skipped) unsupported/proxy files skipped")
                     .font(.caption).foregroundStyle(.secondary)
                 if let removed = value.removed, removed > 0 { Text("\(removed) verified files removed from source").font(.caption) }
+                if let ejection = value.ejection { Text(ejection).font(.caption) }
             }
             if let error = importing.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
             HStack {

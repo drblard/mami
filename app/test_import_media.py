@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import threading
+from unittest.mock import patch
 
 from import_media import Importer
 
@@ -32,6 +33,44 @@ class ImportTests(unittest.TestCase):
         retry = self.importer(direct_destination=True)
         retry.run()
         self.assertEqual((retry.copied, retry.duplicates, retry.failed), (0, 1, 0))
+
+    def test_disconnect_during_copy_retains_source_and_resumes(self):
+        source = self.source / 'clip.mp4'
+        data = b'footage' * 1500000
+        source.write_bytes(data)
+        disconnected = self.base / 'disconnected'
+        def unplug(progress):
+            if progress['phase'] == 'Copying' and progress['bytes_done'] and self.source.exists():
+                self.source.rename(disconnected)
+                raise OSError('Device disconnected')
+        imp = self.importer(remove_source=True, emit=unplug)
+        imp.run()
+        self.assertGreater(imp.failed, 0)
+        self.assertEqual(imp.removed, 0)
+        self.assertEqual((disconnected / source.name).read_bytes(), data)
+        self.assertTrue(list((self.destination / '.mami-imports').glob('*.partial')))
+        disconnected.rename(self.source)
+        retry = self.importer(remove_source=True)
+        retry.run()
+        self.assertEqual((retry.failed, retry.removed), (0, 1))
+        self.assertEqual((self.destination / 'Camera/2026/2026-09-18/clip.mp4').read_bytes(), data)
+
+    def test_eject_only_after_success_and_never_on_changed_volume(self):
+        volume = dict(Internal=False, VolumeUUID='camera', DeviceIdentifier='disk4s1', ParentWholeDisk='disk4', MountPoint=str(self.source))
+        (self.source / 'clip.mp4').write_bytes(b'footage')
+        imp = self.importer(eject_after=True)
+        with patch('import_media.sys.platform', 'darwin'), patch.object(imp, 'volume_info', side_effect=[volume, {'ParentWholeDisk': 'disk0'}]), patch.object(imp, 'eject_volume') as eject:
+            imp.run()
+            eject.assert_called_once_with(volume)
+            self.assertEqual(imp.copied, 1)
+        with patch.object(imp, 'volume_info', return_value={**volume, 'VolumeUUID': 'replacement'}), patch('import_media.subprocess.run') as command:
+            with self.assertRaisesRegex(RuntimeError, 'changed'):
+                imp.eject_volume(volume)
+            command.assert_not_called()
+        failed = self.importer(eject_after=True)
+        with patch('import_media.sys.platform', 'darwin'), patch.object(failed, 'volume_info', side_effect=[volume, {'ParentWholeDisk': 'disk0'}]), patch.object(failed, 'copy_one', side_effect=OSError('Disconnected')), patch.object(failed, 'eject_volume') as eject:
+            failed.run()
+            eject.assert_not_called()
 
     def test_proxy_cleanup_preserves_independent_bytes_and_exceptions(self):
         for name in ('remove.LRF', 'keep.LRF', 'skip.LRF'):

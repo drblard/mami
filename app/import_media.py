@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import signal
@@ -34,7 +35,9 @@ def sync_original(descriptor):
 
 class Importer:
     def __init__(self, source, destination, device, catalog=None, emit=lambda value: None, date_reader=None,
-                 remove_source=False, policy_json='{}', direct_destination=False, include_proxies=False):
+                 remove_source=False, policy_json='{}', direct_destination=False, include_proxies=False, eject_after=False):
+        self.eject_after = eject_after
+        self.ejection = None
         self.include_proxies = include_proxies
         self.direct_destination = direct_destination
         self.local_candidates_only = False
@@ -79,7 +82,26 @@ class Importer:
     def status(self, error=None, bytes_done=0, bytes_total=0):
         self.emit(dict(phase=self.phase, current=self.current, done=self.done, total=self.total,
                        copied=self.copied, duplicates=self.duplicates, failed=self.failed, skipped=self.skipped,
-                       removed=self.removed, paused=self.paused.is_set(), bytes_done=bytes_done, bytes_total=bytes_total, error=error))
+                       removed=self.removed, paused=self.paused.is_set(), bytes_done=bytes_done, bytes_total=bytes_total, error=error, ejection=self.ejection))
+
+    @staticmethod
+    def volume_info(path):
+        path = Path(path).resolve(strict=True)
+        while not os.path.ismount(path):
+            path = path.parent
+        return plistlib.loads(subprocess.check_output(['/usr/sbin/diskutil', 'info', '-plist', str(path)], timeout=15))
+
+    def eject_volume(self, volume):
+        self.checkpoint()
+        current = self.volume_info(self.source)
+        keys = ('VolumeUUID', 'DeviceIdentifier', 'ParentWholeDisk', 'MountPoint')
+        if any(not volume.get(k) or current.get(k) != volume[k] for k in keys):
+            raise RuntimeError('Camera volume changed; eject it manually')
+        result = subprocess.run(['/usr/sbin/diskutil', 'eject', volume['ParentWholeDisk']],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError('Copies are saved, but the device could not be ejected. Close other apps using it and eject in Finder. ' + result.stderr.strip())
+        self.ejection = 'Safe to unplug — device ejected'
 
     def policy(self, source):
         return self.policies.get(str(source.relative_to(self.source)), 'remove' if self.remove_source else 'keep')
@@ -277,6 +299,15 @@ class Importer:
             files = []
             if not self.source.is_dir():
                 raise FileNotFoundError('Source folder is unavailable; reconnect the device and try again')
+            source_device = self.source.stat().st_dev
+            volume = None
+            if self.eject_after and sys.platform == 'darwin':
+                info = self.volume_info(self.source)
+                destination_info = self.volume_info(self.destination)
+                if info.get('Internal') is False and info.get('ParentWholeDisk') and info.get('VolumeUUID') and info.get('MountPoint') != '/' and info.get('ParentWholeDisk') != destination_info.get('ParentWholeDisk'):
+                    volume = info
+                else:
+                    self.ejection = 'Automatic eject applies to external camera/card volumes only'
             def failed_walk(error):
                 raise error
             for root, dirs, names in os.walk(self.source, followlinks=False, onerror=failed_walk):
@@ -297,6 +328,8 @@ class Importer:
                 self.checkpoint()
                 self.current = source.name
                 try:
+                    if self.source.stat().st_dev != source_device:
+                        raise RuntimeError('Camera disconnected or changed; reconnect and retry to resume')
                     result = self.copy_one(source)
                     if result == 'copied': self.copied += 1
                     else: self.duplicates += 1
@@ -309,6 +342,22 @@ class Importer:
                 self.done += 1
                 self.status()
             self.phase, self.current = ('Import needs attention' if self.failed else 'Import complete'), ''
+            if not self.source.is_dir() or self.source.stat().st_dev != source_device:
+                self.failed += 1
+                self.phase = 'Import needs attention'
+                self.status(error='Camera disconnected; reconnect and retry to resume saved work')
+            if volume and not self.failed and self.total > 0:
+                self.phase = 'Ejecting device'
+                self.status()
+                try:
+                    self.eject_volume(volume)
+                except Stopped:
+                    raise
+                except Exception as error:
+                    self.ejection = 'Device not ejected'
+                    self.phase = 'Import complete'
+                    self.status(error=str(error))
+                self.phase = 'Import complete'
             self.status()
 
 
@@ -319,6 +368,7 @@ def main():
     parser.add_argument('--catalog')
     parser.add_argument('--direct-destination', action='store_true')
     parser.add_argument('--remove-source', action='store_true')
+    parser.add_argument('--eject-after', action='store_true')
     parser.add_argument('--include-proxies', action='store_true', help='Preserve DJI .LRF files in .mami-proxies; source removal still requires a verified independent copy')
     parser.add_argument('--policy-json', default='{}')
     parser.add_argument('--policy-file')
