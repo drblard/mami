@@ -1,6 +1,7 @@
 import Photos
 import CryptoKit
 import SwiftUI
+import OSLog
 
 /// PhotoKit reads the Mac's System Photo Library and downloads cloud-only originals.
 /// No Photos change requests or deletion APIs are used.
@@ -14,8 +15,13 @@ import SwiftUI
         didSet { UserDefaults.standard.set(fromDate, forKey: "photos-import-from") }
     }
     @Published private(set) var running = false
-    @Published private(set) var status = "Import originals from your synced Photos library."
-    @Published private(set) var error: String?
+    @Published private(set) var status = "Import originals from your synced Photos library." {
+        didSet { Logger(subsystem: "local.mami.prototype", category: "PhotosImport").notice("\(self.status, privacy: .public)") }
+    }
+    @Published private(set) var transferred = 0
+    @Published private(set) var error: String? {
+        didSet { if let error { Logger(subsystem: "local.mami.prototype", category: "PhotosImport").error("\(error, privacy: .public)") } }
+    }
     private var timer: Task<Void, Never>?
     private var cancellation: PhotosCancellation?
 
@@ -54,12 +60,7 @@ import SwiftUI
     }
     func scan() async {
         guard enabled, !running, !Importing.shared.running else { return }
-        let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        guard authorization == .authorized || authorization == .limited else {
-            error = "Photos access is unavailable. Enable access in System Settings."
-            return
-        }
-        running = true; error = nil
+        running = true; error = nil; transferred = 0
         let cancellation = PhotosCancellation(); self.cancellation = cancellation
         defer { running = false; self.cancellation = nil }
         do {
@@ -70,20 +71,38 @@ import SwiftUI
             }
             try Catalog.standard.registerMediaRoot(destination)
             let incoming = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Incoming/.mami-photos")
-            let report = try await Task.detached(priority: .utility) { [self] in
-                try PhotosExporter.export(to: incoming, range: range, cancellation: cancellation) { message in
-                    Task { @MainActor in self.status = message }
+            let pipeline = PhotosPipeline(cancellation: cancellation)
+            let producer = Task.detached(priority: .utility) { [self] in
+                do {
+                    let report = try PhotosExporter.export(to: incoming, range: range, cancellation: cancellation, ready: { url, size in
+                        try pipeline.enqueue(url, size: size)
+                    }) { message in
+                        Task { @MainActor in self.status = message }
+                    }
+                    pipeline.finish()
+                    return report
+                } catch {
+                    pipeline.finish(error)
+                    throw error
                 }
-            }.value
-            guard enabled else { status = "Automatic Photos import is off"; return }
-            // Feed independent exports through the same SHA-256 verified importer.
-            // This source can never request removal, irrespective of camera settings.
-            if !report.pending.isEmpty {
-                try await Importing.shared.importPhotosFolder(incoming, destination: destination, policies: report.policies)
-                try await Task.detached(priority: .utility) { try PhotosExporter.markImported(report.pending) }.value
+            }
+            let report: PhotosExporter.Report
+            do {
+                while let batch = try await Task.detached(priority: .utility, operation: { try pipeline.take() }).value {
+                    try cancellation.check()
+                    try await Importing.shared.importPhotosFolder(incoming, destination: destination, receipts: batch.map { $0.0 })
+                    transferred += batch.count
+                    CatalogBackups.shared.schedule()
+                    pipeline.acknowledge(batch)
+                }
+                report = try await producer.value
+            } catch {
+                cancellation.cancel()
+                _ = await producer.result
+                throw error
             }
             CatalogBackups.shared.schedule()
-            status = "Photos checked · \(report.downloaded) original resources downloaded · \(report.pending.count) independent copies verified"
+            status = "Photos checked · \(report.downloaded) resources fetched · \(transferred) originals saved and verified"
             if report.unsupported > 0 { status += " · \(report.unsupported) unsupported resources left in Photos" }
             if !report.failures.isEmpty { error = "\(report.failures.count) Photos resources need attention. \(report.failures[0])" }
         } catch { self.error = error.localizedDescription; status = "Photos import needs attention" }
@@ -119,8 +138,6 @@ enum PhotosExporter {
     struct Report: Sendable {
         var downloaded = 0
         var unsupported = 0
-        var pending: [URL] = []
-        var policies: [String: String] = [:]
         var failures: [String] = []
     }
     static func markImported(_ receipts: [URL], catalog: Catalog = .standard) throws {
@@ -137,12 +154,13 @@ enum PhotosExporter {
         while let data = try handle.read(upToCount: 4 * 1024 * 1024), !data.isEmpty { hash.update(data: data) }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
-    static func export(to root: URL, range: DateInterval, cancellation: PhotosCancellation, progress: @escaping @Sendable (String) -> Void) throws -> Report {
+    static func export(to root: URL, range: DateInterval, cancellation: PhotosCancellation,
+                       ready: @escaping @Sendable (URL, Int64) throws -> Void,
+                       progress: @escaping @Sendable (String) -> Void) throws -> Report {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         let receipts = root.appendingPathComponent(".receipts")
         try fm.createDirectory(at: receipts, withIntermediateDirectories: true)
-        let assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
         var report = Report()
         var history = try Catalog.standard.photosHistory()
         // Past completed exports are excluded from subsequent importer passes.
@@ -153,11 +171,28 @@ enum PhotosExporter {
             if receipt.imported == true {
                 try Catalog.standard.recordPhotosImport(resource: key, digest: receipt.digest, size: receipt.size)
                 history.insert(key)
-                report.policies[receipt.file] = "skip"
+                if fm.isReadableFile(atPath: root.appendingPathComponent(receipt.file).path) { try ready(url, receipt.size) }
             }
-            else if history.contains(key) { continue }
-            else if let date = receipt.captureDate, date >= range.start, date < range.end { report.pending.append(url) }
+            else if history.contains(key) {
+                if fm.isReadableFile(atPath: root.appendingPathComponent(receipt.file).path) { try ready(url, receipt.size) }
+                continue
+            }
+            else if let date = receipt.captureDate, date >= range.start, date < range.end,
+                    fm.isReadableFile(atPath: root.appendingPathComponent(receipt.file).path),
+                    try hash(root.appendingPathComponent(receipt.file)) == receipt.digest {
+                progress("Resuming completed Photos downloads · \(URL(fileURLWithPath: receipt.file).lastPathComponent)")
+                try ready(url, receipt.size)
+                history.insert(key) // Queued this pass; the consumer may remove staging immediately.
+            }
         }
+        // Receipted independent downloads can finish transferring even if macOS
+        // requires Photos permission to be renewed after an app update.
+        let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authorization == .authorized || authorization == .limited else {
+            report.failures.append("Photos access is unavailable for this app build. Re-enable Photos import in Settings to request access. Completed downloads can still be saved.")
+            return report
+        }
+        let assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
         for index in 0..<assets.count {
             try cancellation.check()
             let asset = assets.object(at: index)
@@ -175,18 +210,19 @@ enum PhotosExporter {
                 let receiptURL = receipts.appendingPathComponent(key + ".json")
                 if let data = try? Data(contentsOf: receiptURL), let receipt = try? JSONDecoder().decode(Receipt.self, from: data) {
                     if receipt.imported == true { continue }
-                    if !report.pending.contains(receiptURL) { report.pending.append(receiptURL) }
                     if fm.isReadableFile(atPath: root.appendingPathComponent(receipt.file).path),
-                       try hash(root.appendingPathComponent(receipt.file)) == receipt.digest { continue }
-                    // Preserve a damaged export, but do not send it to the importer.
-                    report.policies[receipt.file] = "skip"
+                       try hash(root.appendingPathComponent(receipt.file)) == receipt.digest {
+                        try ready(receiptURL, receipt.size); history.insert(key); continue
+                    }
+                    // Preserve a damaged export; only the replacement receipt is queued.
                 }
-                progress("Downloading Photos original \(index + 1) of \(assets.count) · \(resource.originalFilename)")
+                progress("Fetching Photos original \(index + 1) of \(assets.count) · \(resource.originalFilename)")
                 let folder = root.appendingPathComponent(key)
                 try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                 let name = URL(fileURLWithPath: resource.originalFilename).lastPathComponent
                 let target = folder.appendingPathComponent(name)
                 let temporary = receipts.appendingPathComponent(UUID().uuidString + ".partial")
+                defer { try? fm.removeItem(at: temporary) }
                 let digest = try download(resource, to: temporary, cancellation: cancellation)
                 guard try hash(temporary) == digest else { throw AppError.message("Photos download failed read-back verification: \(name)") }
                 if let date = asset.creationDate { try fm.setAttributes([.modificationDate: date], ofItemAtPath: temporary.path) }
@@ -200,7 +236,9 @@ enum PhotosExporter {
                 let size = (try fm.attributesOfItem(atPath: final.path)[.size] as? NSNumber)?.int64Value ?? 0
                 let receipt = Receipt(file: String(final.path.dropFirst(root.path.count + 1)), digest: digest, size: size, imported: false, captureDate: asset.creationDate)
                 try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
-                if !report.pending.contains(receiptURL) { report.pending.append(receiptURL) }
+                try fm.removeItem(at: temporary)
+                try ready(receiptURL, size)
+                history.insert(key)
                 report.downloaded += 1
                 } catch {
                     try cancellation.check()
@@ -208,28 +246,6 @@ enum PhotosExporter {
                 }
             }
         }
-        // Explicitly exclude retained orphan/failed exports, including a crash
-        // after publication but before its receipt. Only receipted bytes enter
-        // the verified importer; files removed from Photos can still be imported.
-        report.policies = [:]
-        if let files = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
-            for case let file as URL in files where (try file.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true {
-                report.policies[String(file.path.dropFirst(root.path.count + 1))] = "skip"
-            }
-        }
-        var verified: [URL] = []
-        for url in report.pending {
-            try cancellation.check()
-            do {
-            let receipt = try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: url))
-            guard try hash(root.appendingPathComponent(receipt.file)) == receipt.digest else {
-                throw AppError.message("Saved Photos export changed. Its original must be downloaded again before import.")
-            }
-            report.policies[receipt.file] = "keep"
-            verified.append(url)
-            } catch { report.failures.append(error.localizedDescription) }
-        }
-        report.pending = verified
         return report
     }
 

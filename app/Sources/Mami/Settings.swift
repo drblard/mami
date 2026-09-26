@@ -32,6 +32,13 @@ struct MamiSettings: View {
                 Button("Check Photos now") { Task { await photos.scan() } }
                     .disabled(!photos.enabled || busy || importing.running)
                 Text(photos.status).font(.caption)
+                if photos.running {
+                    Text("\(photos.transferred) originals saved and verified · Fetching and transfer run in parallel")
+                        .font(.caption)
+                    if importing.photosTransfer, let progress = importing.progress {
+                        Text("\(progress.phase) · \(progress.current)").font(.caption).lineLimit(1)
+                    }
+                }
                 if let error = photos.error { Text(error).font(.caption).foregroundStyle(.orange) }
             }
             Section("Archiving") {

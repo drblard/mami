@@ -711,6 +711,21 @@ struct MamiApp: App {
         guard try selectedRestore.selectedClips() == clips.items else { throw AppError.message("Selection snapshot restore failed") }
         guard try selectedRestore.photosHistory().contains("photos-resource-fixture") else { throw AppError.message("Photos import history backup restore failed") }
         print("PHOTOS durable resource identity survives absent originals, staging removal and catalog restore")
+        let pipelineCancellation = PhotosCancellation()
+        let pipeline = PhotosPipeline(cancellation: pipelineCancellation)
+        let pipelineProducer = Task.detached {
+            for index in 0..<20 { try pipeline.enqueue(URL(fileURLWithPath: "/fixture/\(index)"), size: 128 * 1024 * 1024) }
+            pipeline.finish()
+        }
+        var consumed = 0
+        while let batch = try await Task.detached(operation: { try pipeline.take() }).value {
+            guard batch.count <= 4 else { throw AppError.message("Photos pipeline exceeded byte bound") }
+            consumed += batch.count
+            pipeline.acknowledge(batch)
+        }
+        try await pipelineProducer.value
+        guard consumed == 20 else { throw AppError.message("Photos pipeline lost work") }
+        print("PHOTOS concurrent bounded producer/consumer passed")
         clips.move(clips.items[1].id, by: -1)
         guard clips.items.first?.assetID == selectedMedia[1].assetID else { throw AppError.message("Selection ordering failed") }
         print("SELECTION persistence, no-op backup, snapshot restore, ordering and two native file drag items passed")
@@ -902,6 +917,30 @@ struct MamiApp: App {
             print("IMPORT native controller verified one new copy and one existing catalog duplicate")
         }
         window.orderOut(nil)
+        if ProcessInfo.processInfo.environment["MAMI_PHOTOS_TRANSFER_TEST"] == "1" {
+            let incoming = directory.appendingPathComponent("photos-fixture/incoming")
+            let receiptFolder = incoming.appendingPathComponent(".receipts")
+            let destination = directory.appendingPathComponent("photos-fixture/originals")
+            try FileManager.default.createDirectory(at: receiptFolder, withIntermediateDirectories: true)
+            let original = library.items.first { $0.kind == "image" }!
+            let staged = incoming.appendingPathComponent(original.url.lastPathComponent)
+            try FileManager.default.copyItem(at: original.url, to: staged)
+            let digest = try await Task.detached { try PhotosExporter.hash(staged) }.value
+            let size = (try FileManager.default.attributesOfItem(atPath: staged.path)[.size] as! NSNumber).int64Value
+            let receiptURL = receiptFolder.appendingPathComponent("native-" + UUID().uuidString + ".json")
+            try JSONEncoder().encode(PhotosExporter.Receipt(file: staged.lastPathComponent, digest: digest, size: size, imported: false, captureDate: Date()))
+                .write(to: receiptURL)
+            _ = try Catalog.standard.photosHistory()
+            try await Importing.shared.importPhotosFolder(incoming, destination: destination, receipts: [receiptURL])
+            let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: receiptURL)) as! [String: Any]
+            guard let path = saved["destination"] as? String,
+                  try PhotosExporter.hash(URL(fileURLWithPath: path)) == digest,
+                  !FileManager.default.fileExists(atPath: staged.path),
+                  try Catalog.standard.photosHistory().contains(receiptURL.deletingPathExtension().lastPathComponent) else {
+                throw AppError.message("Native Photos batch verification/history/cleanup failed")
+            }
+            print("PHOTOS native controller copied real media, verified history, removed staging and preserved final bytes")
+        }
         let video = library.items.first { $0.kind == "video" }!
         let player = try await preparedPlayer(url: video.url, timestamp: 5)
         let transport = PlaybackTransport()

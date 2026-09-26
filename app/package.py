@@ -23,7 +23,7 @@ resources = contents / 'Resources'
 executable.mkdir(parents=True)
 resources.mkdir()
 shutil.copy2(root / '.build/release/Mami', executable / 'Mami')
-for name in ['search_worker.py', 'lab.py', 'index_worker.py', 'index_queue.py', 'index_backend.py', 'metadata.py', 'import_media.py', 'gpu_activity.py']:
+for name in ['search_worker.py', 'lab.py', 'index_worker.py', 'index_queue.py', 'index_backend.py', 'metadata.py', 'import_media.py', 'gpu_activity.py', 'photos_batch.py']:
     shutil.copy2(root / name, resources / name)
 with (resources / 'configuration.json').open('x') as f:
     config = {'index': args.index}

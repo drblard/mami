@@ -36,6 +36,7 @@ class Importer:
     def __init__(self, source, destination, device, catalog=None, emit=lambda value: None, date_reader=None,
                  remove_source=False, policy_json='{}', direct_destination=False):
         self.direct_destination = direct_destination
+        self.local_candidates_only = False
         self.source, self.destination = Path(source).resolve(), Path(destination).resolve()
         if self.source == self.destination or self.source in self.destination.parents or self.destination in self.source.parents:
             raise ValueError('Choose a card or folder outside Originals')
@@ -177,7 +178,8 @@ class Importer:
         if self.catalog and Path(self.catalog).is_file():
             with contextlib.closing(sqlite3.connect(Path(self.catalog).resolve().as_uri() + '?mode=ro', uri=True)) as db:
                 found += [Path(r[0]) for r in db.execute('SELECT path FROM media WHERE asset=?', ('sha256:' + digest,))]
-        return list(dict.fromkeys(found))
+        return [path for path in dict.fromkeys(found)
+                if not self.local_candidates_only or self.destination in path.resolve().parents]
 
     def copy_one(self, source):
         signature = Queue.signature(source)

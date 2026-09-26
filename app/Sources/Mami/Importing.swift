@@ -80,21 +80,21 @@ import SwiftUI
         policies[file] = value == "default" ? nil : value
         if let source { UserDefaults.standard.set(policies, forKey: "import-policies:" + source.path) }
     }
-    func importPhotosFolder(_ folder: URL, destination: URL, policies photosPolicies: [String: String]) async throws {
+    func importPhotosFolder(_ folder: URL, destination: URL, receipts: [URL]) async throws {
         guard !running, !listing, !photosTransfer else { throw AppError.message("Camera import is busy. Photos will retry automatically.") }
         let previous = (source, device, removeSource, policies, sourceFiles)
         photosTransfer = true
         photosDestination = destination
         defer { (source, device, removeSource, policies, sourceFiles) = previous; photosTransfer = false; photosDestination = nil }
-        source = folder; device = "iCloud"; removeSource = false; policies = photosPolicies; sourceFiles = []
-        start(photos: true)
+        source = folder; device = "iCloud"; removeSource = false; policies = [:]; sourceFiles = []
+        start(photos: true, receipts: receipts)
         while running { try await Task.sleep(for: .milliseconds(250)) }
         if let error { throw AppError.message(error) }
         guard let progress, progress.phase == "Import complete", progress.failed == 0 else {
             throw AppError.message("Photos exports are saved, but import has not completed. It will retry automatically.")
         }
     }
-    func start(photos: Bool = false) {
+    func start(photos: Bool = false, receipts: [URL] = []) {
         guard !running, !listing, !photosTransfer || photos, let source else { return }
         do {
             let config = try Configuration.load()
@@ -110,6 +110,12 @@ import SwiftUI
             let policyFile = policyDirectory.appendingPathComponent(UUID().uuidString + ".json")
             try JSONEncoder().encode(policies).write(to: policyFile, options: .atomic)
             task.arguments?.append(contentsOf: ["--policy-file", policyFile.path])
+            if photos {
+                try JSONEncoder().encode(receipts.map(\.path)).write(to: policyFile, options: .atomic)
+                task.arguments = [Bundle.main.resourceURL!.appendingPathComponent("photos_batch.py").path,
+                                  "--source", source.path, "--destination", destination.path,
+                                  "--catalog", Catalog.standard.database.path, "--manifest", policyFile.path]
+            }
             task.standardInput = stdin
             task.standardOutput = stdout
             task.standardError = FileHandle.standardError

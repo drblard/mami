@@ -240,29 +240,47 @@ the same date restriction. Changing the date does not remove existing copies;
 changing destination affects new imports and does not move existing originals.
 Unavailable destinations report an error rather than creating a replacement mount.
 While enabled and Mami is open,
-checks run every five minutes. Downloads are
-streamed and hashed off the UI thread, flushed and reread, then fed through the
-verified importer with source removal disabled. Copies go to
+checks run every five minutes. PhotoKit reads locally cached originals or downloads
+cloud-only bytes. A background producer streams, hashes and rereads each original;
+a concurrent consumer copies and verifies published receipts in small batches.
+There is no wait for the full library export. Up to eight resources / 512 MiB are
+queued or being copied (a single oversized resource is allowed), plus the producer's
+current resource. A slow/paused destination applies backpressure to fetching. Existing
+staging from earlier versions is drained first and is not part of that new-work bound.
+Copies go to
 `<chosen directory>/year/date/` (default `~/Media/Originals/iCloud`). Custom
 destinations are registered for background indexing; offline roots retain catalog
 entries. Completed resources have individual receipts;
-interrupted downloads restart that resource, retaining the failed attempt. A failed
+interrupted downloads restart that resource. Handled failures release their temporary
+download; unreceipted artifacts from abrupt termination are retained. A failed
 resource does not prevent other completed downloads from importing. Completed
 exports are excluded from future import passes. Formats outside JPG/JPEG, PNG,
 HEIC, MP4 and MOV are reported as unsupported and left in Photos.
 
-Exports and receipts are retained in `~/Media/Incoming/.mami-photos`; unlike the
-destination's hard-linked staging, these consume additional media storage. Back
-up Incoming to retain unfinished downloads. Completed resource IDs, SHA-256 digests
+Exports and receipts live in `~/Media/Incoming/.mami-photos`. After an independent
+destination passes SHA-256 verification and macOS full-sync, completion is committed
+to the catalog and receipt. Staging is freshly reverified before removal. Redundant
+temporary hard links from earlier exporters and the completed destination's staging
+link are also released; unrelated/failed artifacts are preserved. No Photos/iCloud
+deletion API is used. A crash after history commit retries cleanup without copying;
+offline completed originals never trigger a new download. Import errors stop this
+pass with receipted bytes retained for retry. Back up Incoming to retain unfinished
+downloads. Completed resource IDs, SHA-256 digests
 and sizes are also committed to `photos_import_history` in the backed-up catalog,
 independently of destination paths. Existing completed JSON receipts migrate into
 that history. The exporter consults history before requesting cloud bytes, so moving
 an original, disconnecting an archive, deleting staging after completion, or changing
 the destination does not trigger re-download. A changed/recreated System Photo
 Library with different PhotoKit local identifiers will require identity reconciliation.
-The Photos integration builds
-successfully; real authorization/cloud-download validation requires granting access
-in the final app. It has not yet been validated against the user's Photos library.
+The user has enabled real Photos imports. The parallel pipeline's native real-media
+fixture, bounded producer/consumer, and 30 Python copy/recovery tests passed on macOS
+in `prototype-20260926T144822443381Z/ui-check` (isolated fixture catalog). That build
+validated the transfer. The follow-up build `prototype-20260926T145242894829Z`
+is deployed and has been observed draining the live staging backlog. It also lets
+already-downloaded originals finish transferring if macOS requires renewed Photos
+permission after an update. Settings shows fetching and saved-original progress
+separately; macOS unified logs expose status/errors under subsystem
+`local.mami.prototype`, category `PhotosImport`.
 
 ### NFS / HDD archiving — planned
 
