@@ -156,6 +156,12 @@ after repair. New-build Photos access still requires user approval.
   for presets, leap day, DST, calendar weeks, single/multiple months, years and
   reversed custom ranges. Its `ui-check/date-filter.png` retains the rendered picker;
   the composited image was visually inspected. This signed build is deployed.
+  Follow-up `prototype-20260926T193816925890Z` makes the entire day/month/year
+  cell clickable and gives quick presets full-width blue-hover clickable rows.
+  Switching modes resets the draft to today's day/calendar week/month/year and
+  navigates to the current month, ready for Apply without another click. The default
+  month does not anchor a later custom month span. Native integration and explicit
+  current-period mode-switch checks passed; the signed update is deployed.
 - **Lock grid** freezes the browsing catalog until Refresh or unlock. A permanent row
   shows how many new library items are waiting, without moving the grid vertically.
   Refresh retains the lock and reruns current filters/search; the pending count covers

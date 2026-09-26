@@ -29,6 +29,13 @@ struct DateFilterDraft {
     var through: Date
     var anchor: Date?
 
+    mutating func switchMode(_ mode: DateFilterMode, now: Date = Date(), calendar: Calendar = .current) {
+        anchor = nil
+        select(now, mode: mode, calendar: calendar)
+        // The default is ready to apply. A subsequent click starts a fresh span.
+        anchor = nil
+    }
+
     static func label(from: Date, through: Date) -> String {
         let first = from.formatted(.dateTime.day().month(.abbreviated).year())
         return Calendar.current.isDate(from, inSameDayAs: through) ? first : "\(first) – \(through.formatted(.dateTime.day().month(.abbreviated).year()))"
@@ -55,6 +62,24 @@ struct DateFilterDraft {
             through = max(anchor ?? day, day)
             anchor = anchor == nil ? day : nil
         }
+    }
+}
+
+private struct DatePresetRow: View {
+    let title: String
+    let action: () -> Void
+    @ViewState private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .foregroundStyle(hovered ? Color.white : Color.primary)
+                .background(hovered ? Color.blue : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .onHover { hovered = $0 }
     }
 }
 
@@ -93,14 +118,14 @@ struct DateFilterPopover: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Quick dates").font(.headline).padding(.bottom, 4)
                 ForEach(DateFilterPreset.allCases) { preset in
-                    Button(preset.rawValue) {
+                    DatePresetRow(title: preset.rawValue) {
                         let dates = preset.dates()
                         apply(dates.0, dates.1)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 Text("Last 7 / 30 days include today.").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
                 Divider().padding(.vertical, 6)
-                Button("All dates", action: clear)
+                DatePresetRow(title: "All dates", action: clear)
             }.buttonStyle(.borderless).frame(width: 132, alignment: .leading)
             Divider()
             VStack(alignment: .leading, spacing: 14) {
@@ -108,7 +133,11 @@ struct DateFilterPopover: View {
                 Picker("Selection", selection: $mode) {
                     ForEach(DateFilterMode.allCases) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.segmented)
-                    .onChange(of: mode) { _, _ in draft.anchor = nil }
+                    .onChange(of: mode) { _, value in
+                        let now = Date()
+                        draft.switchMode(value, now: now, calendar: calendar)
+                        cursor = calendar.dateInterval(of: .month, for: now)!.start
+                    }
                 HStack {
                     Button { navigate(-1) } label: { Image(systemName: "chevron.left") }
                         .accessibilityLabel("Previous calendar page")
@@ -165,6 +194,7 @@ struct DateFilterPopover: View {
                 Button { draft.select(date, mode: mode) } label: {
                     Text(date.formatted(.dateTime.month(.wide))).frame(maxWidth: .infinity, minHeight: 52)
                         .background(highlighted(date, through: end) ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel(date.formatted(.dateTime.month(.wide).year()))
             }
         }
@@ -179,6 +209,7 @@ struct DateFilterPopover: View {
                 Button { draft.select(date, mode: .year) } label: {
                     Text(String(value)).frame(maxWidth: .infinity, minHeight: 52)
                         .background(highlighted(date, through: end) ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }
         }
@@ -207,6 +238,7 @@ struct DateFilterPopover: View {
                                 .foregroundStyle(selected && endpoint ? Color.white : Color.primary)
                                 .background(selected ? Color.accentColor.opacity(endpoint ? 1 : 0.22) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(calendar.isDateInToday(date) ? Color.accentColor : .clear))
+                                .contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityLabel(date.formatted(date: .complete, time: .omitted))
                             .accessibilityAddTraits(selected ? .isSelected : [])
                     } else { Color.clear.frame(height: 27) }
