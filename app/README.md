@@ -236,7 +236,7 @@ The year rolls forward automatically in January. While enabled and Mami is open,
 checks run every five minutes. Downloads are
 streamed and hashed off the UI thread, flushed and reread, then fed through the
 verified importer with source removal disabled. Copies go to
-`Originals/iCloud-Photos/year/date/`. Completed resources have individual receipts;
+`Originals/iCloud/year/date/`. Completed resources have individual receipts;
 interrupted downloads restart that resource, retaining the failed attempt. A failed
 resource does not prevent other completed downloads from importing. Completed
 exports are excluded from future import passes. Formats outside JPG/JPEG, PNG,

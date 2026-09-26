@@ -81,7 +81,7 @@ struct Media: Identifiable, Codable, Sendable {
     var title: String { url.lastPathComponent }
     var device: String {
         let parts = url.pathComponents
-        if let index = parts.lastIndex(of: "Originals"), parts.indices.contains(index + 1), parts[index + 1] != "iCloud-Photos" {
+        if let index = parts.lastIndex(of: "Originals"), parts.indices.contains(index + 1), !["iCloud", "iCloud-Photos"].contains(parts[index + 1]) {
             return parts[index + 1]
         }
         if let details = metadata?.details, details.count > 1, let camera = details.last { return camera }

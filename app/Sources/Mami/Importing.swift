@@ -83,7 +83,7 @@ import SwiftUI
         let previous = (source, device, removeSource, policies, sourceFiles)
         photosTransfer = true
         defer { (source, device, removeSource, policies, sourceFiles) = previous; photosTransfer = false }
-        source = folder; device = "iCloud-Photos"; removeSource = false; policies = photosPolicies; sourceFiles = []
+        source = folder; device = "iCloud"; removeSource = false; policies = photosPolicies; sourceFiles = []
         start(photos: true)
         while running { try await Task.sleep(for: .milliseconds(250)) }
         if let error { throw AppError.message(error) }
