@@ -58,8 +58,17 @@ class Backend:
         cmd = ['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-filter_threads', '1']
         if timestamp is not None:
             cmd += ['-ss', str(timestamp)]
-        cmd += ['-i', str(source), '-frames:v', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease', '-q:v', '3', '-threads', '1', str(target)]
+        cmd += ['-i', str(source), '-frames:v', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease:out_range=full', '-pix_fmt', 'yuvj420p', '-q:v', '3', '-threads', '1', str(target)]
         self.run_command(cmd, timeout=120)
+        if not target.exists() and timestamp is not None:
+            # Some edited/variable-rate videos advertise a duration slightly
+            # past their final decodable frame. FFmpeg then exits successfully
+            # without writing a JPEG. Sample within the final half-second.
+            retry = list(cmd)
+            retry[retry.index('-ss') + 1] = str(max(0, timestamp - .5))
+            self.run_command(retry, timeout=120)
+        if not target.exists():
+            raise RuntimeError(f'No preview frame could be decoded at {timestamp}s in {source.name}')
         from PIL import Image
         with Image.open(target) as image:
             image.verify()

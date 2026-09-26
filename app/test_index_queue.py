@@ -75,6 +75,25 @@ class QueueTests(unittest.TestCase):
         with q.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM index_jobs').fetchone()[0], 2)
 
+    def test_quit_during_subprocess_is_resumable_without_error(self):
+        q = self.queue()
+        q.scan()
+        original_frame = self.backend.frame
+        def interrupted(*args):
+            q.stop.set()
+            raise RuntimeError('ffmpeg terminated during app quit')
+        self.backend.frame = interrupted
+        with self.assertRaises(Stopped):
+            q.work()
+        with q.db() as db:
+            job = db.execute('SELECT state,attempts,error FROM index_jobs').fetchone()
+            self.assertEqual(tuple(job), ('running', 0, None))
+        self.backend.frame = original_frame
+        resumed = self.queue()
+        resumed.work()
+        with resumed.db() as db:
+            self.assertEqual(db.execute('SELECT state FROM index_jobs').fetchone()[0], 'complete')
+
     def test_metadata_upgrade_reuses_completed_inference(self):
         q = self.queue()
         q.scan(); q.work()

@@ -106,12 +106,16 @@ struct MediaCard: View {
                     case .ended: hovered = nil; hoverFraction = nil
                     }
                 }
-                .onTapGesture { open(media, sample.timestamp) }
+                .onTapGesture {
+                    if NSEvent.modifierFlags.contains(.command) { select() }
+                    else { open(media, sample.timestamp) }
+                }
             }.frame(height: 175).clipShape(RoundedRectangle(cornerRadius: 8))
             HStack(spacing: 6) {
                 Text(media.metadata?.date ?? "Capture date unavailable").font(.system(size: 12, weight: .medium)).lineLimit(1)
                 Spacer(minLength: 0)
-                Text(media.kind == "image" ? "Photo" : media.metadata?.duration.map { timeLabel($0) } ?? "Video").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(media.kind == "image" ? "Photo" : media.metadata?.duration.map { timeLabel($0) } ?? "Video")
+                    .font(.system(size: 14, weight: .semibold).monospacedDigit()).foregroundStyle(.primary)
             }
             Text(subtitle)
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -327,6 +331,7 @@ struct LibraryView: View {
     @ViewState private var favoritesOnly = false
     @ViewState private var selectedLabels = Set<String>()
     @ViewState private var showImport = false
+    @ViewState private var showDateRange = false
     @ObservedObject private var importing = Importing.shared
     @StateObject private var annotations = Annotations()
     @ObservedObject private var backups = CatalogBackups.shared
@@ -339,6 +344,7 @@ struct LibraryView: View {
             return (kind == "all" || $0.kind == kind) && (!favoritesOnly || value.favorite)
                 && library.matchesFormat($0)
                 && library.matchesDevice($0)
+                && library.matchesDate($0)
                 && (selectedLabels.isEmpty || !labels.isDisjoint(with: selectedLabels))
         }
         if sort == "default" && library.showingMatches { return filtered }
@@ -350,28 +356,49 @@ struct LibraryView: View {
         }
     }
     private var availableLabels: [String] { Set(annotations.values.values.flatMap { $0.tags + [$0.place] }.filter { !$0.isEmpty }).sorted() }
-    private var hasFilters: Bool { kind != "all" || library.format != .all || library.deviceFilter != "All devices" || favoritesOnly || !selectedLabels.isEmpty }
+    private var hasFilters: Bool { kind != "all" || library.format != .all || library.deviceFilter != "All devices" || library.dateEnabled || library.queryDates != nil || favoritesOnly || !selectedLabels.isEmpty }
     private func clearFilters() {
         kind = "all"; library.format = .all; library.deviceFilter = "All devices"; favoritesOnly = false; selectedLabels = []
+        library.dateEnabled = false
+        if let parsed = try? DateSearch.parse(library.query) { library.query = parsed.text }
+        library.search()
     }
     private func focus(_ media: Media) {
-        focusedMedia = media; searchFocused = false
+        navigation.select(media, extending: false); searchFocused = false
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
+    private func selectCard(_ media: Media) {
+        navigation.select(media, extending: NSEvent.modifierFlags.contains(.command))
+        searchFocused = false
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+    private var highlightedItems: [Media] { visibleItems.filter { navigation.selectedIDs.contains($0.id) } }
     private func open(_ media: Media, timestamp: Double?) {
-        focus(media); selection = Selection(media: media, timestamp: timestamp)
+        focus(media); navigation.previewItems = nil; selection = Selection(media: media, timestamp: timestamp)
     }
     private func handleKey(_ code: UInt16) -> Bool {
         guard !showImport else { return false }
         if code == 53, selection != nil { selection = nil; return true }
+        if code == 11 {
+            let targets = selection.map { [$0.media] } ?? highlightedItems
+            clips.toggle(targets.isEmpty ? focusedMedia.map { [$0] } ?? [] : targets)
+            return true
+        }
         if code == 49 {
             if selection != nil { selection = nil }
+            else if highlightedItems.count > 1 {
+                navigation.previewItems = highlightedItems
+                let first = highlightedItems.first { $0.id == focusedMedia?.id } ?? highlightedItems[0]
+                selection = Selection(media: first, timestamp: first.match.timestamp)
+            }
+            else if let item = highlightedItems.first { open(item, timestamp: item.match.timestamp) }
             else if let item = focusedMedia, visibleItems.contains(where: { $0.id == item.id }) { open(item, timestamp: item.match.timestamp) }
             else if let item = visibleItems.first { open(item, timestamp: item.match.timestamp) }
             return true
         }
         guard [123, 124, 125, 126].contains(code) else { return false }
-        let items = visibleItems
+        if selection != nil, [125, 126].contains(code) { return true }
+        let items = selection != nil ? navigation.previewItems ?? visibleItems : visibleItems
         guard !items.isEmpty else { return false }
         let offset = (code == 123 || code == 126) ? -1 : 1
         let current = selection?.media ?? focusedMedia
@@ -380,8 +407,11 @@ struct LibraryView: View {
             selection == nil ? GridNavigation.target(index: $0, key: code, count: items.count, columns: navigation.columns)
                 : max(0, min(items.count - 1, $0 + offset))
         } ?? 0
-        focus(items[target])
-        if selection != nil { open(items[target], timestamp: items[target].match.timestamp) }
+        if selection != nil {
+            focusedMedia = items[target]
+            if navigation.previewItems == nil { navigation.selectedIDs = [items[target].id] }
+            selection = Selection(media: items[target], timestamp: items[target].match.timestamp)
+        } else { focus(items[target]) }
         return true
     }
     private func adjacent(to selection: Selection, offset: Int) -> Media? {
@@ -400,7 +430,11 @@ struct LibraryView: View {
                 HStack {
                     Text("Mami").font(.system(size: 25, weight: .semibold, design: .rounded))
                     Spacer()
-                    Button(importing.running ? "Import progress…" : "Import media…") { showImport = true }
+                    Button("Import media…") { showImport = true }
+                        .overlay(alignment: .topTrailing) {
+                            Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                                .opacity(importing.running ? 1 : 0).allowsHitTesting(false)
+                        }
                     Button { showClips.toggle() } label: { Label("\(clips.items.count)", systemImage: "sidebar.right") }
                         .help("Show or hide selected clips").accessibilityLabel("Selected clips, \(clips.items.count)")
                     Label("On this Mac", systemImage: "desktopcomputer").font(.caption).foregroundStyle(.secondary)
@@ -440,7 +474,7 @@ struct LibraryView: View {
             HStack {
                 Text(hasFilters ? "\(visibleItems.count) shown · \(library.status)" : library.status)
                 Spacer()
-                Text("Space: preview · Arrows: browse · ⌘ hover: invert scrub").foregroundStyle(.secondary)
+                Text("⌘ click: select · Space: preview · B: clips · ← →: browse").foregroundStyle(.secondary)
             }.font(.caption).padding(.horizontal, 14).padding(.bottom, 10)
             HStack {
                 Picker("Show", selection: $kind) {
@@ -448,11 +482,10 @@ struct LibraryView: View {
                     Text("Videos").tag("video")
                     Text("Photos").tag("image")
                 }.pickerStyle(.segmented).frame(width: 260)
-                Picker("Shape", selection: $library.format) {
-                    ForEach(MediaFormat.allCases) { format in Text(format.label).tag(format) }
-                }.frame(width: 190)
-                    .help("Vertical: Reels, TikTok & Shorts. Horizontal: YouTube & widescreen. Square: social feeds. Filters original shape; does not crop or resize.")
-                    .onChange(of: library.format) { _, _ in library.search() }
+                ForEach([MediaFormat.vertical, .horizontal]) { shape in
+                    Toggle(shape.label, isOn: Binding(get: { library.format == shape }, set: { library.format = $0 ? shape : .all }))
+                        .toggleStyle(.button)
+                }
                 Picker("Sort", selection: $sort) {
                     Text(library.showingMatches ? "Best match" : "Newest first").tag("default")
                     Text("Capture date: newest").tag("newest")
@@ -461,14 +494,23 @@ struct LibraryView: View {
                 Toggle(isOn: $favoritesOnly) { Image(systemName: "heart.fill") }.toggleStyle(.button).help("Show favorites only").accessibilityLabel("Favorites only")
                 Spacer()
             }.padding(.horizontal, 24).padding(.bottom, 10)
-            if library.format != .all {
-                HStack {
-                    Text(library.format.guidance).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                }.padding(.horizontal, 24).padding(.bottom, 8)
-            }
             HStack {
                 TagFilterPicker(available: availableLabels, selected: $selectedLabels)
+                Button(library.dateEnabled ? "Date range ✓" : "Date range…") { showDateRange = true }
+                    .popover(isPresented: $showDateRange) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle("Filter capture dates", isOn: $library.dateEnabled)
+                            DatePicker("From", selection: $library.dateFrom, displayedComponents: .date)
+                            DatePicker("Through", selection: $library.dateThrough, displayedComponents: .date)
+                            Text("Both dates are included. Files without a capture date are excluded.").font(.caption)
+                            Text("Search: goats in September · in September 2025 · from 2026-09-01 to 2026-09-30").font(.caption)
+                            HStack {
+                                Button("Clear") { library.dateEnabled = false; library.search(); showDateRange = false }
+                                Spacer()
+                                Button("Apply") { library.dateEnabled = true; library.search(); showDateRange = false }
+                            }
+                        }.padding(16).frame(width: 380)
+                    }
                 Picker("Device", selection: $library.deviceFilter) {
                     Text("All devices").tag("All devices")
                     ForEach(library.devices, id: \.self) { Text($0).tag($0) }
@@ -480,6 +522,19 @@ struct LibraryView: View {
                     Toggle("Scrub ±8 seconds around match", isOn: $nearby).toggleStyle(.switch).controlSize(.small)
                 }
             }.padding(.horizontal, 14).padding(.bottom, 10)
+            HStack(spacing: 10) {
+                Toggle("Lock grid", isOn: $library.gridLocked).toggleStyle(.checkbox)
+                    .disabled(!library.ready)
+                    .help("Hold this library snapshot while new media is indexed. Refresh includes new media and keeps the lock on.")
+                Text("\(library.pendingMediaCount) new media not displayed").monospacedDigit()
+                    .opacity(library.gridLocked ? 1 : 0)
+                    .help("New library items since the grid was locked. Refresh reruns the current filters and search.")
+                Button { library.refreshGrid() } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Refresh grid").accessibilityLabel("Refresh grid")
+                Spacer()
+                Text([library.manualDates?.label, library.queryDates.map { "Search dates: \($0.label)" }].compactMap { $0 }.joined(separator: " · "))
+                    .lineLimit(1).foregroundStyle(.secondary)
+            }.font(.caption).frame(height: 24).padding(.horizontal, 14).padding(.bottom, 8)
             if let error = library.error { Text(error).foregroundStyle(.red).padding() }
             if let error = annotations.error { Text(error).foregroundStyle(.red).font(.caption).padding() }
             HStack {
@@ -504,7 +559,7 @@ struct LibraryView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14)], spacing: 14) {
                     ForEach(visibleItems) { media in
                         MediaCard(media: media, nearby: (nearby && library.showingMatches) != commandHover, annotations: annotations, clips: clips,
-                                  focused: focusedMedia?.id == media.id, select: { focus(media) }, open: { open($0, timestamp: $1) }).id(media.id)
+                                   focused: navigation.selectedIDs.contains(media.id), select: { selectCard(media) }, open: { open($0, timestamp: $1) }).id(media.id)
                     }
                 }
                 .onGeometryChange(for: Int.self) { geometry in
@@ -534,6 +589,7 @@ struct LibraryView: View {
             return true
         }).frame(width: 0, height: 0))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in commandHover = false }
+        .onChange(of: library.format) { _, _ in library.search() }
         .background(Button("Focus search") { searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden())
         .task { await library.load() }
         .task { await annotations.load() }
@@ -842,6 +898,59 @@ struct MamiApp: App {
             throw AppError.message("Grid navigation boundaries failed")
         }
         print("GRID up/down move by \(navigation.columns) columns; first and partial last rows passed")
+        let picks = Array(library.items.prefix(3))
+        navigation.select(picks[0], extending: false)
+        navigation.select(picks[2], extending: true)
+        navigation.select(picks[1], extending: true)
+        navigation.select(picks[1], extending: true)
+        guard navigation.selectedIDs == Set([picks[0].id, picks[2].id]) else { throw AppError.message("Command-selection toggle failed") }
+        try await browserKey(49, characters: " ")
+        guard let selectedPreview = navigation.previewItems, selectedPreview.count == 2 else { throw AppError.message("Multiple selection did not scope preview") }
+        let firstSelected = selectedPreview[0], lastSelected = selectedPreview[1]
+        try await browserKey(123, characters: "\u{f702}")
+        guard navigation.preview?.media.id == firstSelected.id else { throw AppError.message("Left did not stay within selected preview") }
+        try await browserKey(125, characters: "\u{f701}")
+        guard navigation.preview?.media.id == firstSelected.id else { throw AppError.message("Down navigated multi-preview") }
+        try await browserKey(124, characters: "\u{f703}")
+        guard navigation.preview?.media.id == lastSelected.id else { throw AppError.message("Right did not stay within selected preview") }
+        try await browserKey(49, characters: " ")
+        clips.clear()
+        try await browserKey(11, characters: "b")
+        guard Set(clips.items.map(\.assetID)) == Set([picks[0].assetID, picks[2].assetID]) else { throw AppError.message("B did not add multi-selection") }
+        try await browserKey(11, characters: "b")
+        guard clips.items.isEmpty else { throw AppError.message("B did not remove selected clips") }
+        navigation.select(picks[0], extending: false)
+        navigation.select(picks[0], extending: true)
+        guard navigation.selectedIDs.isEmpty, navigation.focused == nil else { throw AppError.message("Deselecting final item left a selection") }
+        print("MULTISELECT additive toggle, selection-only left/right preview, ignored up/down and bulk B shortcut passed")
+        let september = try DateSearch.parse("goats in September 2025")
+        let leap = try DateSearch.parse("in February 2024")
+        let exact = try DateSearch.parse("goats from 2026-01-01 to 2026-01-31")
+        guard september.text == "goats", september.range == CaptureRange(from: "2025-09-01", through: "2025-09-30"),
+              leap.text.isEmpty, leap.range?.through == "2024-02-29",
+              exact.range?.contains("20260131235959") == true, exact.range?.contains("20260201000000") == false,
+              exact.range?.contains(nil) == false,
+              try DateSearch.parse("goats in September").range?.from == "\(Calendar.current.component(.year, from: Date()))-09-01" else {
+            throw AppError.message("Natural-language date parsing or inclusive boundaries failed")
+        }
+        do {
+            _ = try DateSearch.parse("from 2026-02-30 to 2026-03-01")
+            throw AppError.message("Invalid date was accepted")
+        } catch let error as AppError {
+            if error.localizedDescription == "Invalid date was accepted" { throw error }
+        }
+        if let date = library.catalogMedia.compactMap({ $0.metadata?.sortDate }).first(where: { $0.count >= 8 }) {
+            let day = "\(date.prefix(4))-\(date.dropFirst(4).prefix(2))-\(date.dropFirst(6).prefix(2))"
+            library.query = "goats on \(day)"
+            await library.search()?.value
+            let count = library.catalogMedia.filter { library.matchesDate($0) }.count
+            guard library.items.count == min(60, count), library.items.allSatisfy({ library.matchesDate($0) }) else { throw AppError.message("Date range was not applied before search limit") }
+            library.query = "on \(day)"
+            await library.search()?.value
+            guard library.items.count == count, !library.showingMatches else { throw AppError.message("Date-only search failed") }
+            library.query = ""; await library.search()?.value
+        }
+        print("DATES month/year, leap year, inclusive range, unknown dates, invalid dates and pre-limit search filtering passed")
         guard MediaFormat.classify(width: 1920, height: 1080, orientation: 6) == .vertical,
               MediaFormat.classify(width: 1080, height: 1920) == .vertical,
               MediaFormat.classify(width: 1080, height: 1080) == .square,
@@ -1031,6 +1140,26 @@ struct MamiApp: App {
         transport.stop()
         window.orderOut(nil)
         print("TRANSPORT initial position and seek refresh passed without hover")
+        library.query = ""; library.format = .all; library.deviceFilter = "All devices"; library.dateEnabled = false
+        await library.search()?.value
+        library.gridLocked = true
+        let before = library.items.map(\.id)
+        let original = library.catalogMedia.first { $0.kind == "image" }!
+        let arrivalURL = directory.appendingPathComponent("grid-arrival." + original.url.pathExtension)
+        try FileManager.default.copyItem(at: original.url, to: arrivalURL)
+        let arrival = Media(path: "grid-arrival", kind: original.kind, url: arrivalURL, frames: original.frames,
+                            match: original.match, metadata: original.metadata, assetID: "fixture:grid-arrival")
+        try Catalog.standard.synchronize([arrival])
+        await library.refreshCatalog()
+        guard library.items.map(\.id) == before, library.pendingMediaCount == 1 else { throw AppError.message("Locked grid changed during catalog refresh") }
+        await library.search()?.value
+        guard library.items.map(\.id) == before else { throw AppError.message("Search escaped locked catalog snapshot") }
+        library.refreshGrid()
+        guard library.gridLocked, library.pendingMediaCount == 0, library.items.contains(where: { $0.id == arrival.id }) else {
+            throw AppError.message("Explicit refresh did not include new media while retaining lock")
+        }
+        library.gridLocked = false
+        print("GRID LOCK stable snapshot, one pending arrival, explicit refresh and unlock passed")
         print("UI TEST PASSED: \(directory.path)")
     }
 

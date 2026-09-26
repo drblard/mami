@@ -60,6 +60,12 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
         else { save(items + [SelectedClip(media, sample: sample)]) }
     }
     func remove(_ assetID: String) { save(items.filter { $0.assetID != assetID }) }
+    func toggle(_ media: [Media]) {
+        guard !media.isEmpty else { return }
+        let ids = Set(media.map(\.assetID))
+        if media.allSatisfy({ contains($0) }) { save(items.filter { !ids.contains($0.assetID) }) }
+        else { save(items + media.filter { !contains($0) }.map { SelectedClip($0) }) }
+    }
     func clear() { save([]) }
     func move(_ id: String, by offset: Int) {
         guard let index = items.firstIndex(where: { $0.id == id }), items.indices.contains(index + offset) else { return }

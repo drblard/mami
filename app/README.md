@@ -22,6 +22,18 @@ permanently allocated Settings transfer-status rows.
 
 ## Implemented
 
+Usability pass verified in `prototype-20260926T160933527036Z/ui-check`: additive
+selection, selection-scoped previews, B basket shortcut, date parser/boundaries and
+pre-limit date search, grid-lock arrival/refresh, plus existing native integration
+checks. Final deployed bundle is `prototype-20260926T161509876400Z`; identical Swift
+sources reuse the verified compiled executable (recorded in `native-build-provenance.txt`).
+It also forces full-range JPEG output for limited-range edited video thumbnails,
+retries an empty end-of-video sample half a second earlier, and treats subprocess
+termination during Quit as resumable work rather than an indexing error. 32 Python
+tests passed on Linux and macOS, including quit-during-FFmpeg recovery. The affected
+live jobs were repaired with saved inference checkpoints; no indexing errors remained
+after repair. New-build Photos access still requires user approval.
+
 - Transcription explicitly selects conventional audio instead of FFmpeg's
   automatic highest-channel-count choice, excluding unsupported `apple_apac`.
   iPhone spatial recordings retain their original tracks; only the temporary
@@ -37,9 +49,9 @@ permanently allocated Settings transfer-status rows.
   does not imply both searches matched the same moment. Visual-only and spoken-
   word-only modes remain available.
 - Search scope is beside the search field, with explicit **Visuals only** and
-  **Speech only** options. The **Shape** filter offers Vertical (Reels, TikTok &
-  Shorts), Horizontal (YouTube & widescreen), Square (social feeds), and Unknown
-  shape. Classification reads display-oriented cached preview headers off the UI
+  **Speech only** options. Shape is controlled by **Vertical** and **Horizontal**
+  toggle buttons. Turn the active button off to show every shape; square and unknown
+  remain visible in the unfiltered grid. Classification reads display-oriented cached preview headers off the UI
   thread, including EXIF orientation, so it works without reading originals.
   It describes source shape, not platform eligibility or automatic cropping.
   One-pixel square-preview rounding is tolerated. The current library contains
@@ -47,7 +59,7 @@ permanently allocated Settings transfer-status rows.
    cap in both visual and speech retrieval. The **Device** filter also applies before
    that cap, using the original's import-device folder or camera metadata for Photos
    imports. Unknown devices remain selectable. Other browsing filters combine with it;
-   **Clear filters** preserves the query and search scope.
+    **Clear filters** preserves search content and scope, removing any date phrase.
    Camera metadata reads Apple QuickTime make/model for videos and ImageIO TIFF
    make/model for photos (including HEIC). iCloud assets without a camera model,
    such as screenshots or some edited exports, appear as **iCloud · Device
@@ -67,13 +79,29 @@ permanently allocated Settings transfer-status rows.
 - Large centered search, ⌘F search focus, capture-date sorting, and two-line
   capture metadata cards. Invalid camera GPS placeholders are excluded.
 - Clicking a card's details/padding selects it; clicking its media opens the preview.
-  Space toggles the selected item's preview. In the listing, Up/Down move by rows
+  Command-click anywhere on a card toggles additive selection without opening it.
+  Space previews a multiple selection using only those items, in grid order.
+  **B** adds highlighted files to Selected clips, or removes them when all are already
+  present. In a preview B toggles the displayed item. Text entry keeps normal typing.
+  In the listing, Up/Down move by rows
   using the current adaptive column count (including sidebar/resizing changes),
   preserving the column where possible; Left/Right move by one item.
-  With a preview open, plain arrows move through items, updating
+  With a preview open, only Left/Right move through items, updating
   an open preview. The selection stays highlighted and scrolls into view. Text entry
   and popovers retain normal keyboard behavior. Escape or the outside backdrop closes
   the preview; previous/next header buttons are removed.
+- **Date range…** filters capture dates inclusively. Search recognizes English month
+  names/abbreviations with an optional year (`goats in September`, `goats in Sep 2025`),
+  `in 2025`, `on 2026-09-01`, and `from 2026-09-01 to 2026-09-30` (also `between … and …`).
+  An omitted year means the current year. The interpreted range is displayed; date-only
+  queries browse all matching items. Date constraints intersect manual filters and apply
+  before the 60-result search cap. Undated media are excluded when a date filter is active.
+- **Lock grid** freezes the browsing catalog until Refresh or unlock. A permanent row
+  shows how many new library items are waiting, without moving the grid vertically.
+  Refresh retains the lock and reruns current filters/search; the pending count covers
+  new library items, not a prediction of semantic matches. Lock is per window/session.
+- Video duration is larger and semibold. The **Import media…** label is constant;
+  a small activity dot indicates work without resizing the button.
 - Preview fills the available window with a small dismissible backdrop. Fit mode
   preserves aspect ratio and does not enlarge beyond 100% original pixels; a 100%
   control enables native-pixel inspection with scrolling. The title shows zoom percent,
@@ -356,8 +384,8 @@ subclips. Selection order and content identities survive restarts in the catalog
 and its change-aware snapshots. Original paths reconnect after catalog refresh.
 Missing originals stop the drag with a visible error rather than silently omitting
 files. Native tests verify two independent file pasteboard items, reload, order,
-no-op backups, and restoration from a snapshot. Actual drop acceptance in CapCut
-still needs an unlocked interactive check.
+no-op backups, and restoration from a snapshot. The user confirmed successful
+bulk dragging from Selected clips into CapCut on 2026-09-26.
 
 Latest native verification: `prototype-20260926T100509862908Z/ui-check` passed
 selection persistence/restoration/multi-file pasteboard, all 498 original paths,

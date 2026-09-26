@@ -6,6 +6,15 @@ import ImageIO
     @Published var columns = 1
     @Published var focused: Media?
     @Published var preview: Selection?
+    @Published var selectedIDs = Set<String>()
+    var previewItems: [Media]?
+    func select(_ media: Media, extending: Bool) {
+        if extending {
+            if !selectedIDs.insert(media.id).inserted { selectedIDs.remove(media.id) }
+        } else { selectedIDs = [media.id] }
+        if selectedIDs.contains(media.id) { focused = media }
+        else if focused?.id == media.id || selectedIDs.isEmpty { focused = nil }
+    }
 }
 
 enum GridNavigation {

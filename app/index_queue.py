@@ -370,6 +370,10 @@ class Queue:
             except Stopped:
                 raise
             except Exception as error:
+                # Quit can terminate the in-flight FFmpeg child. Preserve the
+                # running checkpoint for restart instead of spending a retry.
+                if self.stop.is_set():
+                    raise Stopped() from error
                 with self.db() as db:
                     db.execute("UPDATE index_jobs SET state='error',error=?,attempts=attempts+1 WHERE asset=?", (str(error), job['asset']))
                 self.status(error=f"{Path(job['path']).name}: {error}")

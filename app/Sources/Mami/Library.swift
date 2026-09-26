@@ -206,6 +206,28 @@ actor SearchWorker {
     @Published var mode = "both"
     @Published var format = MediaFormat.all
     @Published var deviceFilter = "All devices"
+    @Published var dateEnabled = false
+    @Published var dateFrom = Calendar.current.date(from: DateComponents(year: Calendar.current.component(.year, from: Date()), month: 1, day: 1))!
+    @Published var dateThrough = Date()
+    @Published private(set) var queryDates: CaptureRange?
+    @Published var gridLocked = false {
+        didSet {
+            if gridLocked { frozenCatalog = all }
+            else { frozenCatalog = nil; search() }
+        }
+    }
+    private var frozenCatalog: [Media]?
+    private var browsingCatalog: [Media] { frozenCatalog ?? all }
+    var pendingMediaCount: Int {
+        guard let frozenCatalog else { return 0 }
+        let ids = Set(frozenCatalog.map(\.assetID))
+        return Set(all.filter { !ids.contains($0.assetID) }.map(\.assetID)).count
+    }
+    func refreshGrid() { if gridLocked { frozenCatalog = all }; search() }
+    var manualDates: CaptureRange? { dateEnabled ? CaptureRange(from: CaptureRange.day(dateFrom), through: CaptureRange.day(dateThrough)) : nil }
+    func matchesDate(_ media: Media) -> Bool {
+        (manualDates?.contains(media.metadata?.sortDate) ?? true) && (queryDates?.contains(media.metadata?.sortDate) ?? true)
+    }
     var devices: [String] { Set(all.map(\.device)).sorted() }
     func matchesDevice(_ media: Media) -> Bool { deviceFilter == "All devices" || media.device == deviceFilter }
     @Published private(set) var formats: [String: MediaFormat] = [:]
@@ -274,7 +296,8 @@ actor SearchWorker {
             formats = await Task.detached(priority: .utility) { MediaFormat.read(media) }.value
             all = media
             byPath = Dictionary(uniqueKeysWithValues: media.map { ($0.path, $0) })
-            if !showingMatches { items = media; status = "\(media.count) files · Local search ready" }
+            if gridLocked { /* Keep the displayed snapshot until explicit refresh. */ }
+            else if !showingMatches { items = media.filter { matchesDate($0) }; status = "\(media.count) files · Local search ready" }
             else {
                 items = items.compactMap { matched in
                     guard let original = byPath[matched.path] else { return nil }
@@ -290,10 +313,17 @@ actor SearchWorker {
         generation += 1
         let current = generation
         let searchMode = mode
-        let paths = format == .all && deviceFilter == "All devices" ? nil : all.filter { matchesFormat($0) && matchesDevice($0) }.map(\.path)
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         error = nil
-        if text.isEmpty { items = all; searching = false; showingMatches = false; status = "\(all.count) files"; return nil }
+        let parsed: DateSearch.Parsed
+        do {
+            parsed = try DateSearch.parse(query)
+            if let dates = manualDates, dates.from > dates.through { throw AppError.message("Capture date range: start must be before end") }
+        } catch { self.error = error.localizedDescription; searching = false; return nil }
+        queryDates = parsed.range
+        let eligible = browsingCatalog.filter { matchesFormat($0) && matchesDevice($0) && matchesDate($0) }
+        let paths = format == .all && deviceFilter == "All devices" && !dateEnabled && queryDates == nil && !gridLocked ? nil : eligible.map(\.path)
+        let text = parsed.text
+        if text.isEmpty { items = eligible; searching = false; showingMatches = false; status = "\(eligible.count) files"; return nil }
         guard ready else { return nil }
         searching = true
         status = "Searching locally…"
