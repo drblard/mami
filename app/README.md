@@ -22,6 +22,12 @@ permanently allocated Settings transfer-status rows.
 
 ## Implemented
 
+- Transcription explicitly selects conventional audio instead of FFmpeg's
+  automatic highest-channel-count choice, excluding unsupported `apple_apac`.
+  iPhone spatial recordings retain their original tracks; only the temporary
+  transcription WAV uses the stereo companion. Verified on `IMG_4325.MOV` in
+  `prototype-20260926T153155087439Z/audio-check`; its saved job completed on retry.
+
 - Lazy media grid for all 498 files, video/photo filters, Reveal in Finder.
 - Persistent offline SigLIP process: the model stays loaded between searches.
 - Up to 60 distinct files per visual query, starting at each file's best frame.

@@ -29,6 +29,7 @@ class Backend:
         self.visual = None
         self.speech_model = None
         self.torch_configured = False
+        self.audio_streams = {}
 
     def probe(self, source, kind):
         if kind == 'image':
@@ -95,7 +96,20 @@ class Backend:
             np.save(output, feature)
 
     def audio(self, source, target, start):
-        self.run_command(['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', str(source), '-t', '30', '-vn', '-ac', '1', '-ar', '16000', str(target)], timeout=120)
+        key = str(source)
+        if key not in self.audio_streams:
+            result = self.run_command(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_streams', '-of', 'json', key], text=True, timeout=60)
+            # iPhone spatial recordings also contain a regular stereo track.
+            # Automatic selection favors the four-channel APAC stream, for
+            # which FFmpeg has no decoder. Preserve the original; select the
+            # conventional track only for the transcription working copy.
+            streams = [s for s in json.loads(result.stdout)['streams']
+                       if s.get('codec_type') == 'audio' and s.get('codec_name') not in (None, 'apple_apac')]
+            if not streams:
+                raise RuntimeError(f'No compatible transcription audio track in {source.name}')
+            stream = max(streams, key=lambda s: s.get('disposition', {}).get('default', 0))
+            self.audio_streams[key] = stream['index']
+        self.run_command(['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', key, '-map', f'0:{self.audio_streams[key]}', '-t', '30', '-vn', '-ac', '1', '-ar', '16000', str(target)], timeout=120)
 
     def speech(self, audio, start):
         import mlx_whisper
