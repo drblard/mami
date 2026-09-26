@@ -162,6 +162,12 @@ after repair. New-build Photos access still requires user approval.
   navigates to the current month, ready for Apply without another click. The default
   month does not anchor a later custom month span. Native integration and explicit
   current-period mode-switch checks passed; the signed update is deployed.
+  `prototype-20260926T195034391717Z` bounds the picker to the earliest valid
+  capture date in the full local catalog through today (independent of search
+  and other active filters). Earlier/future day cells, months and years are hidden;
+  navigation and the year chooser respect those bounds. Presets and whole-period
+  selections are clipped to the same interval. Native integration passed and the
+  signed build is running. Bounds expand as older media enters the catalog.
 - **Lock grid** freezes the browsing catalog until Refresh or unlock. A permanent row
   shows how many new library items are waiting, without moving the grid vertically.
   Refresh retains the lock and reruns current filters/search; the pending count covers

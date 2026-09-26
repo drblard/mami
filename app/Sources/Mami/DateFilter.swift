@@ -91,11 +91,16 @@ struct DateFilterPopover: View {
     let clear: () -> Void
     let cancel: () -> Void
     private let calendar = Calendar.current
+    private let earliest: Date
+    private let latest: Date
 
-    init(from: Date, through: Date, enabled: Bool, apply: @escaping (Date, Date) -> Void,
+    init(from: Date, through: Date, enabled: Bool, earliest: Date? = nil, apply: @escaping (Date, Date) -> Void,
          clear: @escaping () -> Void, cancel: @escaping () -> Void) {
-        let start = enabled ? from : Calendar.current.startOfDay(for: Date())
-        let end = enabled ? through : start
+        let today = Calendar.current.startOfDay(for: Date())
+        let lower = min(earliest.map { Calendar.current.startOfDay(for: $0) } ?? today, today)
+        self.earliest = lower; self.latest = today
+        let start = min(max(enabled ? from : today, lower), today)
+        let end = min(max(enabled ? through : start, start), today)
         _draft = ViewState(initialValue: DateFilterDraft(from: start, through: end))
         _cursor = ViewState(initialValue: Calendar.current.dateInterval(of: .month, for: start)!.start)
         _mode = ViewState(initialValue: Calendar.current.isDate(start, inSameDayAs: end) ? .day : .range)
@@ -103,6 +108,16 @@ struct DateFilterPopover: View {
     }
 
     private var year: Int { calendar.component(.year, from: cursor) }
+    private var firstYear: Int { calendar.component(.year, from: earliest) }
+    private var lastYear: Int { calendar.component(.year, from: latest) }
+    private func clampDraft() {
+        draft.from = min(max(draft.from, earliest), latest)
+        draft.through = min(max(draft.through, draft.from), latest)
+    }
+    private func select(_ date: Date) {
+        draft.select(date, mode: mode)
+        clampDraft()
+    }
     private var guidance: String {
         switch mode {
         case .day: return "Click a date to select one day."
@@ -120,8 +135,9 @@ struct DateFilterPopover: View {
                 ForEach(DateFilterPreset.allCases) { preset in
                     DatePresetRow(title: preset.rawValue) {
                         let dates = preset.dates()
-                        apply(dates.0, dates.1)
+                        apply(max(dates.0, earliest), min(dates.1, latest))
                     }
+                    .disabled(preset.dates().1 < earliest)
                 }
                 Text("Last 7 / 30 days include today.").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
                 Divider().padding(.vertical, 6)
@@ -136,18 +152,22 @@ struct DateFilterPopover: View {
                     .onChange(of: mode) { _, value in
                         let now = Date()
                         draft.switchMode(value, now: now, calendar: calendar)
+                        clampDraft()
                         cursor = calendar.dateInterval(of: .month, for: now)!.start
                     }
                 HStack {
                     Button { navigate(-1) } label: { Image(systemName: "chevron.left") }
                         .accessibilityLabel("Previous calendar page")
+                        .disabled(!canNavigate(-1))
                     Button { navigate(1) } label: { Image(systemName: "chevron.right") }
                         .accessibilityLabel("Next calendar page")
+                        .disabled(!canNavigate(1))
                     Spacer()
                     Picker("Jump to year", selection: Binding(get: { year }, set: { value in
-                        cursor = calendar.date(from: DateComponents(year: value, month: calendar.component(.month, from: cursor), day: 1))!
+                        let date = calendar.date(from: DateComponents(year: value, month: calendar.component(.month, from: cursor), day: 1))!
+                        cursor = calendar.dateInterval(of: .month, for: min(max(date, earliest), latest))!.start
                     })) {
-                        ForEach(min(1900, year)...max(year, calendar.component(.year, from: Date()) + 1), id: \.self) { Text(String($0)).tag($0) }
+                        ForEach(firstYear...lastYear, id: \.self) { Text(String($0)).tag($0) }
                     }.frame(width: 150)
                     Button("Current month") { cursor = calendar.dateInterval(of: .month, for: Date())!.start }
                 }
@@ -157,14 +177,16 @@ struct DateFilterPopover: View {
                     else {
                         HStack(alignment: .top, spacing: 20) {
                             monthCalendar(cursor)
-                            monthCalendar(calendar.date(byAdding: .month, value: 1, to: cursor)!)
+                            let next = calendar.date(byAdding: .month, value: 1, to: cursor)!
+                            if next <= latest { monthCalendar(next) }
+                            else { Color.clear.frame(maxWidth: .infinity) }
                         }
                     }
                 }.frame(height: 250, alignment: .top)
                 Text(guidance).font(.caption).foregroundStyle(.secondary).lineLimit(2).frame(height: 30, alignment: .top)
                 Divider()
                 Text(DateFilterDraft.label(from: draft.from, through: draft.through)).font(.headline)
-                Text("Both endpoints included · media without a capture date is excluded.")
+                Text("Both endpoints included · limited to your library’s earliest date through today.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Clear", action: clear)
@@ -179,7 +201,19 @@ struct DateFilterPopover: View {
 
     private func navigate(_ direction: Int) {
         let unit: Calendar.Component = mode == .months || mode == .year ? .year : .month
-        cursor = calendar.date(byAdding: unit, value: direction * (mode == .year ? 12 : 1), to: cursor)!
+        let next = calendar.date(byAdding: unit, value: direction * (mode == .year ? 12 : 1), to: cursor)!
+        cursor = calendar.dateInterval(of: .month, for: min(max(next, earliest), latest))!.start
+    }
+
+    private func canNavigate(_ direction: Int) -> Bool {
+        if mode == .year {
+            let first = year - year % 12 + direction * 12
+            return first <= lastYear && first + 11 >= firstYear
+        }
+        let unit: Calendar.Component = mode == .months ? .year : .month
+        let next = calendar.date(byAdding: unit, value: direction, to: cursor)!
+        let interval = calendar.dateInterval(of: unit, for: next)!
+        return interval.start <= latest && interval.end > earliest
     }
 
     private func highlighted(_ start: Date, through end: Date) -> Bool {
@@ -191,11 +225,13 @@ struct DateFilterPopover: View {
             ForEach(1...12, id: \.self) { month in
                 let date = calendar.date(from: DateComponents(year: year, month: month, day: 1))!
                 let end = calendar.date(byAdding: .day, value: -1, to: calendar.dateInterval(of: .month, for: date)!.end)!
-                Button { draft.select(date, mode: mode) } label: {
+                if date <= latest && end >= earliest {
+                Button { select(date) } label: {
                     Text(date.formatted(.dateTime.month(.wide))).frame(maxWidth: .infinity, minHeight: 52)
                         .background(highlighted(date, through: end) ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel(date.formatted(.dateTime.month(.wide).year()))
+                }
             }
         }
     }
@@ -203,10 +239,10 @@ struct DateFilterPopover: View {
     private var yearGrid: some View {
         let first = year - year % 12
         return LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 14) {
-            ForEach(first..<(first + 12), id: \.self) { value in
+            ForEach(max(first, firstYear)...min(first + 11, lastYear), id: \.self) { value in
                 let date = calendar.date(from: DateComponents(year: value, month: 1, day: 1))!
                 let end = calendar.date(from: DateComponents(year: value, month: 12, day: 31))!
-                Button { draft.select(date, mode: .year) } label: {
+                Button { select(date) } label: {
                     Text(String(value)).frame(maxWidth: .infinity, minHeight: 52)
                         .background(highlighted(date, through: end) ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
@@ -232,7 +268,8 @@ struct DateFilterPopover: View {
                         let date = calendar.date(byAdding: .day, value: day - 1, to: start)!
                         let selected = highlighted(date, through: date)
                         let endpoint = calendar.isDate(date, inSameDayAs: draft.from) || calendar.isDate(date, inSameDayAs: draft.through)
-                        Button { draft.select(date, mode: mode) } label: {
+                        if date >= earliest && date <= latest {
+                        Button { select(date) } label: {
                             Text(String(day)).font(.system(size: 13, weight: calendar.isDateInToday(date) ? .bold : .regular))
                                 .frame(maxWidth: .infinity, minHeight: 27)
                                 .foregroundStyle(selected && endpoint ? Color.white : Color.primary)
@@ -241,6 +278,7 @@ struct DateFilterPopover: View {
                                 .contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityLabel(date.formatted(date: .complete, time: .omitted))
                             .accessibilityAddTraits(selected ? .isSelected : [])
+                        } else { Color.clear.frame(height: 27) }
                     } else { Color.clear.frame(height: 27) }
                 }
             }

@@ -236,6 +236,15 @@ actor SearchWorker {
     @Published var speechAvailable = false
     private var all: [Media] = []
     var catalogMedia: [Media] { all }
+    var earliestCaptureDate: Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd"
+        formatter.isLenient = false
+        return all.compactMap { media in
+            media.metadata.flatMap { formatter.date(from: String($0.sortDate.prefix(8))) }
+        }.min()
+    }
     private var byPath: [String: Media] = [:]
     private var generation = 0
     let worker = SearchWorker()

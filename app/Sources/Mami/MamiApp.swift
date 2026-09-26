@@ -500,7 +500,7 @@ struct LibraryView: View {
                     Label(library.dateEnabled ? DateFilterDraft.label(from: library.dateFrom, through: library.dateThrough) : "Capture date", systemImage: "calendar")
                 }
                     .popover(isPresented: $showDateRange) {
-                        DateFilterPopover(from: library.dateFrom, through: library.dateThrough, enabled: library.dateEnabled,
+                        DateFilterPopover(from: library.dateFrom, through: library.dateThrough, enabled: library.dateEnabled, earliest: library.earliestCaptureDate,
                             apply: { from, through in
                                 library.dateFrom = from; library.dateThrough = through
                                 library.dateEnabled = true; library.search(); showDateRange = false
@@ -864,7 +864,7 @@ struct MamiApp: App {
         draft.select(filterDay(2024, 4, 5), mode: .range, calendar: dateCalendar)
         draft.select(filterDay(2024, 3, 29), mode: .range, calendar: dateCalendar)
         try checkFilterDates((draft.from, draft.through), filterDay(2024, 3, 29), filterDay(2024, 4, 5))
-        let dateHost = NSHostingView(rootView: DateFilterPopover(from: filterDay(2026, 9, 7), through: filterDay(2026, 9, 20), enabled: true, apply: { _, _ in }, clear: {}, cancel: {}))
+        let dateHost = NSHostingView(rootView: DateFilterPopover(from: filterDay(2026, 9, 7), through: filterDay(2026, 9, 20), enabled: true, earliest: filterDay(2026, 1, 1), apply: { _, _ in }, clear: {}, cancel: {}))
         dateHost.appearance = NSAppearance(named: .darkAqua)
         let dateWindow = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 740, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
         dateWindow.contentView = dateHost
