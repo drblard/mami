@@ -22,6 +22,17 @@ class ImportTests(unittest.TestCase):
     def importer(self, **kwargs):
         return Importer(self.source, self.destination, 'Camera', date_reader=lambda _: ('2026-09-18', 'fixture'), **kwargs)
 
+    def test_exact_photos_destination_and_retry(self):
+        (self.source / 'a.mov').write_bytes(b'cloud original')
+        importer = self.importer(direct_destination=True)
+        importer.run()
+        self.assertEqual(importer.failed, 0)
+        self.assertEqual((self.destination / '2026/2026-09-18/a.mov').read_bytes(), b'cloud original')
+        self.assertFalse((self.destination / 'Camera').exists())
+        retry = self.importer(direct_destination=True)
+        retry.run()
+        self.assertEqual((retry.copied, retry.duplicates, retry.failed), (0, 1, 0))
+
     def test_verified_copy_duplicate_proxy_exclusion_and_collision(self):
         (self.source / 'a.mp4').write_bytes(b'original footage')
         (self.source / 'duplicate.MOV').write_bytes(b'original footage')

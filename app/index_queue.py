@@ -148,9 +148,17 @@ class Queue:
         self.scan_errors = 0
         self.phase, self.done, self.total, self.current = 'Discovering files', 0, 0, ''
         self.status(force=True)
-        if not self.root.is_dir():
-            raise FileNotFoundError(f'Media folder unavailable: {self.root}')
-        files, directories = [], [self.root]
+        roots = {self.root.resolve()}
+        with self.db() as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='media_roots'").fetchone():
+                roots.update(Path(row[0]).resolve() for row in db.execute('SELECT path FROM media_roots'))
+        available = {root for root in roots if root.is_dir()}
+        # Nested destinations are already covered by their parent. Offline roots
+        # retain their catalog entries and are retried on the next scan.
+        directories = [root for root in available if not any(parent in available for parent in root.parents)]
+        if not directories:
+            raise FileNotFoundError('Media folders unavailable; reconnect the destination drive')
+        files = []
         while directories:
             self.checkpoint()
             directory = directories.pop()

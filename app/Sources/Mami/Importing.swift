@@ -34,8 +34,10 @@ import SwiftUI
     private var buffer = Data()
     private var lastCopyCount = 0
     private var busy = false
+    private var photosDestination: URL?
     var removesAnySource: Bool { removeSource || policies.values.contains("remove") }
     var destination: URL {
+        if let photosDestination { return photosDestination }
         if CommandLine.arguments.contains("--ui-test"), let path = ProcessInfo.processInfo.environment["MAMI_IMPORT_TEST_DESTINATION"] { return URL(fileURLWithPath: path) }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals")
     }
@@ -78,11 +80,12 @@ import SwiftUI
         policies[file] = value == "default" ? nil : value
         if let source { UserDefaults.standard.set(policies, forKey: "import-policies:" + source.path) }
     }
-    func importPhotosFolder(_ folder: URL, policies photosPolicies: [String: String]) async throws {
+    func importPhotosFolder(_ folder: URL, destination: URL, policies photosPolicies: [String: String]) async throws {
         guard !running, !listing, !photosTransfer else { throw AppError.message("Camera import is busy. Photos will retry automatically.") }
         let previous = (source, device, removeSource, policies, sourceFiles)
         photosTransfer = true
-        defer { (source, device, removeSource, policies, sourceFiles) = previous; photosTransfer = false }
+        photosDestination = destination
+        defer { (source, device, removeSource, policies, sourceFiles) = previous; photosTransfer = false; photosDestination = nil }
         source = folder; device = "iCloud"; removeSource = false; policies = photosPolicies; sourceFiles = []
         start(photos: true)
         while running { try await Task.sleep(for: .milliseconds(250)) }
@@ -101,6 +104,7 @@ import SwiftUI
                               "--source", source.path, "--destination", destination.path, "--device", device,
                                "--catalog", Catalog.standard.database.path]
             if removeSource { task.arguments?.append("--remove-source") }
+            if photos { task.arguments?.append("--direct-destination") }
             let policyDirectory = Catalog.standard.directory.appendingPathComponent("import-policies")
             try FileManager.default.createDirectory(at: policyDirectory, withIntermediateDirectories: true)
             let policyFile = policyDirectory.appendingPathComponent(UUID().uuidString + ".json")
@@ -175,15 +179,10 @@ struct ImportSheet: View {
             GroupBox("iCloud Photos — cable-free") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(photos.status).font(.caption)
-                    Text("Only photos and videos captured in \(Calendar.current.component(.year, from: Date())). Older items stay in iCloud. Mami never deletes from Photos or iCloud.")
+                    Text("Configure the destination, start date and automatic import in Settings (⌘,).")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        if photos.enabled {
-                            Button("Check Photos now") { Task { await photos.scan() } }.disabled(photos.running || importing.running)
-                            Button("Turn off automatic import") { photos.disable() }
-                        } else {
-                            Button("Enable Photos import…") { photos.enable() }.disabled(photos.running)
-                        }
+                        SettingsLink { Text("iCloud import settings…") }
                         if photos.running { ProgressView().controlSize(.small) }
                     }
                     if let error = photos.error { Text(error).font(.caption).foregroundStyle(.orange) }

@@ -34,7 +34,8 @@ def sync_original(descriptor):
 
 class Importer:
     def __init__(self, source, destination, device, catalog=None, emit=lambda value: None, date_reader=None,
-                 remove_source=False, policy_json='{}'):
+                 remove_source=False, policy_json='{}', direct_destination=False):
+        self.direct_destination = direct_destination
         self.source, self.destination = Path(source).resolve(), Path(destination).resolve()
         if self.source == self.destination or self.source in self.destination.parents or self.destination in self.source.parents:
             raise ValueError('Choose a card or folder outside Originals')
@@ -240,7 +241,8 @@ class Importer:
         self.phase = 'Verifying copied bytes'
         if self.digest(part) != digest or Queue.signature(source) != signature:
             raise RuntimeError('Verification failed; saved attempt retained, no original published')
-        folder = self.destination / self.device / row['date'][:4] / row['date']
+        base = self.destination if self.direct_destination else self.destination / self.device
+        folder = base / row['date'][:4] / row['date']
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / source.name
         while True:
@@ -309,6 +311,7 @@ def main():
     for name in ('source', 'destination', 'device'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--catalog')
+    parser.add_argument('--direct-destination', action='store_true')
     parser.add_argument('--remove-source', action='store_true')
     parser.add_argument('--policy-json', default='{}')
     parser.add_argument('--policy-file')

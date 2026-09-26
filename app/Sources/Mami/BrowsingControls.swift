@@ -3,8 +3,23 @@ import AVFoundation
 import ImageIO
 
 @MainActor final class BrowserSelection: ObservableObject {
+    @Published var columns = 1
     @Published var focused: Media?
     @Published var preview: Selection?
+}
+
+enum GridNavigation {
+    static func target(index: Int, key: UInt16, count: Int, columns: Int) -> Int {
+        let width = max(1, columns)
+        switch key {
+        case 126: return index >= width ? index - width : index
+        case 125:
+            guard (index / width + 1) * width < count else { return index }
+            return min(count - 1, index + width)
+        case 123: return max(0, index - 1)
+        default: return min(count - 1, index + 1)
+        }
+    }
 }
 
 struct BrowserKeys: NSViewRepresentable {

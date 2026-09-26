@@ -40,7 +40,10 @@ under `~/mami-lab/apps` with a unique timestamp.
 - Large centered search, ⌘F search focus, capture-date sorting, and two-line
   capture metadata cards. Invalid camera GPS placeholders are excluded.
 - Clicking a card's details/padding selects it; clicking its media opens the preview.
-  Space toggles the selected item's preview. Plain arrows move through items, updating
+  Space toggles the selected item's preview. In the listing, Up/Down move by rows
+  using the current adaptive column count (including sidebar/resizing changes),
+  preserving the column where possible; Left/Right move by one item.
+  With a preview open, plain arrows move through items, updating
   an open preview. The selection stays highlighted and scrolls into view. Text entry
   and popovers retain normal keyboard behavior. Escape or the outside backdrop closes
   the preview; previous/next header buttons are removed.
@@ -228,15 +231,21 @@ videos, and downloads cloud-only data using `isNetworkAccessAllowed`. Mami never
 calls Photos modification or deletion APIs. Deleting a photo in the synced Photos
 library still propagates through iCloud, but an already imported Mami copy is independent.
 
-Only the current calendar year's capture dates are fetched from Photos (2026 at
-present). A half-open January 1 → next January 1 predicate runs inside PhotoKit
-before resource listing or downloads; undated/older assets are excluded. Retried
-exports are also restricted to that year. Existing older local artifacts are retained.
-The year rolls forward automatically in January. While enabled and Mami is open,
+Configure imports in **Settings (⌘,)**: choose the exact destination directory,
+an inclusive **Import from** date, and **Enable automatic import**. The initial
+date defaults to January 1 of this year and is persisted; it does not roll forward
+in January. The PhotoKit predicate excludes older/undated assets before downloads,
+and includes future captures after the configured date. Pending receipts follow
+the same date restriction. Changing the date does not remove existing copies;
+changing destination affects new imports and does not move existing originals.
+Unavailable destinations report an error rather than creating a replacement mount.
+While enabled and Mami is open,
 checks run every five minutes. Downloads are
 streamed and hashed off the UI thread, flushed and reread, then fed through the
 verified importer with source removal disabled. Copies go to
-`Originals/iCloud/year/date/`. Completed resources have individual receipts;
+`<chosen directory>/year/date/` (default `~/Media/Originals/iCloud`). Custom
+destinations are registered for background indexing; offline roots retain catalog
+entries. Completed resources have individual receipts;
 interrupted downloads restart that resource, retaining the failed attempt. A failed
 resource does not prevent other completed downloads from importing. Completed
 exports are excluded from future import passes. Formats outside JPG/JPEG, PNG,
@@ -244,11 +253,39 @@ HEIC, MP4 and MOV are reported as unsupported and left in Photos.
 
 Exports and receipts are retained in `~/Media/Incoming/.mami-photos`; unlike the
 destination's hard-linked staging, these consume additional media storage. Back
-up Incoming as well to retain this transfer history. The Photos integration builds
+up Incoming to retain unfinished downloads. Completed resource IDs, SHA-256 digests
+and sizes are also committed to `photos_import_history` in the backed-up catalog,
+independently of destination paths. Existing completed JSON receipts migrate into
+that history. The exporter consults history before requesting cloud bytes, so moving
+an original, disconnecting an archive, deleting staging after completion, or changing
+the destination does not trigger re-download. A changed/recreated System Photo
+Library with different PhotoKit local identifiers will require identity reconciliation.
+The Photos integration builds
 successfully; real authorization/cloud-download validation requires granting access
 in the final app. It has not yet been validated against the user's Photos library.
 
+### NFS / HDD archiving — planned
+
+Managed archiving is not implemented. The next layer should map content identities
+to one or more locations and stable storage-volume IDs, distinguish offline storage
+from a missing file, and retain local thumbnails/search data. A move must copy,
+flush and freshly hash the archive copy, durably commit its catalog location and
+recovery receipt, then remove the local original only after verification. Interrupted
+moves must resume safely. Playback and CapCut export must request the archive when
+offline (or explicitly restore a local working copy). Neither missing-file detection
+nor an offline mount should clear Photos import history; re-import needs an explicit
+repair action. Until this exists, manual moves do not automatically reconnect the
+browser to an arbitrary archive path.
+
 ## Selected clips island
+
+Settings/history/grid verification: `prototype-20260926T110320692870Z/ui-check`
+passed native row-aware arrow navigation, configurable Photos date boundaries,
+Photos history persistence after staging removal and snapshot restore, and the
+existing search/preview checks. `settings.png` retains the settings layout.
+24 Python import/index-queue tests passed, including exact destination layout,
+resumable verification and custom/offline indexing roots. Final checkbox styling
+was built in `prototype-20260926T110459411628Z`, which is open on the Mac.
 
 Use **+** on a thumbnail, or **Add to selection** in playback (Command-Shift-S),
 to collect originals across searches and filters. The collapsible right-hand island

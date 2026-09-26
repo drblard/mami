@@ -58,6 +58,23 @@ class QueueTests(unittest.TestCase):
     def queue(self, emit=lambda event: None):
         return Queue(self.database, self.root, self.base / 'artifacts', self.backend, emit)
 
+    def test_custom_and_offline_roots(self):
+        custom = self.base / 'custom'
+        custom.mkdir()
+        (custom / 'b.mov').write_bytes(b'cloud original')
+        q = self.queue()
+        with q.db() as db:
+            db.execute('CREATE TABLE media_roots(path TEXT PRIMARY KEY)')
+            for root in (custom, self.root, self.root / 'nested', self.base / 'offline'):
+                db.execute('INSERT INTO media_roots VALUES(?)', (str(root),))
+        q.scan()
+        with q.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM index_jobs').fetchone()[0], 2)
+        custom.rename(self.base / 'disconnected')
+        q.scan()
+        with q.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM index_jobs').fetchone()[0], 2)
+
     def test_crash_reuses_frames_embeddings_and_speech_chunks(self):
         q = self.queue()
         q.scan()

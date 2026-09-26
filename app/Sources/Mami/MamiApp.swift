@@ -377,7 +377,10 @@ struct LibraryView: View {
         let offset = (code == 123 || code == 126) ? -1 : 1
         let current = selection?.media ?? focusedMedia
         let index = current.flatMap { item in items.firstIndex { $0.id == item.id } }
-        let target = index.map { max(0, min(items.count - 1, $0 + offset)) } ?? 0
+        let target = index.map {
+            selection == nil ? GridNavigation.target(index: $0, key: code, count: items.count, columns: navigation.columns)
+                : max(0, min(items.count - 1, $0 + offset))
+        } ?? 0
         focus(items[target])
         if selection != nil { open(items[target], timestamp: items[target].match.timestamp) }
         return true
@@ -504,7 +507,11 @@ struct LibraryView: View {
                         MediaCard(media: media, nearby: (nearby && library.showingMatches) != commandHover, annotations: annotations, clips: clips,
                                   focused: focusedMedia?.id == media.id, select: { focus(media) }, open: { open($0, timestamp: $1) }).id(media.id)
                     }
-                }.padding(14)
+                }
+                .onGeometryChange(for: Int.self) { geometry in
+                    max(1, Int((geometry.size.width + 14) / (240 + 14)))
+                } action: { navigation.columns = $0 }
+                .padding(14)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onChange(of: focusedMedia?.id) { _, id in
                     if let id { proxy.scrollTo(id, anchor: .center) }
@@ -565,6 +572,7 @@ struct MamiApp: App {
     var body: some Scene {
         WindowGroup("Mami") { LibraryView() }
             .defaultSize(width: 1200, height: 800)
+        Settings { MamiSettings() }
     }
 }
 
@@ -673,6 +681,14 @@ struct MamiApp: App {
             throw AppError.message("Annotation history was not preserved")
         }
         let selectionCatalog = Catalog(directory: directory.appendingPathComponent("selection-check"))
+        let receiptURL = directory.appendingPathComponent("photos-resource-fixture.json")
+        let receipt = PhotosExporter.Receipt(file: "no-longer-local.mov", digest: "verified-fixture-digest", size: 123, imported: false)
+        try JSONEncoder().encode(receipt).write(to: receiptURL)
+        try PhotosExporter.markImported([receiptURL], catalog: selectionCatalog)
+        try FileManager.default.removeItem(at: receiptURL)
+        guard try selectionCatalog.photosHistory().contains("photos-resource-fixture") else {
+            throw AppError.message("Photos import history depended on staging or original location")
+        }
         let selectedMedia = Array(library.items.prefix(2))
         try selectionCatalog.synchronize(selectedMedia)
         let clips = ClipSelection(catalog: selectionCatalog)
@@ -693,6 +709,8 @@ struct MamiApp: App {
         try FileManager.default.createDirectory(at: selectedRestore.directory, withIntermediateDirectories: true)
         try FileManager.default.copyItem(at: selectionCatalog.backups.appendingPathComponent(savedSelection.file), to: selectedRestore.database)
         guard try selectedRestore.selectedClips() == clips.items else { throw AppError.message("Selection snapshot restore failed") }
+        guard try selectedRestore.photosHistory().contains("photos-resource-fixture") else { throw AppError.message("Photos import history backup restore failed") }
+        print("PHOTOS durable resource identity survives absent originals, staging removal and catalog restore")
         clips.move(clips.items[1].id, by: -1)
         guard clips.items.first?.assetID == selectedMedia[1].assetID else { throw AppError.message("Selection ordering failed") }
         print("SELECTION persistence, no-op backup, snapshot restore, ordering and two native file drag items passed")
@@ -712,6 +730,26 @@ struct MamiApp: App {
         }
         try await Task.sleep(for: .seconds(1))
         try snapshot("library.png")
+        let settingsHost = NSHostingView(rootView: MamiSettings())
+        settingsHost.appearance = NSAppearance(named: .darkAqua)
+        let settingsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 520),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
+        settingsWindow.contentView = settingsHost
+        settingsWindow.orderFrontRegardless()
+        try await Task.sleep(for: .milliseconds(300))
+        settingsHost.layoutSubtreeIfNeeded()
+        if let bitmap = settingsHost.bitmapImageRepForCachingDisplay(in: settingsHost.bounds) {
+            settingsHost.cacheDisplay(in: settingsHost.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("settings.png"))
+        }
+        settingsWindow.orderOut(nil)
+        let customStart = Date(timeIntervalSince1970: 1_750_000_000)
+        let customPredicate = PhotosExporter.fetchOptions(range: DateInterval(start: customStart, end: .distantFuture)).predicate!
+        guard customPredicate.evaluate(with: ["creationDate": customStart]),
+              customPredicate.evaluate(with: ["creationDate": customStart.addingTimeInterval(400 * 86400)]),
+              !customPredicate.evaluate(with: ["creationDate": customStart.addingTimeInterval(-1)]) else {
+            throw AppError.message("Configured Photos start date was not inclusive and open-ended")
+        }
         let range = PhotosExporter.yearRange()
         let predicate = PhotosExporter.fetchOptions(range: range).predicate!
         guard predicate.evaluate(with: ["creationDate": range.start]),
@@ -756,6 +794,24 @@ struct MamiApp: App {
         try await browserKey(49, characters: " ")
         guard navigation.preview == nil, navigation.focused != nil else { throw AppError.message("Space did not close preview and retain selection") }
         print("BROWSING Space toggle, arrow navigation, outside-click dismissal, original-pixel sizing and Photos year-boundary filtering passed")
+        navigation.focused = nil
+        try await browserKey(124, characters: "\u{f703}")
+        let firstGridItem = navigation.focused?.id
+        try await browserKey(125, characters: "\u{f701}")
+        let belowGridItem = navigation.focused?.id
+        guard belowGridItem != firstGridItem else { throw AppError.message("Down did not move to the next grid row") }
+        for _ in 0..<navigation.columns { try await browserKey(123, characters: "\u{f702}") }
+        guard navigation.focused?.id == firstGridItem else { throw AppError.message("Down moved by the wrong number of columns") }
+        for _ in 0..<navigation.columns { try await browserKey(124, characters: "\u{f703}") }
+        guard navigation.focused?.id == belowGridItem else { throw AppError.message("Grid row movement was inconsistent") }
+        try await browserKey(126, characters: "\u{f700}")
+        guard navigation.focused?.id == firstGridItem,
+              GridNavigation.target(index: 1, key: 126, count: 8, columns: 3) == 1,
+              GridNavigation.target(index: 5, key: 125, count: 8, columns: 3) == 7,
+              GridNavigation.target(index: 6, key: 125, count: 8, columns: 3) == 6 else {
+            throw AppError.message("Grid navigation boundaries failed")
+        }
+        print("GRID up/down move by \(navigation.columns) columns; first and partial last rows passed")
         guard MediaFormat.classify(width: 1920, height: 1080, orientation: 6) == .vertical,
               MediaFormat.classify(width: 1080, height: 1920) == .vertical,
               MediaFormat.classify(width: 1080, height: 1080) == .square,

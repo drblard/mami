@@ -106,6 +106,32 @@ struct Catalog: Sendable {
         }
     }
 
+    private func photosTables(_ db: SQLDatabase) throws {
+        try db.execute("CREATE TABLE IF NOT EXISTS photos_import_history(resource TEXT PRIMARY KEY, digest TEXT NOT NULL, size TEXT NOT NULL)")
+        try db.execute("CREATE TABLE IF NOT EXISTS media_roots(path TEXT PRIMARY KEY)")
+        for table in ["photos_import_history", "media_roots"] {
+            try db.execute("CREATE TRIGGER IF NOT EXISTS \(table)_INSERT AFTER INSERT ON \(table) BEGIN UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1; END")
+        }
+    }
+    func photosHistory() throws -> Set<String> {
+        try access { db in
+            try photosTables(db)
+            return Set(try db.rows("SELECT resource FROM photos_import_history").map { $0[0] })
+        }
+    }
+    func recordPhotosImport(resource: String, digest: String, size: Int64) throws {
+        try access { db in
+            try photosTables(db)
+            try db.execute("INSERT OR IGNORE INTO photos_import_history VALUES(?,?,?)", [resource, digest, String(size)])
+        }
+    }
+    func registerMediaRoot(_ url: URL) throws {
+        try access { db in
+            try photosTables(db)
+            try db.execute("INSERT OR IGNORE INTO media_roots VALUES(?)", [url.standardizedFileURL.path])
+        }
+    }
+
     private func selectionTable(_ db: SQLDatabase) throws {
         guard try db.rows("SELECT name FROM sqlite_master WHERE name='clip_selection'").isEmpty else { return }
         try db.transaction {

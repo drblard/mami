@@ -7,11 +7,24 @@ import SwiftUI
 @MainActor final class PhotosImporting: ObservableObject {
     static let shared = PhotosImporting()
     @Published private(set) var enabled = UserDefaults.standard.bool(forKey: "photos-import-enabled")
+    @Published var destination: URL = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "photos-import-destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals/iCloud").path) {
+        didSet { UserDefaults.standard.set(destination.path, forKey: "photos-import-destination") }
+    }
+    @Published var fromDate: Date = (UserDefaults.standard.object(forKey: "photos-import-from") as? Date) ?? PhotosExporter.yearRange().start {
+        didSet { UserDefaults.standard.set(fromDate, forKey: "photos-import-from") }
+    }
     @Published private(set) var running = false
-    @Published private(set) var status = "Import this year’s originals from your synced Photos library."
+    @Published private(set) var status = "Import originals from your synced Photos library."
     @Published private(set) var error: String?
     private var timer: Task<Void, Never>?
     private var cancellation: PhotosCancellation?
+
+    init() {
+        // Persist the initial January 1 default; it is a start date, not a rolling year filter.
+        if UserDefaults.standard.object(forKey: "photos-import-from") == nil {
+            UserDefaults.standard.set(fromDate, forKey: "photos-import-from")
+        }
+    }
 
     func startAutomatic() {
         guard !CommandLine.arguments.contains("--ui-test"), timer == nil else { return }
@@ -23,6 +36,7 @@ import SwiftUI
         }
     }
     func enable() {
+        UserDefaults.standard.set(fromDate, forKey: "photos-import-from")
         Task {
             let authorization = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
             guard authorization == .authorized || authorization == .limited else {
@@ -36,6 +50,7 @@ import SwiftUI
     func disable() {
         enabled = false; UserDefaults.standard.set(false, forKey: "photos-import-enabled")
         cancellation?.cancel()
+        if Importing.shared.photosTransfer { Importing.shared.stop() }
     }
     func scan() async {
         guard enabled, !running, !Importing.shared.running else { return }
@@ -48,9 +63,15 @@ import SwiftUI
         let cancellation = PhotosCancellation(); self.cancellation = cancellation
         defer { running = false; self.cancellation = nil }
         do {
+            let destination = self.destination
+            let range = DateInterval(start: Calendar.current.startOfDay(for: fromDate), end: Date.distantFuture)
+            guard FileManager.default.isWritableFile(atPath: destination.path) else {
+                throw AppError.message("Choose an available, writable destination in Settings. Reconnect the destination drive if it is offline.")
+            }
+            try Catalog.standard.registerMediaRoot(destination)
             let incoming = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Incoming/.mami-photos")
             let report = try await Task.detached(priority: .utility) { [self] in
-                try PhotosExporter.export(to: incoming, cancellation: cancellation) { message in
+                try PhotosExporter.export(to: incoming, range: range, cancellation: cancellation) { message in
                     Task { @MainActor in self.status = message }
                 }
             }.value
@@ -58,9 +79,10 @@ import SwiftUI
             // Feed independent exports through the same SHA-256 verified importer.
             // This source can never request removal, irrespective of camera settings.
             if !report.pending.isEmpty {
-                try await Importing.shared.importPhotosFolder(incoming, policies: report.policies)
+                try await Importing.shared.importPhotosFolder(incoming, destination: destination, policies: report.policies)
                 try await Task.detached(priority: .utility) { try PhotosExporter.markImported(report.pending) }.value
             }
+            CatalogBackups.shared.schedule()
             status = "Photos checked · \(report.downloaded) original resources downloaded · \(report.pending.count) independent copies verified"
             if report.unsupported > 0 { status += " · \(report.unsupported) unsupported resources left in Photos" }
             if !report.failures.isEmpty { error = "\(report.failures.count) Photos resources need attention. \(report.failures[0])" }
@@ -101,9 +123,10 @@ enum PhotosExporter {
         var policies: [String: String] = [:]
         var failures: [String] = []
     }
-    static func markImported(_ receipts: [URL]) throws {
+    static func markImported(_ receipts: [URL], catalog: Catalog = .standard) throws {
         for url in receipts {
             var receipt = try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: url))
+            try catalog.recordPhotosImport(resource: url.deletingPathExtension().lastPathComponent, digest: receipt.digest, size: receipt.size)
             receipt.imported = true
             try JSONEncoder().encode(receipt).write(to: url, options: .atomic)
         }
@@ -114,19 +137,25 @@ enum PhotosExporter {
         while let data = try handle.read(upToCount: 4 * 1024 * 1024), !data.isEmpty { hash.update(data: data) }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
-    static func export(to root: URL, cancellation: PhotosCancellation, progress: @escaping @Sendable (String) -> Void) throws -> Report {
+    static func export(to root: URL, range: DateInterval, cancellation: PhotosCancellation, progress: @escaping @Sendable (String) -> Void) throws -> Report {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         let receipts = root.appendingPathComponent(".receipts")
         try fm.createDirectory(at: receipts, withIntermediateDirectories: true)
-        let range = yearRange()
         let assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
         var report = Report()
+        var history = try Catalog.standard.photosHistory()
         // Past completed exports are excluded from subsequent importer passes.
         // The importer still freshly verifies any pending download or retry.
         for url in try fm.contentsOfDirectory(at: receipts, includingPropertiesForKeys: nil) where url.pathExtension == "json" {
             let receipt = try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: url))
-            if receipt.imported == true { report.policies[receipt.file] = "skip" }
+            let key = url.deletingPathExtension().lastPathComponent
+            if receipt.imported == true {
+                try Catalog.standard.recordPhotosImport(resource: key, digest: receipt.digest, size: receipt.size)
+                history.insert(key)
+                report.policies[receipt.file] = "skip"
+            }
+            else if history.contains(key) { continue }
             else if let date = receipt.captureDate, date >= range.start, date < range.end { report.pending.append(url) }
         }
         for index in 0..<assets.count {
@@ -141,6 +170,8 @@ enum PhotosExporter {
                     report.unsupported += 1; continue
                 }
                 let key = SHA256.hash(data: Data("\(asset.localIdentifier):\(resource.type.rawValue):\(resourceIndex):\(resource.originalFilename)".utf8)).map { String(format: "%02x", $0) }.joined()
+                // Import identity survives relocation, offline archives and staging cleanup.
+                if history.contains(key) { continue }
                 let receiptURL = receipts.appendingPathComponent(key + ".json")
                 if let data = try? Data(contentsOf: receiptURL), let receipt = try? JSONDecoder().decode(Receipt.self, from: data) {
                     if receipt.imported == true { continue }
