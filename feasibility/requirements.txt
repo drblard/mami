@@ -1,0 +1,7 @@
+mlx-whisper==0.4.3
+torch==2.14.0
+torchvision==0.29.0
+transformers==5.17.0
+pillow==12.3.0
+sentencepiece==0.2.2
+protobuf==7.36.2

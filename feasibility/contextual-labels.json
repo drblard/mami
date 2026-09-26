@@ -1,0 +1,10 @@
+{
+  "source_results": "search-20260925T164142944897Z/results.json",
+  "rank_base": 1,
+  "queries": [
+    {"query": "A video of the goat milking.", "relevant_ranks": [2, 3, 4]},
+    {"query": "A person feeds the goats.", "relevant_ranks": [4]},
+    {"query": "A family is picking plums.", "relevant_to_plum_picking_ranks": [1, 2, 3, 4, 5, 6, 7, 8], "multiple_people_ranks": [1, 3, 4, 5, 8], "note": "Family membership is not established. User says all results are from picking plums; do not equate this with visible harvesting in every sampled frame."},
+    {"query": "A person is picking strawberries.", "relevant_ranks": [], "from_plum_picking_ranks": [1, 4, 5, 6, 7, 8]}
+  ]
+}
