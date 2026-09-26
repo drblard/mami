@@ -175,8 +175,8 @@ struct ImportSheet: View {
             GroupBox("iCloud Photos — cable-free") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(photos.status).font(.caption)
-                    Text("Reads full originals from this Mac’s synced Photos library and keeps independent copies. Mami never deletes from Photos or iCloud.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Only photos and videos captured in \(Calendar.current.component(.year, from: Date())). Older items stay in iCloud. Mami never deletes from Photos or iCloud.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         if photos.enabled {
                             Button("Check Photos now") { Task { await photos.scan() } }.disabled(photos.running || importing.running)

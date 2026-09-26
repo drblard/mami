@@ -79,6 +79,14 @@ struct Media: Identifiable, Codable, Sendable {
     let metadata: CaptureMetadata?
     let assetID: String
     var title: String { url.lastPathComponent }
+    var device: String {
+        let parts = url.pathComponents
+        if let index = parts.lastIndex(of: "Originals"), parts.indices.contains(index + 1), parts[index + 1] != "iCloud-Photos" {
+            return parts[index + 1]
+        }
+        if let details = metadata?.details, details.count > 1, let camera = details.last { return camera }
+        return "Unknown device"
+    }
 }
 
 struct Configuration {
@@ -193,6 +201,9 @@ actor SearchWorker {
     @Published var showingMatches = false
     @Published var mode = "both"
     @Published var format = MediaFormat.all
+    @Published var deviceFilter = "All devices"
+    var devices: [String] { Set(all.map(\.device)).sorted() }
+    func matchesDevice(_ media: Media) -> Bool { deviceFilter == "All devices" || media.device == deviceFilter }
     @Published private(set) var formats: [String: MediaFormat] = [:]
     func matchesFormat(_ media: Media) -> Bool { format == .all || formats[media.path, default: .unknown] == format }
     @Published var speechAvailable = false
@@ -276,7 +287,7 @@ actor SearchWorker {
         generation += 1
         let current = generation
         let searchMode = mode
-        let paths = format == .all ? nil : all.filter { matchesFormat($0) }.map(\.path)
+        let paths = format == .all && deviceFilter == "All devices" ? nil : all.filter { matchesFormat($0) && matchesDevice($0) }.map(\.path)
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         error = nil
         if text.isEmpty { items = all; searching = false; showingMatches = false; status = "\(all.count) files"; return nil }

@@ -1,0 +1,103 @@
+import SwiftUI
+import AVFoundation
+import ImageIO
+
+@MainActor final class BrowserSelection: ObservableObject {
+    @Published var focused: Media?
+    @Published var preview: Selection?
+}
+
+struct BrowserKeys: NSViewRepresentable {
+    var command: (Bool) -> Void
+    var key: (UInt16) -> Bool
+    var mouse: (CGPoint, CGSize) -> Bool = { _, _ in false }
+    func makeNSView(context: Context) -> KeyView { KeyView() }
+    func updateNSView(_ view: KeyView, context: Context) { view.command = command; view.key = key; view.mouse = mouse }
+    final class KeyView: NSView {
+        var command: (Bool) -> Void = { _ in }
+        var key: (UInt16) -> Bool = { _ in false }
+        var mouse: (CGPoint, CGSize) -> Bool = { _, _ in false }
+        private var monitor: Any?
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged, .leftMouseDown]) { [weak self] event in
+                guard let self, let window = self.window else { return event }
+                if event.type == .flagsChanged {
+                    if window.isKeyWindow { self.command(event.modifierFlags.contains(.command)) }
+                    return event
+                }
+                guard event.window == window else { return event }
+                if event.type == .leftMouseDown {
+                    guard window.attachedSheet == nil, let content = window.contentView else { return event }
+                    let point = content.convert(event.locationInWindow, from: nil)
+                    let handled = content.bounds.contains(point) && self.mouse(point, content.bounds.size)
+                    if CommandLine.arguments.contains("--ui-test") { print("BROWSER MOUSE \(point), window=\(event.locationInWindow), frame=\(content.frame), outside-dismiss=\(handled)") }
+                    return handled ? nil : event
+                }
+                guard !(window.firstResponder is NSTextView), window.attachedSheet == nil,
+                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
+                return self.key(event.keyCode) ? nil : event
+            }
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+
+enum PreviewSizing {
+    static func dimensions(_ media: Media) async -> CGSize {
+        if media.kind == "video" {
+            do {
+                let asset = AVURLAsset(url: media.url)
+                guard let track = try await asset.loadTracks(withMediaType: .video).first else { return .zero }
+                let size = try await track.load(.naturalSize)
+                let transform = try await track.load(.preferredTransform)
+                let rect = CGRect(origin: .zero, size: size).applying(transform)
+                return CGSize(width: abs(rect.width), height: abs(rect.height))
+            } catch { return .zero }
+        }
+        return await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithURL(media.url as CFURL, nil),
+                  let values = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = values[kCGImagePropertyPixelWidth] as? NSNumber,
+                  let height = values[kCGImagePropertyPixelHeight] as? NSNumber else { return CGSize.zero }
+            let rotated = (5...8).contains((values[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1)
+            return CGSize(width: rotated ? height.doubleValue : width.doubleValue, height: rotated ? width.doubleValue : height.doubleValue)
+        }.value
+    }
+    static func fit(_ pixels: CGSize, into area: CGSize, scale: CGFloat) -> CGFloat {
+        guard pixels.width > 0, pixels.height > 0 else { return 1 }
+        return min(1, max(0.001, min(area.width * scale / pixels.width, area.height * scale / pixels.height)))
+    }
+}
+
+struct TagFilterPicker: View {
+    let available: [String]
+    @Binding var selected: Set<String>
+    @ViewState private var open = false
+    @ViewState private var query = ""
+    private var suggestions: [String] { available.filter { query.isEmpty || $0.localizedStandardContains(query) } }
+    var body: some View {
+        Button { open.toggle() } label: {
+            Label(selected.isEmpty ? "Tags & places" : "Tags & places (\(selected.count))", systemImage: "tag")
+        }.popover(isPresented: $open) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Filter tags & places").font(.headline)
+                TextField("Type a tag or place…", text: $query).textFieldStyle(.roundedBorder)
+                    .onSubmit { if let first = suggestions.first { selected.insert(first); query = "" } }
+                if available.isEmpty { Text("Add tags or a place from a media preview to organize your library.").foregroundStyle(.secondary) }
+                else if suggestions.isEmpty { Text("No matching tags or places").foregroundStyle(.secondary) }
+                ScrollView {
+                    LazyVStack(alignment: .leading) {
+                        ForEach(suggestions, id: \.self) { label in
+                            Toggle(label, isOn: Binding(get: { selected.contains(label) }, set: { enabled in
+                                if enabled { selected.insert(label) } else { selected.remove(label) }
+                            }))
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(maxHeight: 220)
+                HStack { Button("Clear") { selected = []; query = "" }; Spacer(); Button("Done") { open = false } }
+            }.padding(16).frame(width: 300)
+        }
+    }
+}

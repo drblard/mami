@@ -151,26 +151,27 @@ struct IndexingBar: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Label(indexing.label, systemImage: indexing.paused ? "pause.circle" : "arrow.triangle.2.circlepath")
+                    .lineLimit(1)
                 if !indexing.current.isEmpty { Text(indexing.current).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary) }
                 Spacer()
                 if indexing.total > 0 && indexing.active { Text("\(indexing.done) / \(indexing.total)").monospacedDigit().foregroundStyle(.secondary) }
                 Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(!indexing.running)
                 Button("Scan now") { indexing.scanNow() }
             }.font(.caption)
-            if indexing.active {
-                if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }
-                else { ProgressView().controlSize(.small) }
-            }
+             Group {
+                 if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }
+                 else { ProgressView().progressViewStyle(.linear) }
+             }.frame(height: 4).opacity(indexing.active ? 1 : 0)
             if indexing.phase.contains("GPU"), let usage = indexing.gpuUtilization {
                 Text("Graphics activity: \(Int(usage))% · Transcription resumes after a quiet interval. CapCut can stay open.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if let error = indexing.error {
                 HStack {
-                    Text(error).foregroundStyle(.orange).lineLimit(2)
+                    Text(error).foregroundStyle(.orange).lineLimit(1).help(error)
                     Button("Retry") { indexing.retry() }
                 }.font(.caption)
             }
-        }.padding(.horizontal, 14).padding(.bottom, 10)
+        }.frame(height: 64, alignment: .top).padding(.horizontal, 14).padding(.bottom, 10)
     }
 }

@@ -102,17 +102,18 @@ struct VideoSurface: NSViewRepresentable {
 struct TransportBar: View {
     @ObservedObject var transport: PlaybackTransport
     var shortcutsEnabled = true
+    var navigationShortcutsEnabled = true
     var body: some View {
         HStack(spacing: 14) {
             Button { transport.seek(to: transport.position - 5) } label: { Image(systemName: "gobackward.5") }
-                .keyboardShortcut(shortcutsEnabled ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
-                .help("Back 5 seconds (←)")
+                .keyboardShortcut(shortcutsEnabled && navigationShortcutsEnabled ? KeyboardShortcut(.leftArrow, modifiers: []) : nil)
+                .help(navigationShortcutsEnabled ? "Back 5 seconds (←)" : "Back 5 seconds")
             Button { transport.toggle() } label: {
                 Image(systemName: transport.playing ? "pause.fill" : "play.fill").frame(width: 22)
-            }.keyboardShortcut(shortcutsEnabled ? KeyboardShortcut(.space, modifiers: []) : nil).help("Play / pause (Space)")
+            }.keyboardShortcut(shortcutsEnabled && navigationShortcutsEnabled ? KeyboardShortcut(.space, modifiers: []) : nil).help(navigationShortcutsEnabled ? "Play / pause (Space)" : "Play / pause")
             Button { transport.seek(to: transport.position + 5) } label: { Image(systemName: "goforward.5") }
-                .keyboardShortcut(shortcutsEnabled ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
-                .help("Forward 5 seconds (→)")
+                .keyboardShortcut(shortcutsEnabled && navigationShortcutsEnabled ? KeyboardShortcut(.rightArrow, modifiers: []) : nil)
+                .help(navigationShortcutsEnabled ? "Forward 5 seconds (→)" : "Forward 5 seconds")
             Text(timeLabel(transport.position)).monospacedDigit().frame(width: 58)
             Slider(value: $transport.position, in: 0...max(0.001, transport.duration), onEditingChanged: transport.scrub)
                 .accessibilityLabel("Video position")

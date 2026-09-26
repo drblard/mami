@@ -8,7 +8,7 @@ import SwiftUI
     static let shared = PhotosImporting()
     @Published private(set) var enabled = UserDefaults.standard.bool(forKey: "photos-import-enabled")
     @Published private(set) var running = false
-    @Published private(set) var status = "Connect your synced Photos library for cable-free imports."
+    @Published private(set) var status = "Import this year’s originals from your synced Photos library."
     @Published private(set) var error: String?
     private var timer: Task<Void, Never>?
     private var cancellation: PhotosCancellation?
@@ -79,11 +79,20 @@ final class PhotosCancellation: @unchecked Sendable {
 }
 
 enum PhotosExporter {
+    static func yearRange(now: Date = Date(), calendar: Calendar = .current) -> DateInterval {
+        calendar.dateInterval(of: .year, for: now)!
+    }
+    static func fetchOptions(range: DateInterval) -> PHFetchOptions {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate < %@", range.start as NSDate, range.end as NSDate)
+        return options
+    }
     struct Receipt: Codable {
         let file: String
         let digest: String
         let size: Int64
         var imported: Bool?
+        var captureDate: Date?
     }
     struct Report: Sendable {
         var downloaded = 0
@@ -110,18 +119,20 @@ enum PhotosExporter {
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         let receipts = root.appendingPathComponent(".receipts")
         try fm.createDirectory(at: receipts, withIntermediateDirectories: true)
-        let assets = PHAsset.fetchAssets(with: nil)
+        let range = yearRange()
+        let assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
         var report = Report()
         // Past completed exports are excluded from subsequent importer passes.
         // The importer still freshly verifies any pending download or retry.
         for url in try fm.contentsOfDirectory(at: receipts, includingPropertiesForKeys: nil) where url.pathExtension == "json" {
             let receipt = try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: url))
             if receipt.imported == true { report.policies[receipt.file] = "skip" }
-            else { report.pending.append(url) }
+            else if let date = receipt.captureDate, date >= range.start, date < range.end { report.pending.append(url) }
         }
         for index in 0..<assets.count {
             try cancellation.check()
             let asset = assets.object(at: index)
+            guard let date = asset.creationDate, date >= range.start, date < range.end else { continue }
             let resources = PHAssetResource.assetResources(for: asset).filter { [.photo, .video, .pairedVideo].contains($0.type) }
             for (resourceIndex, resource) in resources.enumerated() {
                 try cancellation.check()
@@ -133,6 +144,7 @@ enum PhotosExporter {
                 let receiptURL = receipts.appendingPathComponent(key + ".json")
                 if let data = try? Data(contentsOf: receiptURL), let receipt = try? JSONDecoder().decode(Receipt.self, from: data) {
                     if receipt.imported == true { continue }
+                    if !report.pending.contains(receiptURL) { report.pending.append(receiptURL) }
                     if fm.isReadableFile(atPath: root.appendingPathComponent(receipt.file).path),
                        try hash(root.appendingPathComponent(receipt.file)) == receipt.digest { continue }
                     // Preserve a damaged export, but do not send it to the importer.
@@ -155,7 +167,7 @@ enum PhotosExporter {
                 defer { Darwin.close(directoryFD) }
                 guard fsync(directoryFD) == 0 else { throw AppError.message("Cannot flush Photos export") }
                 let size = (try fm.attributesOfItem(atPath: final.path)[.size] as? NSNumber)?.int64Value ?? 0
-                let receipt = Receipt(file: String(final.path.dropFirst(root.path.count + 1)), digest: digest, size: size, imported: false)
+                let receipt = Receipt(file: String(final.path.dropFirst(root.path.count + 1)), digest: digest, size: size, imported: false, captureDate: asset.creationDate)
                 try JSONEncoder().encode(receipt).write(to: receiptURL, options: .atomic)
                 if !report.pending.contains(receiptURL) { report.pending.append(receiptURL) }
                 report.downloaded += 1

@@ -22,12 +22,15 @@ under `~/mami-lab/apps` with a unique timestamp.
   It describes source shape, not platform eligibility or automatic cropping.
   One-pixel square-preview rounding is tolerated. The current library contains
   357 vertical and 141 horizontal files. Shape is applied before search's 60-file
-  cap in both visual and speech retrieval. Other browsing filters combine with it;
+   cap in both visual and speech retrieval. The **Device** filter also applies before
+   that cap, using the original's import-device folder or camera metadata for Photos
+   imports. Unknown devices remain selectable. Other browsing filters combine with it;
   **Clear filters** preserves the query and search scope.
 - Hover scrubbing from one-second JPEGs, off-main-thread decoding, a 192 MiB
   decoded-image cache, and neighboring-frame prefetch.
 - Search results default to a ±8-second neighborhood; disable the switch to
-  scrub the whole clip. One-second previews are discrete frames, not 30 fps video.
+   scrub the whole clip. Hold Command while hovering to temporarily invert that
+   range, including when the pointer is stationary. One-second previews are discrete frames, not 30 fps video.
 - Click a displayed moment to play the original with AVPlayer at that timestamp.
 - Romanian spoken-word search with accent-insensitive, whole-word matching.
   All requested words must occur in one transcript segment. Results display
@@ -36,11 +39,21 @@ under `~/mami-lab/apps` with a unique timestamp.
 - Offline cached browsing, with an explicit error if an original is unavailable.
 - Large centered search, ⌘F search focus, capture-date sorting, and two-line
   capture metadata cards. Invalid camera GPS placeholders are excluded.
-- Always-visible playback controls with a 100 ms position observer, ±5-second
-  seeking (← / →), mute (M), and scrub/resume. Space toggles playback; Escape
-  closes the preview. Previous/next results use ⌘← / ⌘→. Transport shortcuts are
-  suspended while the capture-info or tags/place popover is open.
+- Clicking a card's details/padding selects it; clicking its media opens the preview.
+  Space toggles the selected item's preview. Plain arrows move through items, updating
+  an open preview. The selection stays highlighted and scrolls into view. Text entry
+  and popovers retain normal keyboard behavior. Escape or the outside backdrop closes
+  the preview; previous/next header buttons are removed.
+- Preview fills the available window with a small dismissible backdrop. Fit mode
+  preserves aspect ratio and does not enlarge beyond 100% original pixels; a 100%
+  control enables native-pixel inspection with scrolling. The title shows zoom percent,
+  accounting for Retina scale and display rotation. Photos decode at original size.
+- Always-visible playback controls retain play/pause, ±5-second buttons, mute (M),
+  and scrub/resume. Space and arrows are reserved for browsing in the preview.
+  The indexing progress area and search spinner reserve space to avoid layout shifts.
 - Favorites, manual tags and place labels, and local label/favorites filters.
+  **Tags & places** opens a checklist with type-ahead suggestions; Return selects
+  the first suggestion. Selected labels match any of the chosen tags/places.
   Current labels and append-only edit history are stored transactionally in SQLite.
 - Persistent media catalog with capture metadata, content IDs and cached-frame
   references. Existing JSON annotation history is imported once and preserved.
@@ -61,7 +74,7 @@ The scanner reconnects moved files by content when their earlier location is
 unavailable. The separate one-off fingerprint experiment does not resume, but
 the application's scanner checkpoints hashes per file and reuses unchanged ones.
 Scanning ignores camera `.LRF` proxy files. A future explicit cleanup
-action should handle existing `.LRF` files; current tools do not delete media.
+action should handle existing `.LRF` files; verified import cleanup excludes them.
 Visual results remain approximate; returning 60 neighbors does not mean 60
 confirmed matches. The Python environment and model cache must remain installed.
 
@@ -215,7 +228,12 @@ videos, and downloads cloud-only data using `isNetworkAccessAllowed`. Mami never
 calls Photos modification or deletion APIs. Deleting a photo in the synced Photos
 library still propagates through iCloud, but an already imported Mami copy is independent.
 
-While enabled and Mami is open, checks run every five minutes. Downloads are
+Only the current calendar year's capture dates are fetched from Photos (2026 at
+present). A half-open January 1 → next January 1 predicate runs inside PhotoKit
+before resource listing or downloads; undated/older assets are excluded. Retried
+exports are also restricted to that year. Existing older local artifacts are retained.
+The year rolls forward automatically in January. While enabled and Mami is open,
+checks run every five minutes. Downloads are
 streamed and hashed off the UI thread, flushed and reread, then fed through the
 verified importer with source removal disabled. Copies go to
 `Originals/iCloud-Photos/year/date/`. Completed resources have individual receipts;
@@ -248,6 +266,14 @@ selection persistence/restoration/multi-file pasteboard, all 498 original paths,
 shape/search controls, the native import controller (new copy plus duplicate),
 and playback seeking/keyboard controls. `library.png` and `import-complete.png`
 retain the new island and Photos/import UI. This bundle was opened on the Mac.
+
+The newer `prototype-20260926T104006228706Z/ui-check` additionally passed native
+Space open/close, arrow preview navigation, outside-click dismissal, Retina-aware
+preview sizing, Photos year-boundary exclusion, and device-scoped search. It retains
+`large-preview.png`, `device-filter.png`, and compact-layout screenshots. Mouse tests
+dispatch directly through AppKit because posting mouse events while the Mac is
+locked replaces synthetic coordinates with the hardware cursor position. This
+newer bundle is the one opened on the Mac.
 
 Verification: `prototype-20260926T080506558677Z/ui-check` passed native search,
 shape filtering, import controls (one new file plus one verified catalog duplicate),

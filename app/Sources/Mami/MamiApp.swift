@@ -44,8 +44,11 @@ struct MediaCard: View {
     let nearby: Bool
     @ObservedObject var annotations: Annotations
     @ObservedObject var clips: ClipSelection
+    var focused = false
+    var select: () -> Void = {}
     let open: (Media, Double?) -> Void
     @ViewState private var hovered: Int?
+    @ViewState private var hoverFraction: CGFloat?
     @ViewState private var image: NSImage?
     @ViewState private var unavailable = false
     private var annotation: Annotation { annotations.value(for: media) }
@@ -98,8 +101,9 @@ struct MediaCard: View {
                     case .active(let point):
                         guard media.kind == "video" else { return }
                         let fraction = point.x / max(1, geometry.size.width)
+                        hoverFraction = fraction
                         hovered = min(scrubFrames.count - 1, max(0, Int(fraction * CGFloat(scrubFrames.count))))
-                    case .ended: hovered = nil
+                    case .ended: hovered = nil; hoverFraction = nil
                     }
                 }
                 .onTapGesture { open(media, sample.timestamp) }
@@ -115,6 +119,9 @@ struct MediaCard: View {
         }
         .padding(9)
         .background(Color(red: 0.14, green: 0.15, blue: 0.17), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(focused ? Color.accentColor : .clear, lineWidth: 2))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture { select() }
         .task(id: sample.frame) {
             let path = sample.frame
             let decoded = await FrameCache.shared.image(path)
@@ -131,7 +138,10 @@ struct MediaCard: View {
             }
         }
         .onChange(of: media.match.frame) { _, _ in hovered = nil }
-        .onChange(of: nearby) { _, _ in hovered = nil }
+        .onChange(of: nearby) { _, _ in
+            if let fraction = hoverFraction { hovered = min(scrubFrames.count - 1, max(0, Int(fraction * CGFloat(scrubFrames.count)))) }
+            else { hovered = nil }
+        }
         .contextMenu {
             Button("Play from match") { open(media, media.match.timestamp) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([media.url]) }
@@ -172,8 +182,7 @@ struct Playback: View {
     let selection: Selection
     @ObservedObject var annotations: Annotations
     @ObservedObject var clips: ClipSelection
-    var previous: (() -> Void)? = nil
-    var next: (() -> Void)? = nil
+    var close: () -> Void = {}
     @StateObject private var transport = PlaybackTransport()
     @ViewState private var photo: NSImage?
     @ViewState private var failure: String?
@@ -181,13 +190,16 @@ struct Playback: View {
     @ViewState private var editingMetadata = false
     @ViewState private var tags = ""
     @ViewState private var place = ""
-    @Environment(\.dismiss) private var dismiss
+    @ViewState private var pixels = CGSize.zero
+    @ViewState private var actualSize = false
+    @ViewState private var zoom: CGFloat = 1
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         VStack(spacing: 12) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text(selection.media.metadata?.date ?? selection.media.title).font(.headline)
+                    Text("\(selection.media.metadata?.date ?? selection.media.title) · \(Int((zoom * 100).rounded()))%").font(.headline)
                     Text(selection.media.metadata?.subtitle ?? selection.media.path).font(.caption).foregroundStyle(.secondary).help(selection.media.path)
                 }
                 Spacer()
@@ -222,10 +234,7 @@ struct Playback: View {
                             if let error = annotations.error { Text(error).foregroundStyle(.red).font(.caption) }
                         }.padding(20).frame(width: 340)
                     }
-                Button { previous?() } label: { Image(systemName: "chevron.left") }
-                    .disabled(previous == nil).keyboardShortcut(.leftArrow, modifiers: .command).help("Previous result (⌘←)")
-                Button { next?() } label: { Image(systemName: "chevron.right") }
-                    .disabled(next == nil).keyboardShortcut(.rightArrow, modifiers: .command).help("Next result (⌘→)")
+                Button(actualSize ? "Fit" : "100%") { actualSize.toggle() }.help("Fit to available space or show original pixels")
                 Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
                     .help("File and capture information")
                     .popover(isPresented: $showInfo) {
@@ -248,25 +257,40 @@ struct Playback: View {
                 Button(clips.contains(selection.media) ? "Remove from selection" : "Add to selection") { clips.toggle(selection.media) }
                     .disabled(!clips.ready).keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([selection.media.url]) }
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Done", action: close).keyboardShortcut(.cancelAction)
             }
             if let failure { ContentUnavailableView("Media unavailable", systemImage: "externaldrive.badge.exclamationmark", description: Text(failure)) }
-            else if selection.media.kind == "video" {
-                ZStack {
-                    VideoSurface(player: transport.player)
-                    if transport.player == nil { ProgressView("Opening video…") }
+            else {
+                GeometryReader { geometry in
+                    let fit = PreviewSizing.fit(pixels, into: geometry.size, scale: displayScale)
+                    let factor = actualSize ? 1 : fit
+                    let size = pixels == .zero ? geometry.size : CGSize(width: pixels.width * factor / displayScale, height: pixels.height * factor / displayScale)
+                    ScrollView([.horizontal, .vertical]) {
+                        Group {
+                            if selection.media.kind == "video" {
+                                ZStack {
+                                    VideoSurface(player: transport.player)
+                                    if transport.player == nil { ProgressView("Opening video…") }
+                                }
+                            } else if let photo { Image(nsImage: photo).resizable().scaledToFit() }
+                            else { ProgressView() }
+                        }.frame(width: size.width, height: size.height)
+                            .frame(minWidth: geometry.size.width, minHeight: geometry.size.height)
+                    }
+                    .onAppear { zoom = factor }
+                    .onChange(of: factor) { _, value in zoom = value }
                 }
-                TransportBar(transport: transport, shortcutsEnabled: !editingMetadata && !showInfo)
+                if selection.media.kind == "video" { TransportBar(transport: transport, shortcutsEnabled: !editingMetadata && !showInfo, navigationShortcutsEnabled: false) }
             }
-            else if let photo { Image(nsImage: photo).resizable().scaledToFit() }
-            else { ProgressView() }
         }
-        .padding().frame(minWidth: 850, minHeight: 580)
+        .padding()
         .task {
             guard FileManager.default.isReadableFile(atPath: selection.media.url.path) else {
                 failure = "The original file is offline or inaccessible. Cached previews remain available."
                 return
             }
+            pixels = await PreviewSizing.dimensions(selection.media)
+            guard !Task.isCancelled else { return }
             if selection.media.kind == "video" {
                 do {
                     let p = try await preparedPlayer(url: selection.media.url, timestamp: selection.timestamp ?? 0)
@@ -275,7 +299,7 @@ struct Playback: View {
                     transport.toggle()
                 } catch { if !Task.isCancelled { failure = error.localizedDescription } }
             } else {
-                photo = await FrameCache.shared.image(selection.media.url.path, maxPixelSize: 2048)
+                photo = await FrameCache.shared.image(selection.media.url.path, maxPixelSize: max(2048, Int(max(pixels.width, pixels.height))))
                 if photo == nil { failure = "Could not decode this photo." }
             }
         }
@@ -288,12 +312,21 @@ struct LibraryView: View {
     @StateObject private var library: Library
     @StateObject private var clips: ClipSelection
     @ViewState private var showClips = true
-    @ViewState private var selection: Selection?
+    @StateObject private var navigation: BrowserSelection
+    private var selection: Selection? {
+        get { navigation.preview }
+        nonmutating set { navigation.preview = newValue }
+    }
+    private var focusedMedia: Media? {
+        get { navigation.focused }
+        nonmutating set { navigation.focused = newValue }
+    }
+    @ViewState private var commandHover = false
     @ViewState private var nearby = true
     @ViewState private var kind = "all"
     @ViewState private var sort = "default"
     @ViewState private var favoritesOnly = false
-    @ViewState private var labelFilter = ""
+    @ViewState private var selectedLabels = Set<String>()
     @ViewState private var showImport = false
     @ObservedObject private var importing = Importing.shared
     @StateObject private var annotations = Annotations()
@@ -303,10 +336,11 @@ struct LibraryView: View {
     private var visibleItems: [Media] {
         let filtered = library.items.filter {
             let value = annotations.value(for: $0)
-            let labels = ([value.place] + value.tags).joined(separator: " ")
+            let labels = Set([value.place] + value.tags)
             return (kind == "all" || $0.kind == kind) && (!favoritesOnly || value.favorite)
                 && library.matchesFormat($0)
-                && (labelFilter.isEmpty || labels.localizedStandardContains(labelFilter))
+                && library.matchesDevice($0)
+                && (selectedLabels.isEmpty || !labels.isDisjoint(with: selectedLabels))
         }
         if sort == "default" && library.showingMatches { return filtered }
         return filtered.sorted {
@@ -316,25 +350,53 @@ struct LibraryView: View {
             return sort == "oldest" ? a < b : a > b
         }
     }
-    private var hasFilters: Bool { kind != "all" || library.format != .all || favoritesOnly || !labelFilter.isEmpty }
+    private var availableLabels: [String] { Set(annotations.values.values.flatMap { $0.tags + [$0.place] }.filter { !$0.isEmpty }).sorted() }
+    private var hasFilters: Bool { kind != "all" || library.format != .all || library.deviceFilter != "All devices" || favoritesOnly || !selectedLabels.isEmpty }
     private func clearFilters() {
-        kind = "all"; library.format = .all; favoritesOnly = false; labelFilter = ""
+        kind = "all"; library.format = .all; library.deviceFilter = "All devices"; favoritesOnly = false; selectedLabels = []
+    }
+    private func focus(_ media: Media) {
+        focusedMedia = media; searchFocused = false
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+    private func open(_ media: Media, timestamp: Double?) {
+        focus(media); selection = Selection(media: media, timestamp: timestamp)
+    }
+    private func handleKey(_ code: UInt16) -> Bool {
+        guard !showImport else { return false }
+        if code == 53, selection != nil { selection = nil; return true }
+        if code == 49 {
+            if selection != nil { selection = nil }
+            else if let item = focusedMedia, visibleItems.contains(where: { $0.id == item.id }) { open(item, timestamp: item.match.timestamp) }
+            else if let item = visibleItems.first { open(item, timestamp: item.match.timestamp) }
+            return true
+        }
+        guard [123, 124, 125, 126].contains(code) else { return false }
+        let items = visibleItems
+        guard !items.isEmpty else { return false }
+        let offset = (code == 123 || code == 126) ? -1 : 1
+        let current = selection?.media ?? focusedMedia
+        let index = current.flatMap { item in items.firstIndex { $0.id == item.id } }
+        let target = index.map { max(0, min(items.count - 1, $0 + offset)) } ?? 0
+        focus(items[target])
+        if selection != nil { open(items[target], timestamp: items[target].match.timestamp) }
+        return true
     }
     private func adjacent(to selection: Selection, offset: Int) -> Media? {
         let items = visibleItems
         guard let index = items.firstIndex(where: { $0.id == selection.media.id }), items.indices.contains(index + offset) else { return nil }
         return items[index + offset]
     }
-    @MainActor init(library: Library? = nil, clips: ClipSelection? = nil) {
+    @MainActor init(library: Library? = nil, clips: ClipSelection? = nil, navigation: BrowserSelection? = nil) {
         _library = StateObject(wrappedValue: library ?? Library())
         _clips = StateObject(wrappedValue: clips ?? ClipSelection())
+        _navigation = StateObject(wrappedValue: navigation ?? BrowserSelection())
     }
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 14) {
                 HStack {
                     Text("Mami").font(.system(size: 25, weight: .semibold, design: .rounded))
-                    Text("Your moments, within reach").font(.callout).foregroundStyle(.secondary)
                     Spacer()
                     Button(importing.running ? "Import progress…" : "Import media…") { showImport = true }
                     Button { showClips.toggle() } label: { Label("\(clips.items.count)", systemImage: "sidebar.right") }
@@ -351,7 +413,7 @@ struct LibraryView: View {
                         Button { library.query = ""; library.search() } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).foregroundStyle(.secondary).help("Clear search")
                     }
-                    if library.searching { ProgressView().controlSize(.small) }
+                    ProgressView().controlSize(.small).frame(width: 18, height: 18).opacity(library.searching ? 1 : 0)
                     Button("Search") { library.search() }.buttonStyle(.borderedProminent).controlSize(.large)
                         .disabled(!library.ready || library.searching)
                 }
@@ -376,7 +438,7 @@ struct LibraryView: View {
             HStack {
                 Text(hasFilters ? "\(visibleItems.count) shown · \(library.status)" : library.status)
                 Spacer()
-                Text("Hover to scrub · Click to open").foregroundStyle(.secondary)
+                Text("Space: preview · Arrows: browse · ⌘ hover: invert scrub").foregroundStyle(.secondary)
             }.font(.caption).padding(.horizontal, 14).padding(.bottom, 10)
             HStack {
                 Picker("Show", selection: $kind) {
@@ -404,11 +466,11 @@ struct LibraryView: View {
                 }.padding(.horizontal, 24).padding(.bottom, 8)
             }
             HStack {
-                Image(systemName: "tag").foregroundStyle(.secondary)
-                TextField("Filter your tags or places", text: $labelFilter).textFieldStyle(.roundedBorder).frame(maxWidth: 250)
-                if !labelFilter.isEmpty {
-                    Button { labelFilter = "" } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain)
-                }
+                TagFilterPicker(available: availableLabels, selected: $selectedLabels)
+                Picker("Device", selection: $library.deviceFilter) {
+                    Text("All devices").tag("All devices")
+                    ForEach(library.devices, id: \.self) { Text($0).tag($0) }
+                }.frame(maxWidth: 250).onChange(of: library.deviceFilter) { _, _ in library.search() }
                 if favoritesOnly { Text("Favorites").font(.caption).foregroundStyle(.pink) }
                 if hasFilters { Button("Clear filters") { clearFilters() }.font(.caption) }
                 Spacer()
@@ -421,12 +483,12 @@ struct LibraryView: View {
             HStack {
                 Label(backups.status, systemImage: "externaldrive.badge.checkmark").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Show backups") { NSWorkspace.shared.open(Catalog.standard.backups) }.font(.caption)
             }.padding(.horizontal, 14).padding(.bottom, 8)
             if let error = backups.error { Text(error).foregroundStyle(.red).font(.caption).padding() }
             IndexingBar()
             Divider()
             HStack(spacing: 0) {
+            ScrollViewReader { proxy in
             ScrollView {
                 if visibleItems.isEmpty, library.ready, !library.searching {
                     ContentUnavailableView {
@@ -439,14 +501,19 @@ struct LibraryView: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14)], spacing: 14) {
                     ForEach(visibleItems) { media in
-                        MediaCard(media: media, nearby: nearby && library.showingMatches, annotations: annotations, clips: clips) { item, timestamp in selection = Selection(media: item, timestamp: timestamp) }
+                        MediaCard(media: media, nearby: (nearby && library.showingMatches) != commandHover, annotations: annotations, clips: clips,
+                                  focused: focusedMedia?.id == media.id, select: { focus(media) }, open: { open($0, timestamp: $1) }).id(media.id)
                     }
                 }.padding(14)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: focusedMedia?.id) { _, id in
+                    if let id { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
             if showClips {
                 SelectionIsland(clips: clips, open: { clip in
                     let media = library.catalogMedia.first { $0.assetID == clip.assetID } ?? clip.media
-                    selection = Selection(media: media, timestamp: clip.timestamp)
+                    open(media, timestamp: clip.timestamp)
                 }, collapse: { showClips = false })
             }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -454,6 +521,13 @@ struct LibraryView: View {
         .frame(minWidth: 850, minHeight: 600)
         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
         .preferredColorScheme(.dark)
+        .background(BrowserKeys(command: { commandHover = $0 }, key: handleKey, mouse: { point, size in
+            guard selection != nil, !showImport,
+                  !CGRect(origin: .zero, size: size).insetBy(dx: 20, dy: 20).contains(point) else { return false }
+            selection = nil
+            return true
+        }).frame(width: 0, height: 0))
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in commandHover = false }
         .background(Button("Focus search") { searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden())
         .task { await library.load() }
         .task { await annotations.load() }
@@ -469,13 +543,19 @@ struct LibraryView: View {
         .task(id: indexing.catalogGeneration) {
             if indexing.catalogGeneration > 0 { await library.refreshCatalog(); clips.reconnect(library.catalogMedia) }
         }
-        .sheet(item: $selection) { item in
-            let before = adjacent(to: item, offset: -1)
-            let after = adjacent(to: item, offset: 1)
-            Playback(selection: item, annotations: annotations, clips: clips,
-                     previous: before.map { media in { selection = Selection(media: media, timestamp: media.match.timestamp) } },
-                     next: after.map { media in { selection = Selection(media: media, timestamp: media.match.timestamp) } })
-                .id(item.id)
+        .overlay {
+            if let item = selection {
+                GeometryReader { geometry in
+                    ZStack {
+                        Color.black.opacity(0.72).contentShape(Rectangle()).onTapGesture { selection = nil }
+                        Playback(selection: item, annotations: annotations, clips: clips, close: { selection = nil })
+                            .id(item.id)
+                            .frame(width: max(1, geometry.size.width - 40), height: max(1, geometry.size.height - 40))
+                            .background(Color(red: 0.08, green: 0.09, blue: 0.11), in: RoundedRectangle(cornerRadius: 14))
+                            .contentShape(Rectangle()).onTapGesture { }
+                    }.frame(width: geometry.size.width, height: geometry.size.height)
+                }
+            }
         }
         .sheet(isPresented: $showImport) { ImportSheet() }
     }
@@ -616,7 +696,8 @@ struct MamiApp: App {
         clips.move(clips.items[1].id, by: -1)
         guard clips.items.first?.assetID == selectedMedia[1].assetID else { throw AppError.message("Selection ordering failed") }
         print("SELECTION persistence, no-op backup, snapshot restore, ordering and two native file drag items passed")
-        let host = NSHostingView(rootView: LibraryView(library: library, clips: clips))
+        let navigation = BrowserSelection()
+        let host = NSHostingView(rootView: LibraryView(library: library, clips: clips, navigation: navigation))
         host.appearance = NSAppearance(named: .darkAqua)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -631,6 +712,50 @@ struct MamiApp: App {
         }
         try await Task.sleep(for: .seconds(1))
         try snapshot("library.png")
+        let range = PhotosExporter.yearRange()
+        let predicate = PhotosExporter.fetchOptions(range: range).predicate!
+        guard predicate.evaluate(with: ["creationDate": range.start]),
+              predicate.evaluate(with: ["creationDate": range.end.addingTimeInterval(-1)]),
+              !predicate.evaluate(with: ["creationDate": range.start.addingTimeInterval(-1)]),
+              !predicate.evaluate(with: ["creationDate": range.end]),
+              !predicate.evaluate(with: [:]) else { throw AppError.message("Photos year boundaries failed") }
+        guard PreviewSizing.fit(CGSize(width: 4000, height: 2000), into: CGSize(width: 1000, height: 800), scale: 2) == 0.5,
+              PreviewSizing.fit(CGSize(width: 100, height: 100), into: CGSize(width: 1000, height: 800), scale: 2) == 1 else {
+            throw AppError.message("Preview pixel sizing failed")
+        }
+        window.makeKeyAndOrderFront(nil)
+        app.activate(ignoringOtherApps: true)
+        window.makeFirstResponder(nil)
+        navigation.focused = library.items.first { $0.kind == "image" }
+        func browserKey(_ code: UInt16, characters: String) async throws {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                                        context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+            NSApp.postEvent(event, atStart: false)
+            try await Task.sleep(for: .milliseconds(400))
+        }
+        try await browserKey(49, characters: " ")
+        guard navigation.preview?.media.id == navigation.focused?.id, navigation.preview != nil else { throw AppError.message("Space did not open selected preview") }
+        try await Task.sleep(for: .seconds(1))
+        try snapshot("large-preview.png")
+        let previewID = navigation.preview!.media.id
+        try await browserKey(123, characters: "\u{f702}")
+        if navigation.preview?.media.id == previewID { try await browserKey(124, characters: "\u{f703}") }
+        guard navigation.preview?.media.id != previewID else { throw AppError.message("Arrows did not navigate preview") }
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            // Dispatch directly: postEvent substitutes the locked session's
+            // hardware cursor location for synthetic mouse coordinates.
+            let point = host.convert(NSPoint(x: 12, y: 400), to: nil)
+            let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+            app.sendEvent(event)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        guard navigation.preview == nil else { throw AppError.message("Click outside did not dismiss preview") }
+        try await browserKey(49, characters: " ")
+        guard navigation.preview != nil else { throw AppError.message("Space did not reopen preview") }
+        try await browserKey(49, characters: " ")
+        guard navigation.preview == nil, navigation.focused != nil else { throw AppError.message("Space did not close preview and retain selection") }
+        print("BROWSING Space toggle, arrow navigation, outside-click dismissal, original-pixel sizing and Photos year-boundary filtering passed")
         guard MediaFormat.classify(width: 1920, height: 1080, orientation: 6) == .vertical,
               MediaFormat.classify(width: 1080, height: 1920) == .vertical,
               MediaFormat.classify(width: 1080, height: 1080) == .square,
@@ -655,6 +780,18 @@ struct MamiApp: App {
         try snapshot("compact-filters.png")
         window.setContentSize(NSSize(width: 1200, height: 800))
         library.format = .all
+        if let device = library.devices.first {
+            library.deviceFilter = device
+            try await Task.sleep(for: .milliseconds(100))
+            await library.search()?.value
+            let count = library.catalogMedia.filter { $0.device == device }.count
+            guard library.items.count == min(60, count), library.items.allSatisfy({ $0.device == device }) else {
+                throw AppError.message("Device filter did not constrain search candidates")
+            }
+            try snapshot("device-filter.png")
+            library.deviceFilter = "All devices"
+            print("DEVICE filter passed: \(device), \(count) available originals")
+        }
         try await Task.sleep(for: .milliseconds(100))
         library.query = "bringing food to goats"
         await library.search()?.value
