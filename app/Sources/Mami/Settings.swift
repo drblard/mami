@@ -32,6 +32,14 @@ struct MamiSettings: View {
                 Button("Check Photos now") { Task { await photos.scan() } }
                     .disabled(!photos.enabled || busy || importing.running)
                 Text(photos.status).font(.caption)
+                if photos.needsPhotosAccess {
+                    HStack {
+                        Button("Allow Photos access…") { photos.enable() }.disabled(busy)
+                        Button("Open Photos privacy settings") {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!)
+                        }
+                    }
+                }
                 if photos.running {
                     Text("\(photos.transferred) originals saved and verified · Fetching and transfer run in parallel")
                         .font(.caption)

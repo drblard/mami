@@ -578,6 +578,18 @@ struct MamiApp: App {
 
 @main enum EntryPoint {
     @MainActor static func main() {
+        if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--image-probe" || CommandLine.arguments[1] == "--image-frame" {
+            do {
+                if CommandLine.arguments[1] == "--image-probe" {
+                    let data = try JSONSerialization.data(withJSONObject: ImageDecoding.metadata(CommandLine.arguments[2]))
+                    print(String(decoding: data, as: UTF8.self))
+                } else {
+                    guard CommandLine.arguments.count == 4 else { throw AppError.message("Image preview requires a target") }
+                    try ImageDecoding.preview(CommandLine.arguments[2], to: CommandLine.arguments[3])
+                }
+                exit(0)
+            } catch { fputs("\(error)\n", stderr); exit(1) }
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--scan-ui-test"), CommandLine.arguments.indices.contains(index + 1) {
             NSApplication.shared.setActivationPolicy(.accessory)
             Task {

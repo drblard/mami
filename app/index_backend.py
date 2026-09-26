@@ -8,6 +8,19 @@ from pathlib import Path
 
 
 class Backend:
+    metadata_version = 2
+
+    @staticmethod
+    def run_command(command, **kwargs):
+        try:
+            return subprocess.run(command, check=True, capture_output=True, **kwargs)
+        except subprocess.CalledProcessError as error:
+            detail = error.stderr.decode(errors='replace') if isinstance(error.stderr, bytes) else error.stderr
+            raise RuntimeError(f'{Path(command[0]).name}: {(detail or str(error)).strip()[-1800:]}') from error
+
+    @staticmethod
+    def image_helper():
+        return Path(__file__).resolve().parent.parent / 'MacOS/Mami'
     def __init__(self, artifacts):
         # mlx-whisper invokes ffmpeg by name when reading saved audio. Finder-
         # launched apps do not inherit Homebrew's bin directory from a shell.
@@ -18,9 +31,12 @@ class Backend:
         self.torch_configured = False
 
     def probe(self, source, kind):
+        if kind == 'image':
+            result = self.run_command([str(self.image_helper()), '--image-probe', str(source)], text=True, timeout=60)
+            return dict(metadata=json.loads(result.stdout), timestamps=[None], speech_times=[], metadataVersion=self.metadata_version)
         from lab import sample_times, last_frame_time
         from metadata import export_metadata
-        result = subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(source)], check=True, capture_output=True, text=True, timeout=60)
+        result = self.run_command(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(source)], text=True, timeout=60)
         probe = json.loads(result.stdout)
         record = dict(path=source.name, kind=kind, probe=probe)
         self.artifacts.mkdir(parents=True, exist_ok=True)
@@ -31,15 +47,18 @@ class Backend:
         length = float(probe.get('format', {}).get('duration', 0))
         timestamps = [None] if kind == 'image' else sorted(set(min(t, last_frame_time(record)) for t in sample_times(length, 1)))
         has_audio = any(s.get('codec_type') == 'audio' for s in probe['streams'])
-        return dict(metadata=metadata, timestamps=timestamps,
+        return dict(metadata=metadata, timestamps=timestamps, metadataVersion=self.metadata_version,
                     speech_times=list(range(0, math.ceil(length), 30)) if kind == 'video' and has_audio else [])
 
     def frame(self, source, target, timestamp):
+        if timestamp is None:
+            self.run_command([str(self.image_helper()), '--image-frame', str(source), str(target)], timeout=120)
+            return
         cmd = ['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-filter_threads', '1']
         if timestamp is not None:
             cmd += ['-ss', str(timestamp)]
         cmd += ['-i', str(source), '-frames:v', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease', '-q:v', '3', '-threads', '1', str(target)]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        self.run_command(cmd, timeout=120)
         from PIL import Image
         with Image.open(target) as image:
             image.verify()
@@ -76,7 +95,7 @@ class Backend:
             np.save(output, feature)
 
     def audio(self, source, target, start):
-        subprocess.run(['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', str(source), '-t', '30', '-vn', '-ac', '1', '-ar', '16000', str(target)], check=True, capture_output=True, timeout=120)
+        self.run_command(['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', str(source), '-t', '30', '-vn', '-ac', '1', '-ar', '16000', str(target)], timeout=120)
 
     def speech(self, audio, start):
         import mlx_whisper

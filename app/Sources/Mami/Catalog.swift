@@ -108,6 +108,7 @@ struct Catalog: Sendable {
 
     private func photosTables(_ db: SQLDatabase) throws {
         try db.execute("CREATE TABLE IF NOT EXISTS photos_import_history(resource TEXT PRIMARY KEY, digest TEXT NOT NULL, size TEXT NOT NULL)")
+        try db.execute("CREATE INDEX IF NOT EXISTS photos_import_digest ON photos_import_history(digest)")
         try db.execute("CREATE TABLE IF NOT EXISTS media_roots(path TEXT PRIMARY KEY)")
         for table in ["photos_import_history", "media_roots"] {
             try db.execute("CREATE TRIGGER IF NOT EXISTS \(table)_INSERT AFTER INSERT ON \(table) BEGIN UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1; END")

@@ -25,7 +25,12 @@ under `~/mami-lab/apps` with a unique timestamp.
    cap in both visual and speech retrieval. The **Device** filter also applies before
    that cap, using the original's import-device folder or camera metadata for Photos
    imports. Unknown devices remain selectable. Other browsing filters combine with it;
-  **Clear filters** preserves the query and search scope.
+   **Clear filters** preserves the query and search scope.
+   Camera metadata reads Apple QuickTime make/model for videos and ImageIO TIFF
+   make/model for photos (including HEIC). iCloud assets without a camera model,
+   such as screenshots or some edited exports, appear as **iCloud · Device
+   unavailable** rather than being guessed to come from a phone. Import history
+   identifies iCloud provenance even with a custom destination.
 - Hover scrubbing from one-second JPEGs, off-main-thread decoding, a 192 MiB
   decoded-image cache, and neighboring-frame prefetch.
 - Search results default to a ±8-second neighborhood; disable the switch to
@@ -281,6 +286,22 @@ already-downloaded originals finish transferring if macOS requires renewed Photo
 permission after an update. Settings shows fetching and saved-original progress
 separately; macOS unified logs expose status/errors under subsystem
 `local.mami.prototype`, category `PhotosImport`.
+
+Photos access failures now explicitly report **library import is incomplete**,
+with **Allow Photos access…** and a Photos privacy-settings link. A drained staging
+queue is not reported as a completed library import. Successful checks state how
+many matching Photos library items were actually enumerated.
+
+The `prototype-20260926T150611352384Z` build replaces FFmpeg photo decoding with
+native ImageIO (`--image-probe`, `--image-frame`). This fixes HEIC auxiliary-image
+filter conflicts without modifying originals. Video/audio errors now expose the
+actual FFmpeg diagnostic instead of just a long failed command. Metadata version
+upgrades refresh device labels while retaining visual and speech checkpoints.
+31 Python tests and native integration checks passed. Native decoding was verified
+against `IMG_4343.HEIC` and `IMG_4545.HEIC`; both produced correctly oriented 480×640
+previews. `live-metadata-repair.json` in that deployment records repair of 113 live
+indexed/failed iCloud items, including iPhone 16 Pro Max and iPhone 13 Pro Max
+identification, with zero recorded indexing errors afterward. This build is open.
 
 ### NFS / HDD archiving — planned
 

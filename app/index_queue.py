@@ -213,6 +213,12 @@ class Queue:
             self.done += 1
             self.status()
         self.repair_missing_artifacts()
+        version = getattr(self.backend, 'metadata_version', 0)
+        if version:
+            with self.db() as db:
+                for row in db.execute("SELECT asset,payload FROM index_units WHERE pipeline=? AND stage='metadata' AND ordinal=0", (PIPELINE,)).fetchall():
+                    if json.loads(row['payload']).get('metadataVersion', 0) < version:
+                        db.execute("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state IN ('complete','error')", (row['asset'],))
 
     def repair_missing_artifacts(self):
         # Completed jobs still need a lightweight artifact audit. Do no inference
@@ -281,8 +287,19 @@ class Queue:
         self.status(force=True)
         self.checkpoint()
         probe = self.unit(asset, 'metadata', 0)
-        if probe is None:
-            probe = self.backend.probe(Path(job['path']), job['kind'])
+        if probe is None or probe.get('metadataVersion', 0) < getattr(self.backend, 'metadata_version', 0):
+            refreshed = self.backend.probe(Path(job['path']), job['kind'])
+            if probe is None:
+                probe = refreshed
+            else:
+                # Metadata repair must not invalidate timestamp-aligned vectors
+                # or already-completed speech/frame checkpoints.
+                probe['metadata'] = refreshed['metadata']
+                probe['metadataVersion'] = refreshed.get('metadataVersion', 0)
+            with self.db() as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='photos_import_history'").fetchone():
+                    if db.execute('SELECT 1 FROM photos_import_history WHERE digest=? LIMIT 1', (asset.removeprefix('sha256:'),)).fetchone():
+                        probe['metadata']['source'] = 'iCloud'
             self.valid_source(job)
             self.store_unit(asset, 'metadata', 0, probe)
         timestamps = probe['timestamps']

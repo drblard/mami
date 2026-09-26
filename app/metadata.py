@@ -63,8 +63,13 @@ def export_metadata(inventory):
                     capture = datetime.fromisoformat(raw_date.replace('Z', '+00:00')).astimezone()
                     metadata['date'] = capture.strftime('%d %b %Y · %H:%M')
                     metadata['sortDate'] = capture.strftime('%Y%m%d%H%M%S')
-                camera = tags.get('encoder', '')
+                camera = ' '.join(tags.get('com.apple.quicktime.' + key, '').strip() for key in ('make', 'model')).strip()
+                if not camera:
+                    camera = ' '.join(tags.get(key, '').strip() for key in ('make', 'model')).strip()
+                if not camera and any(name in tags.get('encoder', '') for name in ('DJI', 'OsmoPocket')):
+                    camera = tags['encoder']
                 camera = camera.replace('OsmoPocket4P', 'Pocket 4P')
+                metadata['camera'] = camera
                 rate = float(Fraction(stream.get('avg_frame_rate', '0/1')))
                 resolution = '4K' if max(width, height) == 3840 else f'{width}×{height}'
                 metadata['duration'] = float(stream.get('duration') or record['probe']['format']['duration'])

@@ -75,6 +75,22 @@ class QueueTests(unittest.TestCase):
         with q.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM index_jobs').fetchone()[0], 2)
 
+    def test_metadata_upgrade_reuses_completed_inference(self):
+        q = self.queue()
+        q.scan(); q.work()
+        previous = (list(self.backend.frames), list(self.backend.vectors), list(self.backend.speech_calls))
+        original_probe = self.backend.probe
+        self.backend.metadata_version = 2
+        def upgraded(source, kind):
+            result = original_probe(source, kind)
+            result.update(metadata={'camera': 'Apple iPhone 16 Pro Max'}, metadataVersion=2)
+            return result
+        self.backend.probe = upgraded
+        q.scan(); q.work()
+        self.assertEqual(previous, (self.backend.frames, self.backend.vectors, self.backend.speech_calls))
+        with q.db() as db:
+            media = json.loads(db.execute('SELECT payload FROM media').fetchone()[0])
+            self.assertEqual(media['metadata']['camera'], 'Apple iPhone 16 Pro Max')
     def test_crash_reuses_frames_embeddings_and_speech_chunks(self):
         q = self.queue()
         q.scan()

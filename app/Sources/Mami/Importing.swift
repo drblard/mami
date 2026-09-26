@@ -185,6 +185,7 @@ struct ImportSheet: View {
             GroupBox("iCloud Photos — cable-free") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(photos.status).font(.caption)
+                    if photos.needsPhotosAccess { Button("Allow Photos access…") { photos.enable() }.disabled(photos.running) }
                     Text("Configure the destination, start date and automatic import in Settings (⌘,).")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {

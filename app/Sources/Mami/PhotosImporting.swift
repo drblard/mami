@@ -19,6 +19,7 @@ import OSLog
         didSet { Logger(subsystem: "local.mami.prototype", category: "PhotosImport").notice("\(self.status, privacy: .public)") }
     }
     @Published private(set) var transferred = 0
+    @Published private(set) var needsPhotosAccess = false
     @Published private(set) var error: String? {
         didSet { if let error { Logger(subsystem: "local.mami.prototype", category: "PhotosImport").error("\(error, privacy: .public)") } }
     }
@@ -46,9 +47,12 @@ import OSLog
         Task {
             let authorization = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
             guard authorization == .authorized || authorization == .limited else {
+                needsPhotosAccess = true
+                status = "Photos access required — library import is incomplete"
                 error = "Allow Mami access in System Settings → Privacy & Security → Photos."
                 return
             }
+            needsPhotosAccess = false
             enabled = true; UserDefaults.standard.set(true, forKey: "photos-import-enabled")
             await scan()
         }
@@ -102,9 +106,17 @@ import OSLog
                 throw error
             }
             CatalogBackups.shared.schedule()
-            status = "Photos checked · \(report.downloaded) resources fetched · \(transferred) originals saved and verified"
+            needsPhotosAccess = report.needsAccess
+            if report.needsAccess {
+                status = "Photos access required — library import is incomplete · \(transferred) staged originals saved this pass"
+            } else if !report.failures.isEmpty {
+                status = "Photos import incomplete — \(report.failures.count) resources need attention · \(transferred) originals saved this pass"
+            } else {
+                status = "Photos check complete · \(report.assets) matching library items checked · \(report.downloaded) resources fetched · \(transferred) originals saved this pass"
+            }
             if report.unsupported > 0 { status += " · \(report.unsupported) unsupported resources left in Photos" }
-            if !report.failures.isEmpty { error = "\(report.failures.count) Photos resources need attention. \(report.failures[0])" }
+            if report.needsAccess { error = "Allow Photos access to continue fetching the remaining library. Completed transfers are saved." }
+            else if !report.failures.isEmpty { error = "\(report.failures.count) Photos resources need attention. \(report.failures[0])" }
         } catch { self.error = error.localizedDescription; status = "Photos import needs attention" }
     }
 }
@@ -136,6 +148,8 @@ enum PhotosExporter {
         var captureDate: Date?
     }
     struct Report: Sendable {
+        var assets = 0
+        var needsAccess = false
         var downloaded = 0
         var unsupported = 0
         var failures: [String] = []
@@ -189,10 +203,13 @@ enum PhotosExporter {
         // requires Photos permission to be renewed after an app update.
         let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard authorization == .authorized || authorization == .limited else {
+            report.needsAccess = true
+            progress("Photos permission status: \(authorization.rawValue) — fetching is blocked")
             report.failures.append("Photos access is unavailable for this app build. Re-enable Photos import in Settings to request access. Completed downloads can still be saved.")
             return report
         }
         let assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
+        report.assets = assets.count
         for index in 0..<assets.count {
             try cancellation.check()
             let asset = assets.object(at: index)

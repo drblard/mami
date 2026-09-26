@@ -66,6 +66,8 @@ struct CaptureMetadata: Codable, Sendable {
     let tags: [String]
     let technical: [String]
     let sortDate: String
+    let camera: String?
+    let source: String?
     var subtitle: String { ([location].compactMap { $0 } + details).joined(separator: " · ") }
 }
 
@@ -81,10 +83,12 @@ struct Media: Identifiable, Codable, Sendable {
     var title: String { url.lastPathComponent }
     var device: String {
         let parts = url.pathComponents
-        if let index = parts.lastIndex(of: "Originals"), parts.indices.contains(index + 1), !["iCloud", "iCloud-Photos"].contains(parts[index + 1]) {
+        if metadata?.source != "iCloud", let index = parts.lastIndex(of: "Originals"), parts.indices.contains(index + 1), !["iCloud", "iCloud-Photos"].contains(parts[index + 1]) {
             return parts[index + 1]
         }
-        if let details = metadata?.details, details.count > 1, let camera = details.last { return camera }
+        if let camera = metadata?.camera, !camera.isEmpty { return camera }
+        if metadata?.camera == nil, let details = metadata?.details, details.count > 1, let camera = details.last { return camera }
+        if metadata?.source == "iCloud" || parts.contains("iCloud") || parts.contains("iCloud-Photos") { return "iCloud · Device unavailable" }
         return "Unknown device"
     }
 }
