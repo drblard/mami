@@ -135,12 +135,27 @@ after repair. New-build Photos access still requires user approval.
   an open preview. The selection stays highlighted and scrolls into view. Text entry
   and popovers retain normal keyboard behavior. Escape or the outside backdrop closes
   the preview; previous/next header buttons are removed.
-- **Date range…** filters capture dates inclusively. Search recognizes English month
+- **Capture date** opens a visual date filter with Today, Yesterday, Last 7 days,
+  Last 30 days and This month presets. Rolling-day presets include today; This month
+  selects the full calendar month. Presets apply immediately. Custom choices are
+  drafts until Apply; Cancel or dismiss leaves the active filter unchanged.
+  Day/Week modes select a single date or its locale-defined calendar week. Month(s)
+  selects one whole month, or a span between two clicked months (including across
+  years); Year selects the whole calendar year. Custom range uses first/last day
+  clicks on two adjacent month calendars. Reverse selections normalize automatically,
+  and a first click can be applied as a single day/month. Year jumping and previous/
+  next navigation avoid stepping through years month by month. The filter button
+  shows the actual selected dates; Clear/All dates removes the manual constraint.
+  Both endpoints are included. Search recognizes English month
   names/abbreviations with an optional year (`goats in September`, `goats in Sep 2025`),
   `in 2025`, `on 2026-09-01`, and `from 2026-09-01 to 2026-09-30` (also `between … and …`).
   An omitted year means the current year. The interpreted range is displayed; date-only
   queries browse all matching items. Date constraints intersect manual filters and apply
   before the 60-result search cap. Undated media are excluded when a date filter is active.
+  `prototype-20260926T191151652402Z` passed native integration and date-filter checks
+  for presets, leap day, DST, calendar weeks, single/multiple months, years and
+  reversed custom ranges. Its `ui-check/date-filter.png` retains the rendered picker;
+  the composited image was visually inspected. This signed build is deployed.
 - **Lock grid** freezes the browsing catalog until Refresh or unlock. A permanent row
   shows how many new library items are waiting, without moving the grid vertically.
   Refresh retains the lock and reruns current filters/search; the pending count covers

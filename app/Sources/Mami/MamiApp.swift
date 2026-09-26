@@ -496,20 +496,16 @@ struct LibraryView: View {
             }.padding(.horizontal, 24).padding(.bottom, 10)
             HStack {
                 TagFilterPicker(available: availableLabels, selected: $selectedLabels)
-                Button(library.dateEnabled ? "Date range ✓" : "Date range…") { showDateRange = true }
+                Button { showDateRange = true } label: {
+                    Label(library.dateEnabled ? DateFilterDraft.label(from: library.dateFrom, through: library.dateThrough) : "Capture date", systemImage: "calendar")
+                }
                     .popover(isPresented: $showDateRange) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Toggle("Filter capture dates", isOn: $library.dateEnabled)
-                            DatePicker("From", selection: $library.dateFrom, displayedComponents: .date)
-                            DatePicker("Through", selection: $library.dateThrough, displayedComponents: .date)
-                            Text("Both dates are included. Files without a capture date are excluded.").font(.caption)
-                            Text("Search: goats in September · in September 2025 · from 2026-09-01 to 2026-09-30").font(.caption)
-                            HStack {
-                                Button("Clear") { library.dateEnabled = false; library.search(); showDateRange = false }
-                                Spacer()
-                                Button("Apply") { library.dateEnabled = true; library.search(); showDateRange = false }
-                            }
-                        }.padding(16).frame(width: 380)
+                        DateFilterPopover(from: library.dateFrom, through: library.dateThrough, enabled: library.dateEnabled,
+                            apply: { from, through in
+                                library.dateFrom = from; library.dateThrough = through
+                                library.dateEnabled = true; library.search(); showDateRange = false
+                            }, clear: { library.dateEnabled = false; library.search(); showDateRange = false },
+                            cancel: { showDateRange = false })
                     }
                 Picker("Device", selection: $library.deviceFilter) {
                     Text("All devices").tag("All devices")
@@ -830,6 +826,47 @@ struct MamiApp: App {
             try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("settings.png"))
         }
         settingsWindow.orderOut(nil)
+        var dateCalendar = Calendar(identifier: .gregorian)
+        dateCalendar.timeZone = TimeZone(identifier: "Europe/Bucharest")!
+        dateCalendar.firstWeekday = 2
+        func filterDay(_ year: Int, _ month: Int, _ day: Int) -> Date {
+            dateCalendar.date(from: DateComponents(year: year, month: month, day: day))!
+        }
+        func checkFilterDates(_ dates: (Date, Date), _ from: Date, _ through: Date) throws {
+            guard dates.0 == from, dates.1 == through else { throw AppError.message("Date filter calendar boundary failed") }
+        }
+        let filterNow = filterDay(2024, 3, 31)
+        try checkFilterDates(DateFilterPreset.today.dates(now: filterNow, calendar: dateCalendar), filterNow, filterNow)
+        try checkFilterDates(DateFilterPreset.yesterday.dates(now: filterDay(2024, 3, 1), calendar: dateCalendar), filterDay(2024, 2, 29), filterDay(2024, 2, 29))
+        try checkFilterDates(DateFilterPreset.seven.dates(now: filterDay(2024, 4, 1), calendar: dateCalendar), filterDay(2024, 3, 26), filterDay(2024, 4, 1))
+        try checkFilterDates(DateFilterPreset.thirty.dates(now: filterNow, calendar: dateCalendar), filterDay(2024, 3, 2), filterNow)
+        try checkFilterDates(DateFilterPreset.month.dates(now: filterDay(2024, 2, 10), calendar: dateCalendar), filterDay(2024, 2, 1), filterDay(2024, 2, 29))
+        var draft = DateFilterDraft(from: filterNow, through: filterNow)
+        draft.select(filterNow, mode: .week, calendar: dateCalendar)
+        try checkFilterDates((draft.from, draft.through), filterDay(2024, 3, 25), filterNow)
+        draft.select(filterNow, mode: .day, calendar: dateCalendar)
+        try checkFilterDates((draft.from, draft.through), filterNow, filterNow)
+        draft.select(filterDay(2024, 2, 10), mode: .months, calendar: dateCalendar)
+        try checkFilterDates((draft.from, draft.through), filterDay(2024, 2, 1), filterDay(2024, 2, 29))
+        draft.select(filterDay(2023, 12, 10), mode: .months, calendar: dateCalendar)
+        try checkFilterDates((draft.from, draft.through), filterDay(2023, 12, 1), filterDay(2024, 2, 29))
+        draft.select(filterNow, mode: .year, calendar: dateCalendar)
+        try checkFilterDates((draft.from, draft.through), filterDay(2024, 1, 1), filterDay(2024, 12, 31))
+        draft.select(filterDay(2024, 4, 5), mode: .range, calendar: dateCalendar)
+        draft.select(filterDay(2024, 3, 29), mode: .range, calendar: dateCalendar)
+        try checkFilterDates((draft.from, draft.through), filterDay(2024, 3, 29), filterDay(2024, 4, 5))
+        let dateHost = NSHostingView(rootView: DateFilterPopover(from: filterDay(2026, 9, 7), through: filterDay(2026, 9, 20), enabled: true, apply: { _, _ in }, clear: {}, cancel: {}))
+        dateHost.appearance = NSAppearance(named: .darkAqua)
+        let dateWindow = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 740, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+        dateWindow.contentView = dateHost
+        dateWindow.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(250))
+        if let bitmap = dateHost.bitmapImageRepForCachingDisplay(in: dateHost.bounds) {
+            dateHost.cacheDisplay(in: dateHost.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("date-filter.png"))
+        }
+        dateWindow.orderOut(nil)
+        print("DATE FILTER presets, leap day, DST, calendar week, single/multiple months, year and reverse range passed")
         let customStart = Date(timeIntervalSince1970: 1_750_000_000)
         let customPredicate = PhotosExporter.fetchOptions(range: DateInterval(start: customStart, end: .distantFuture)).predicate!
         guard customPredicate.evaluate(with: ["creationDate": customStart]),
