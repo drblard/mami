@@ -1,5 +1,6 @@
 """Persistent local code-signing identity. Private material never leaves the Mac."""
 import json
+import fcntl
 import os
 from pathlib import Path
 import secrets
@@ -96,15 +97,24 @@ def sign(bundle):
     password = Path(identity['passwordFile']).read_text().strip()
     run(['/usr/bin/security', 'unlock-keychain', '-p', password, identity['keychain']])
     requirement = f'designated => identifier "local.mami.prototype" and certificate leaf = H"{identity["fingerprint"]}"'
-    try:
-        run(['/usr/bin/codesign', '--force', '--sign', identity['fingerprint'], '--keychain', identity['keychain'],
-             '--timestamp=none', '--requirements', requirement, str(bundle)])
-    except subprocess.CalledProcessError as error:
-        raise RuntimeError('Code signing failed: ' + error.stderr.decode(errors='replace').strip()
-                           + '\nIf this is the first build, approve the certificate from Terminal on the Mac:\n'
-                           + trust_command()) from None
+    # codesign also needs the identity in the user search list, even with an
+    # explicit --keychain. Serialize our builds and restore the original list.
+    with (DIRECTORY / 'signing.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        previous = shlex.split(run(['/usr/bin/security', 'list-keychains', '-d', 'user'], text=True).stdout)
+        try:
+            run(['/usr/bin/security', 'list-keychains', '-d', 'user', '-s', *dict.fromkeys([*previous, identity['keychain']])])
+            run(['/usr/bin/codesign', '--force', '--sign', identity['fingerprint'], '--keychain', identity['keychain'],
+                 '--timestamp=none', '--requirements', '=' + requirement, str(bundle)])
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError('Code signing failed: ' + error.stderr.decode(errors='replace').strip()
+                               + '\nIf this is the first build, approve the certificate from Terminal on the Mac:\n'
+                               + trust_command()) from None
+        finally:
+            run(['/usr/bin/security', 'list-keychains', '-d', 'user', '-s', *previous])
     run(['/usr/bin/codesign', '--verify', '--strict', '--verbose=2', str(bundle)])
-    (bundle.parent / 'signing-verification.txt').write_text(run(['/usr/bin/codesign', '-d', '-r-', '--verbose=4', str(bundle)], text=True).stderr)
+    details = run(['/usr/bin/codesign', '-d', '-r-', '--verbose=4', str(bundle)], text=True)
+    (bundle.parent / 'signing-verification.txt').write_text(details.stdout + details.stderr)
 
 
 if __name__ == '__main__':

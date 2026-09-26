@@ -52,6 +52,7 @@ import SwiftUI
             var environment = ProcessInfo.processInfo.environment
             environment["HF_HUB_OFFLINE"] = "1"
             environment["PYTHONUNBUFFERED"] = "1"
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
             task.environment = environment
             let stdin = Pipe(), stdout = Pipe()
             task.standardInput = stdin

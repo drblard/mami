@@ -136,6 +136,7 @@ actor SearchWorker {
         var env = ProcessInfo.processInfo.environment
         env["HF_HUB_OFFLINE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         task.environment = env
         let stdin = Pipe(), stdout = Pipe()
         task.standardInput = stdin

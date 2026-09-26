@@ -21,13 +21,26 @@ in the Mac's protected backup; don't commit it or generate a replacement certifi
 for each build. Packaging unlocks only this keychain, pins the designated requirement
 to the certificate fingerprint plus the existing bundle ID, and verifies the signed
 bundle. It records public signing details beside the bundle and never falls back
-to ad-hoc signing. The normal user keychain search list is preserved.
+to ad-hoc signing. Signing briefly adds the dedicated keychain to the search list
+(codesign requires this even with `--keychain`), serializes signing operations,
+then restores the original list in a `finally` block.
 
 This identity is for this local Mac workflow, not notarized public distribution.
 Switching from the old ad-hoc identity requires Photos approval once more. Permission
 retention must then be tested across two different signed builds before being marked
-verified. As of 2026-09-26, certificate creation is complete; interactive trust approval
-and that two-build Photos test are pending. The existing ad-hoc build keeps running.
+verified. As of 2026-09-26, interactive trust approval is complete. The signed build
+`prototype-20260926T170319871474Z` is open; `prototype-20260926T170515331283Z` is ready
+for the update test after the user grants Photos access to the signed identity.
+Both strictly verify against the same certificate-pinned requirement and have
+different signature hashes; the latter deployment records this in
+`signing-cross-build-check.json`. Actual Photos permission retention is still pending.
+
+All native worker launches set `PYTHONDONTWRITEBYTECODE=1`: Python cache files inside
+`Contents/Resources` invalidate the sealed app. Native integration checks (including
+search and real-media import) passed on the first build, followed by successful strict
+signature verification. Its signature also remained valid after opening the real
+library/indexer. When manually importing modules from a signed bundle for diagnostics,
+use `python -B` or the same environment variable to keep the bundle immutable.
 
 Agreed next priorities: finish signing/permission retention, then physical DJI
 verified-cleanup checks and `.LRF` handling, then English semantic retrieval over

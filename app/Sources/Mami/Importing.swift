@@ -99,6 +99,9 @@ import SwiftUI
             let config = try Configuration.load()
             let task = Process(), stdin = Pipe(), stdout = Pipe()
             task.executableURL = config.python
+            var environment = ProcessInfo.processInfo.environment
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            task.environment = environment
             task.arguments = [Bundle.main.resourceURL!.appendingPathComponent("import_media.py").path,
                               "--source", source.path, "--destination", destination.path, "--device", device,
                                "--catalog", Catalog.standard.database.path]
