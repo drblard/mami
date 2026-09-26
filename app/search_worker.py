@@ -16,12 +16,14 @@ def words(text):
     return re.findall(r'\w+', folded)
 
 
-def speech_hits(query, segments, by_path):
+def speech_hits(query, segments, by_path, allowed=None):
     terms = set(words(query))
     hits = []
     if not terms:
         return hits
     for path, segment in segments:
+        if allowed is not None and path not in allowed:
+            continue
         text = segment['text'].strip()
         if terms.issubset(set(words(text))) and path in by_path:
             timestamp = float(segment['start'])
@@ -131,11 +133,12 @@ def main():
             if not query or len(query) > 2000:
                 raise ValueError('Query must contain between 1 and 2000 characters')
             started = time.monotonic()
+            allowed = set(request['paths']) if 'paths' in request else None
             mode = request.get('mode', 'both')
             if mode not in ('both', 'visual', 'speech'):
                 raise ValueError('Unknown search mode')
             if mode == 'speech':
-                hits = speech_hits(query, segments, by_path)
+                hits = speech_hits(query, segments, by_path, allowed)
                 print(json.dumps({'hits': hits, 'elapsed': time.monotonic() - started, 'indexed_samples': len(samples)}, ensure_ascii=False), flush=True)
                 continue
             with contextlib.redirect_stdout(sys.stderr), torch.inference_mode():
@@ -148,14 +151,14 @@ def main():
             hits, seen = [], set()
             for i in np.argsort(-scores):
                 sample = samples[int(i)]
-                if sample['path'] in seen:
+                if sample['path'] in seen or (allowed is not None and sample['path'] not in allowed):
                     continue
                 seen.add(sample['path'])
                 hits.append({**sample, 'score': float(scores[i])})
                 if len(hits) >= 60:
                     break
             if mode == 'both':
-                hits = combine_hits(hits, speech_hits(query, segments, by_path))
+                hits = combine_hits(hits, speech_hits(query, segments, by_path, allowed))
             response = {'hits': hits, 'elapsed': time.monotonic() - started, 'indexed_samples': len(samples)}
         except Exception as exc:
             response = {'error': str(exc)}

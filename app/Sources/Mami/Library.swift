@@ -1,6 +1,48 @@
 import Foundation
 import AppKit
 import CryptoKit
+import ImageIO
+
+enum MediaFormat: String, CaseIterable, Identifiable, Sendable {
+    case all, vertical, horizontal, square, unknown
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .all: return "All shapes"
+        case .vertical: return "Vertical"
+        case .horizontal: return "Horizontal"
+        case .square: return "Square"
+        case .unknown: return "Unknown shape"
+        }
+    }
+    var guidance: String {
+        switch self {
+        case .all: return "Filter by the shape of the original footage"
+        case .vertical: return "Reels, TikTok & Shorts · Taller than wide"
+        case .horizontal: return "YouTube & widescreen · Wider than tall"
+        case .square: return "Social feeds · Equal width and height"
+        case .unknown: return "No readable preview to determine the shape"
+        }
+    }
+    static func classify(width: Double, height: Double, orientation: Int = 1) -> MediaFormat {
+        guard width > 0, height > 0, width.isFinite, height.isFinite else { return .unknown }
+        let ratio = (5...8).contains(orientation) ? height / width : width / height
+        // Allow one-pixel rounding in downscaled previews, not near-square crops.
+        if abs(width - height) <= 1 { return .square }
+        return ratio < 1 ? .vertical : .horizontal
+    }
+    static func read(_ media: [Media]) -> [String: MediaFormat] {
+        Dictionary(uniqueKeysWithValues: media.map { item in
+            guard let frame = item.frames.first,
+                  let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: frame.frame) as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+                  let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return (item.path, .unknown) }
+            let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+            return (item.path, classify(width: width.doubleValue, height: height.doubleValue, orientation: orientation))
+        })
+    }
+}
 
 struct Sample: Codable, Sendable {
     let path: String
@@ -102,9 +144,11 @@ actor SearchWorker {
         let error: String?
     }
 
-    func search(_ query: String, mode: String = "both") throws -> Reply {
+    func search(_ query: String, mode: String = "both", paths: [String]? = nil) throws -> Reply {
         guard let input, process?.isRunning == true else { throw AppError.message("Search process is not running.") }
-        var data = try JSONSerialization.data(withJSONObject: ["query": query, "mode": mode])
+        var request: [String: Any] = ["query": query, "mode": mode]
+        if let paths { request["paths"] = paths }
+        var data = try JSONSerialization.data(withJSONObject: request)
         data.append(10)
         try input.write(contentsOf: data)
         let reply = try JSONDecoder().decode(Reply.self, from: readLine())
@@ -148,6 +192,9 @@ actor SearchWorker {
     @Published var searching = false
     @Published var showingMatches = false
     @Published var mode = "both"
+    @Published var format = MediaFormat.all
+    @Published private(set) var formats: [String: MediaFormat] = [:]
+    func matchesFormat(_ media: Media) -> Bool { format == .all || formats[media.path, default: .unknown] == format }
     @Published var speechAvailable = false
     private var all: [Media] = []
     private var byPath: [String: Media] = [:]
@@ -191,6 +238,7 @@ actor SearchWorker {
                 return try Catalog.standard.media()
             }.value
             CatalogBackups.shared.schedule()
+            formats = await Task.detached(priority: .utility) { MediaFormat.read(media) }.value
             all = media
             byPath = Dictionary(uniqueKeysWithValues: media.map { ($0.path, $0) })
             items = media
@@ -207,6 +255,7 @@ actor SearchWorker {
     func refreshCatalog() async {
         do {
             let media = try await Task.detached(priority: .utility) { try Catalog.standard.media() }.value
+            formats = await Task.detached(priority: .utility) { MediaFormat.read(media) }.value
             all = media
             byPath = Dictionary(uniqueKeysWithValues: media.map { ($0.path, $0) })
             if !showingMatches { items = media; status = "\(media.count) files · Local search ready" }
@@ -226,6 +275,7 @@ actor SearchWorker {
         generation += 1
         let current = generation
         let searchMode = mode
+        let paths = format == .all ? nil : all.filter { matchesFormat($0) }.map(\.path)
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         error = nil
         if text.isEmpty { items = all; searching = false; showingMatches = false; status = "\(all.count) files"; return nil }
@@ -236,7 +286,7 @@ actor SearchWorker {
         return Task {
             defer { if generation == current { Indexing.shared.setSearchBusy(false) } }
             do {
-                let reply = try await worker.search(text, mode: searchMode)
+                let reply = try await worker.search(text, mode: searchMode, paths: paths)
                 guard generation == current else { return }
                 items = (reply.hits ?? []).compactMap { sample in
                     guard let original = byPath[sample.path] else { return nil }

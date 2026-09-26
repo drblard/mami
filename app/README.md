@@ -9,11 +9,21 @@ under `~/mami-lab/apps` with a unique timestamp.
 - Lazy media grid for all 498 files, video/photo filters, Reveal in Finder.
 - Persistent offline SigLIP process: the model stays loaded between searches.
 - Up to 60 distinct files per visual query, starting at each file's best frame.
-- Search defaults to **Both**: visual and Romanian spoken-word results are merged
+- Search defaults to **Visuals & speech**: visual and Romanian spoken-word results are merged
   using reciprocal ranks, with duplicate files combined. Speech evidence and its
   exact segment timestamp are retained when a file matches spoken words. This
   does not imply both searches matched the same moment. Visual-only and spoken-
   word-only modes remain available.
+- Search scope is beside the search field, with explicit **Visuals only** and
+  **Speech only** options. The **Shape** filter offers Vertical (Reels, TikTok &
+  Shorts), Horizontal (YouTube & widescreen), Square (social feeds), and Unknown
+  shape. Classification reads display-oriented cached preview headers off the UI
+  thread, including EXIF orientation, so it works without reading originals.
+  It describes source shape, not platform eligibility or automatic cropping.
+  One-pixel square-preview rounding is tolerated. The current library contains
+  357 vertical and 141 horizontal files. Shape is applied before search's 60-file
+  cap in both visual and speech retrieval. Other browsing filters combine with it;
+  **Clear filters** preserves the query and search scope.
 - Hover scrubbing from one-second JPEGs, off-main-thread decoding, a 192 MiB
   decoded-image cache, and neighboring-frame prefetch.
 - Search results default to a ±8-second neighborhood; disable the switch to
@@ -176,6 +186,10 @@ Artifacts live under `~/mami-lab/index-artifacts` and are fsynced before their
 checkpoint commits. Crash-orphaned outputs are retained. On restart, interrupted
 jobs return to the queue and valid units are reused. A source changing during
 processing invalidates that job rather than publishing mixed-version results.
+Completed incremental jobs also audit preview/vector existence during scans.
+Missing artifacts are recreated individually; rebuilding a preview reconnects
+its existing embedding instead of repeating inference. This audit does not yet
+repair the separate legacy experimental index or detect byte-level cache corruption.
 Chunked speech can lose context at chunk boundaries; it does not establish an
 accuracy improvement over whole-clip transcription.
 

@@ -90,6 +90,37 @@ class QueueTests(unittest.TestCase):
         with q.db() as db:
             self.assertEqual(db.execute('SELECT revision FROM state').fetchone()[0], revision)
 
+    def test_completed_job_repairs_preview_without_repeating_inference(self):
+        q = self.queue()
+        q.scan()
+        q.work()
+        with q.db() as db:
+            asset = db.execute('SELECT asset FROM index_jobs').fetchone()[0]
+        old = q.unit(asset, 'frame', 0)['frame']
+        Path(old).unlink()  # Isolated Linux test fixture, never a Mac artifact.
+        q.scan()
+        q.work()
+        repaired = q.unit(asset, 'frame', 0)['frame']
+        self.assertNotEqual(old, repaired)
+        self.assertTrue(Path(repaired).is_file())
+        self.assertEqual(q.unit(asset, 'embedding', 0)['sample']['frame'], repaired)
+        self.assertEqual(len(self.backend.frames), 4)
+        self.assertEqual(len(self.backend.vectors), 3)
+        self.assertEqual(self.backend.speech_calls, [0, 30])
+
+    def test_completed_job_repairs_only_missing_vector(self):
+        q = self.queue()
+        q.scan()
+        q.work()
+        with q.db() as db:
+            asset = db.execute('SELECT asset FROM index_jobs').fetchone()[0]
+        Path(q.unit(asset, 'embedding', 1)['vector']).unlink()
+        q.scan()
+        q.work()
+        self.assertEqual(len(self.backend.frames), 3)
+        self.assertEqual(len(self.backend.vectors), 4)
+        self.assertEqual(self.backend.speech_calls, [0, 30])
+
     def test_crash_between_speech_chunks_keeps_completed_transcript(self):
         q = self.queue()
         q.scan()

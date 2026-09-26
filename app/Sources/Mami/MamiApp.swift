@@ -288,6 +288,7 @@ struct LibraryView: View {
             let value = annotations.value(for: $0)
             let labels = ([value.place] + value.tags).joined(separator: " ")
             return (kind == "all" || $0.kind == kind) && (!favoritesOnly || value.favorite)
+                && library.matchesFormat($0)
                 && (labelFilter.isEmpty || labels.localizedStandardContains(labelFilter))
         }
         if sort == "default" && library.showingMatches { return filtered }
@@ -297,6 +298,10 @@ struct LibraryView: View {
             if a.isEmpty { return false }; if b.isEmpty { return true }
             return sort == "oldest" ? a < b : a > b
         }
+    }
+    private var hasFilters: Bool { kind != "all" || library.format != .all || favoritesOnly || !labelFilter.isEmpty }
+    private func clearFilters() {
+        kind = "all"; library.format = .all; favoritesOnly = false; labelFilter = ""
     }
     private func adjacent(to selection: Selection, offset: Int) -> Media? {
         let items = visibleItems
@@ -331,38 +336,50 @@ struct LibraryView: View {
                 .background(Color(red: 0.16, green: 0.17, blue: 0.20), in: RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.12), lineWidth: 1))
                 .frame(maxWidth: 820).frame(maxWidth: .infinity)
-                Text(library.mode == "speech" ? "Search Romanian speech · Accents are optional"
+                if library.speechAvailable {
+                    Picker("Search", selection: $library.mode) {
+                        Text("Visuals & speech").tag("both")
+                        Text("Visuals only").tag("visual")
+                        Text("Speech only").tag("speech")
+                    }.pickerStyle(.segmented).frame(maxWidth: 440)
+                        .accessibilityLabel("Search content")
+                        .onChange(of: library.mode) { _, _ in library.search() }
+                }
+                Text(library.mode == "speech" ? "Find Romanian words spoken in videos · Accents are optional"
                      : library.mode == "both" ? "Search visuals and Romanian speech together · Matches may be approximate"
                      : "Try “bringing food to goats”, “picking plums” or “grilling by a river”")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 18)
             HStack {
-                Text(library.status)
+                Text(hasFilters ? "\(visibleItems.count) shown · \(library.status)" : library.status)
                 Spacer()
-                Text("Hover to scrub · Click to play").foregroundStyle(.secondary)
+                Text("Hover to scrub · Click to open").foregroundStyle(.secondary)
             }.font(.caption).padding(.horizontal, 14).padding(.bottom, 10)
             HStack {
-                if library.speechAvailable {
-                    Picker("Search in", selection: $library.mode) {
-                        Text("Both").tag("both")
-                        Text("Visual").tag("visual")
-                        Text("Spoken words").tag("speech")
-                    }.frame(width: 230)
-                    .onChange(of: library.mode) { _, _ in library.search() }
-                }
                 Picker("Show", selection: $kind) {
                     Text("All media").tag("all")
                     Text("Videos").tag("video")
                     Text("Photos").tag("image")
                 }.pickerStyle(.segmented).frame(width: 260)
+                Picker("Shape", selection: $library.format) {
+                    ForEach(MediaFormat.allCases) { format in Text(format.label).tag(format) }
+                }.frame(width: 190)
+                    .help("Vertical: Reels, TikTok & Shorts. Horizontal: YouTube & widescreen. Square: social feeds. Filters original shape; does not crop or resize.")
+                    .onChange(of: library.format) { _, _ in library.search() }
                 Picker("Sort", selection: $sort) {
                     Text(library.showingMatches ? "Best match" : "Newest first").tag("default")
                     Text("Capture date: newest").tag("newest")
                     Text("Oldest first").tag("oldest")
                 }.labelsHidden().frame(width: 135)
-                Toggle(isOn: $favoritesOnly) { Image(systemName: "heart.fill") }.toggleStyle(.button).help("Show favorites only")
+                Toggle(isOn: $favoritesOnly) { Image(systemName: "heart.fill") }.toggleStyle(.button).help("Show favorites only").accessibilityLabel("Favorites only")
                 Spacer()
             }.padding(.horizontal, 24).padding(.bottom, 10)
+            if library.format != .all {
+                HStack {
+                    Text(library.format.guidance).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                }.padding(.horizontal, 24).padding(.bottom, 8)
+            }
             HStack {
                 Image(systemName: "tag").foregroundStyle(.secondary)
                 TextField("Filter your tags or places", text: $labelFilter).textFieldStyle(.roundedBorder).frame(maxWidth: 250)
@@ -370,6 +387,7 @@ struct LibraryView: View {
                     Button { labelFilter = "" } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain)
                 }
                 if favoritesOnly { Text("Favorites").font(.caption).foregroundStyle(.pink) }
+                if hasFilters { Button("Clear filters") { clearFilters() }.font(.caption) }
                 Spacer()
                 if library.showingMatches {
                     Toggle("Scrub ±8 seconds around match", isOn: $nearby).toggleStyle(.switch).controlSize(.small)
@@ -387,7 +405,13 @@ struct LibraryView: View {
             Divider()
             ScrollView {
                 if visibleItems.isEmpty, library.ready, !library.searching {
-                    ContentUnavailableView("No matches", systemImage: "magnifyingglass", description: Text(favoritesOnly || !labelFilter.isEmpty ? "Try clearing the favorites or tag filter." : "Try fewer words or another media filter. Spoken-word search matches words within one transcript segment; Romanian accents are optional."))
+                    ContentUnavailableView {
+                        Label(hasFilters ? "No media fits these filters" : "No search results", systemImage: "magnifyingglass")
+                    } description: {
+                        Text(hasFilters ? "Try another shape or clear the filters to see more of your library." : "Try fewer words. Speech search finds Romanian words within a single spoken passage; accents are optional.")
+                    } actions: {
+                        if hasFilters { Button("Clear filters") { clearFilters() } }
+                    }
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14)], spacing: 14) {
                     ForEach(visibleItems) { media in
@@ -551,6 +575,31 @@ struct MamiApp: App {
         }
         try await Task.sleep(for: .seconds(1))
         try snapshot("library.png")
+        guard MediaFormat.classify(width: 1920, height: 1080, orientation: 6) == .vertical,
+              MediaFormat.classify(width: 1080, height: 1920) == .vertical,
+              MediaFormat.classify(width: 1080, height: 1080) == .square,
+              MediaFormat.classify(width: 0, height: 1080) == .unknown,
+              !library.formats.values.contains(.unknown) else { throw AppError.message("Display shape classification failed") }
+        print("SHAPES \(Dictionary(grouping: library.formats.values, by: { $0.rawValue }).mapValues(\.count))")
+        for format in [MediaFormat.vertical, .horizontal, .square] {
+            library.format = format
+            library.query = "goats"
+            // Let the view's automatic filter-change search settle before awaiting this query.
+            try await Task.sleep(for: .milliseconds(100))
+            await library.search()?.value
+            let available = library.formats.values.filter { $0 == format }.count
+            guard library.items.count == min(60, available), library.items.allSatisfy({ library.matchesFormat($0) }) else {
+                throw AppError.message("Shape filter failed for \(format): \(library.items.count) of \(available)")
+            }
+            try await Task.sleep(for: .milliseconds(200))
+            try snapshot("shape-\(format.rawValue).png")
+        }
+        window.setContentSize(NSSize(width: 850, height: 650))
+        try await Task.sleep(for: .milliseconds(200))
+        try snapshot("compact-filters.png")
+        window.setContentSize(NSSize(width: 1200, height: 800))
+        library.format = .all
+        try await Task.sleep(for: .milliseconds(100))
         library.query = "bringing food to goats"
         await library.search()?.value
         guard library.items.count == 60, library.showingMatches else { throw AppError.message("UI search failed") }

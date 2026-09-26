@@ -3,6 +3,13 @@ from search_worker import speech_hits, combine_hits
 
 
 class SpeechSearchTests(unittest.TestCase):
+    def test_format_scope_is_applied_before_speech_limit(self):
+        frames = {f'file-{i}': [dict(path=f'file-{i}', timestamp=0, frame='cached')] for i in range(80)}
+        segments = [(path, dict(text='capre', start=0)) for path in frames]
+        allowed = {'file-79'}
+        self.assertEqual([h['path'] for h in speech_hits('capre', segments, frames, allowed)], ['file-79'])
+        self.assertEqual(speech_hits('capre', segments, frames, set()), [])
+
     def test_both_fuses_ranks_and_preserves_spoken_moment(self):
         visual = [{'path': 'visual-only', 'score': .9, 'timestamp': 1},
                   {'path': 'shared', 'score': .3, 'timestamp': 50}]

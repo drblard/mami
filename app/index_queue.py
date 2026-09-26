@@ -188,7 +188,7 @@ class Queue:
                         # New assets with partial previews still have a queue job.
                     if not known and not job:
                         db.execute("INSERT INTO index_jobs(asset,path,kind,signature,logical,state) VALUES(?,?,?,?,?,'queued')", (asset, str(path), EXTENSIONS[path.suffix.lower()], signature, 'library:' + asset))
-                    elif job and job['state'] != 'complete':
+                    elif job:
                         db.execute('UPDATE index_jobs SET path=?,signature=? WHERE asset=? AND (path != ? OR signature != ?)', (str(path), signature, asset, str(path), signature))
                 if changed:
                     self.status(changed=True)
@@ -199,6 +199,23 @@ class Queue:
                 self.status(error=f'{path.name}: {error}')
             self.done += 1
             self.status()
+        self.repair_missing_artifacts()
+
+    def repair_missing_artifacts(self):
+        # Completed jobs still need a lightweight artifact audit. Do no inference
+        # and hold no catalog lock while checking the filesystem.
+        with self.db() as db:
+            rows = db.execute("SELECT u.asset,u.stage,u.payload FROM index_units u JOIN index_jobs j ON j.asset=u.asset WHERE j.state='complete' AND u.pipeline=? AND u.stage IN ('frame','embedding')", (PIPELINE,)).fetchall()
+        damaged = set()
+        for row in rows:
+            self.checkpoint()
+            value = json.loads(row['payload'])
+            key = 'frame' if row['stage'] == 'frame' else 'vector'
+            if not Path(value[key]).is_file():
+                damaged.add(row['asset'])
+        if damaged:
+            with self.db() as db:
+                db.executemany("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state='complete'", [(asset,) for asset in damaged])
 
     def unit(self, asset, stage, ordinal):
         with self.db() as db:
@@ -278,11 +295,16 @@ class Queue:
             self.status()
             self.checkpoint()
             self.phase = 'Indexing visual content'
-            if self.unit(asset, 'embedding', ordinal) is None:
+            embedding = self.unit(asset, 'embedding', ordinal)
+            if embedding is None:
                 target = self.target(asset, '.npy')
                 self.backend.embedding(Path(sample['frame']), target)
                 self.valid_source(job)
                 self.store_unit(asset, 'embedding', ordinal, dict(sample=sample, vector=str(target)))
+            elif embedding['sample'] != sample:
+                # A recreated preview has a new immutable path, but the vector
+                # for this same content/timestamp remains valid.
+                self.store_unit(asset, 'embedding', ordinal, dict(sample=sample, vector=embedding['vector']))
             self.done += 1
             self.status()
         self.publish(job, probe['metadata'], frames)
