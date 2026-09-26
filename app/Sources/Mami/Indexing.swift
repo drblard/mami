@@ -123,7 +123,7 @@ import SwiftUI
         do {
             var data = try JSONSerialization.data(withJSONObject: value)
             data.append(10)
-            try input.write(contentsOf: data)
+            try WorkerPipe.write(data, to: input)
         } catch { self.error = "Could not control indexing: \(error.localizedDescription)" }
     }
     func togglePause() { send(["action": paused ? "resume" : "pause"]) }

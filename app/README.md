@@ -4,6 +4,22 @@ SwiftUI macOS browser backed by the existing local experiments. The application
 reads the original media, cached JPEGs, and index; all deployments are created
 under `~/mami-lab/apps` with a unique timestamp.
 
+### Worker-pipe crash fix (2026-09-26)
+
+The macOS launchd log confirmed that Mami PID 63898 exited on SIGPIPE at
+18:16:06 +0300 while opening a preview during Photos import. Preview lifecycle
+events send busy/idle commands to workers; a finished batch can close stdin
+before the UI has consumed its final output and cleared the pipe. All worker
+command writes now use descriptor-local `F_SETNOSIGPIPE`, returning a catchable
+EPIPE instead of terminating the app. Scheduling updates to an already-finished
+import batch are harmless; its final stdout and exit status still determine the
+result. Child process signal handling is unchanged.
+
+Build `prototype-20260926T152137745992Z` passed `--worker-pipe-test` (live command
+delivery plus 100 writes after the reader closes) and the native integration
+suite, including previews and real-media Photos transfers. It also includes the
+permanently allocated Settings transfer-status rows.
+
 ## Implemented
 
 - Lazy media grid for all 498 files, video/photo filters, Reveal in Finder.

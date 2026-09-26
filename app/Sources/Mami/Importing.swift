@@ -166,7 +166,10 @@ import SwiftUI
         do {
             var data = try JSONSerialization.data(withJSONObject: ["action": action])
             data.append(10)
-            try input.write(contentsOf: data)
+            try WorkerPipe.write(data, to: input)
+        } catch let error as POSIXError where error.code == .EPIPE && ["busy", "idle"].contains(action) {
+            // A completed batch no longer needs foreground scheduling updates.
+            // Its stdout reader still owns final progress and exit handling.
         } catch { self.error = error.localizedDescription }
     }
     func togglePause() { send(progress?.paused == true ? "resume" : "pause") }

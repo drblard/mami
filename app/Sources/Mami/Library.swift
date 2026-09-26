@@ -162,7 +162,7 @@ actor SearchWorker {
         if let paths { request["paths"] = paths }
         var data = try JSONSerialization.data(withJSONObject: request)
         data.append(10)
-        try input.write(contentsOf: data)
+        try WorkerPipe.write(data, to: input)
         let reply = try JSONDecoder().decode(Reply.self, from: readLine())
         if let error = reply.error { throw AppError.message(error) }
         return reply
