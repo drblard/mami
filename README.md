@@ -43,5 +43,6 @@ manual labels, content-based relocation, and change-aware catalog backups are
 implemented. Automatic scanning with pause/resume passed Mac integration checks;
 incremental CPU indexing and live search refresh passed real-media checks. GPU
 transcription yields while CapCut is running. Visual search remains approximate.
-Verified device imports, collections, named people, and archive management are
-still planned.
+Verified, resumable imports from mounted camera cards and media folders are
+implemented. Direct iPhone transfer, collections, named people, and archive
+management are still planned.

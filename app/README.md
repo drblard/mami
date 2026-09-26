@@ -55,7 +55,7 @@ under `~/mami-lab/apps` with a unique timestamp.
 
 This is a usable search/browser prototype, not the complete media manager.
 The SQLite catalog was seeded from a fixed experiment index; new files now enter
-the resumable indexing queue. Named people, collections, verified camera imports,
+the resumable indexing queue. Named people, collections, direct iPhone transfer,
 duplicate review, archive migration and media-backup management remain planned.
 The scanner reconnects moved files by content when their earlier location is
 unavailable. The separate one-off fingerprint experiment does not resume, but
@@ -157,6 +157,48 @@ This selects the restored copy for that launch and leaves the original live
 catalog intact. Media/index files must also be available for full search and
 playback. Database records can still be read when the source index is unavailable;
 cached-image browsing requires the referenced frame files.
+
+## Verified card and folder imports
+
+**Import media…** accepts a mounted camera card or media folder. Choose its device
+folder (DJI/iPhone presets or a custom name), then **Import & verify**. All supported
+media in the selected folder tree is considered. The importer copies to
+`~/Media/Originals/<device>/<year>/<YYYY-MM-DD>/`, using capture metadata or, when
+unavailable, the source's modification date. It records which date source it used.
+Direct USB/PTP iPhone transfer is not implemented: Image Capture can first copy
+iPhone originals into a folder, which this importer can then organize and verify.
+
+The worker hashes the source, copies in fsynced 4 MiB blocks, rereads the copy and
+verifies SHA-256, and confirms the source stat signature is unchanged. Only then
+does it atomically publish the destination filename. It checks catalog/import
+journal duplicate candidates by rehashing the existing copy before skipping one.
+Name collisions preserve the existing file and give the new copy a unique suffix.
+Hidden files, symlinks and unsupported types (including `.LRF`) are skipped.
+
+**Pause**, **Resume**, **Stop**, and background progress are available in the import
+sheet. Import I/O yields between chunks during Mami preview/search. After a crash
+or closing Mami, choose the same source and device folder again: the importer
+checks saved partial bytes against the source and appends the remaining bytes.
+Damaged partial attempts are retained and replaced with new attempts. The tests
+exercise actual process exit without Python cleanup, not just thrown exceptions.
+
+The import journal and staging files live in `Originals/.mami-imports`, ignored by
+the scanner. Completed staging files are retained as hard links to published
+originals, so they do not consume another full copy of the media. Failed attempts
+can consume extra storage and are not automatically removed. The import journal
+is separate from catalog snapshots; back up the entire originals tree to retain
+it too. Sources are never removed or edited. Published copies trigger an automatic
+scan; indexing's own pause state and CapCut policy still apply.
+
+Verification: `prototype-20260926T080506558677Z/ui-check` passed native search,
+shape filtering, import controls (one new file plus one verified catalog duplicate),
+and seeking/keyboard controls. `prototype-20260926T080009646906Z/import-index-check`
+passed byte verification, duplicate re-import, and new-file CPU indexing in an
+isolated retained library. Continuous playback passed while unlocked in
+`prototype-20260926T074822742894Z/playback-check`; a later continuous-playback check
+stalled after the session locked again. GPU speech remains deferred while CapCut
+is open. Automated Python checks cover abrupt process exits in both copying and
+indexing, pause/resume, damaged partial copies, source mutation, and cache repair.
 
 ## Background scanning and indexing
 

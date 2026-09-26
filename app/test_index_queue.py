@@ -4,6 +4,8 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import threading
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -74,6 +76,29 @@ class QueueTests(unittest.TestCase):
         restarted.work()
         self.assertEqual(self.backend.speech_calls, [0, 30])
         with restarted.db() as db:
+            self.assertEqual(db.execute('SELECT state FROM index_jobs').fetchone()[0], 'complete')
+
+    def test_process_exit_recovers_committed_units(self):
+        script = """
+import os, sys
+from test_index_queue import Backend
+from index_queue import Queue
+class Crash(Backend):
+    def frame(self, source, target, timestamp):
+        if timestamp == 1.5: os._exit(77)
+        super().frame(source, target, timestamp)
+q = Queue(sys.argv[1], sys.argv[2], sys.argv[3], Crash())
+q.scan()
+q.work()
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(self.database), str(self.root), str(self.base / 'artifacts')], cwd=Path(__file__).parent)
+        self.assertEqual(result.returncode, 77)
+        q = self.queue()
+        q.work()
+        self.assertEqual(self.backend.frames, [1.5, 2.5])
+        self.assertEqual(len(self.backend.vectors), 2)
+        with q.db() as db:
+            self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
             self.assertEqual(db.execute('SELECT state FROM index_jobs').fetchone()[0], 'complete')
 
     def test_unchanged_scan_ignores_lrf_and_does_not_write(self):

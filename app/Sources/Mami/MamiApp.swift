@@ -279,6 +279,8 @@ struct LibraryView: View {
     @ViewState private var sort = "default"
     @ViewState private var favoritesOnly = false
     @ViewState private var labelFilter = ""
+    @ViewState private var showImport = false
+    @ObservedObject private var importing = Importing.shared
     @StateObject private var annotations = Annotations()
     @ObservedObject private var backups = CatalogBackups.shared
     @ObservedObject private var indexing = Indexing.shared
@@ -316,6 +318,7 @@ struct LibraryView: View {
                     Text("Mami").font(.system(size: 25, weight: .semibold, design: .rounded))
                     Text("Your moments, within reach").font(.callout).foregroundStyle(.secondary)
                     Spacer()
+                    Button(importing.running ? "Import progress…" : "Import media…") { showImport = true }
                     Label("On this Mac", systemImage: "desktopcomputer").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 14) {
@@ -432,7 +435,7 @@ struct LibraryView: View {
                 backups.schedule()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in indexing.stop(); backups.flush() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); backups.flush() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in indexing.refreshEditors() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in indexing.refreshEditors() }
         .task(id: indexing.catalogGeneration) {
@@ -446,6 +449,7 @@ struct LibraryView: View {
                      next: after.map { media in { selection = Selection(media: media, timestamp: media.match.timestamp) } })
                 .id(item.id)
         }
+        .sheet(isPresented: $showImport) { ImportSheet() }
     }
 }
 
@@ -630,6 +634,28 @@ struct MamiApp: App {
         await library.search()?.value
         guard library.items.count == 498, !library.showingMatches else { throw AppError.message("Clear search failed") }
         await library.worker.stop()
+        if let source = ProcessInfo.processInfo.environment["MAMI_IMPORT_TEST_SOURCE"],
+           ProcessInfo.processInfo.environment["MAMI_IMPORT_TEST_DESTINATION"] != nil {
+            let importer = Importing.shared
+            importer.source = URL(fileURLWithPath: source)
+            importer.device = "Import-Fixture"
+            let importHost = NSHostingView(rootView: ImportSheet())
+            importHost.appearance = NSAppearance(named: .darkAqua)
+            window.contentView = importHost
+            importer.start()
+            let deadline = Date().addingTimeInterval(90)
+            while importer.running && Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+            guard !importer.running, importer.error == nil, importer.progress?.phase == "Import complete",
+                  importer.progress?.copied == 1, importer.progress?.duplicates == 1,
+                  importer.progress?.failed == 0 else { throw AppError.message("Native import failed: \(importer.error ?? importer.progress?.phase ?? "No progress")") }
+            try await Task.sleep(for: .milliseconds(300))
+            importHost.layoutSubtreeIfNeeded()
+            if let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("import-complete.png"), options: .withoutOverwriting)
+            }
+            print("IMPORT native controller verified one new copy and one existing catalog duplicate")
+        }
         window.orderOut(nil)
         let video = library.items.first { $0.kind == "video" }!
         let player = try await preparedPlayer(url: video.url, timestamp: 5)

@@ -138,9 +138,14 @@ import SwiftUI
     func togglePause() { send(["action": paused ? "resume" : "pause"]) }
     func scanNow() { if !running { retries = 0; start() }; send(["action": "scan"]) }
     func retry() { error = nil; if !running { retries = 0; start() }; send(["action": "retry"]) }
-    func setSearchBusy(_ value: Bool) { searchBusy = value; send(["action": "busy", "value": searchBusy || !previews.isEmpty]) }
-    func beginPreview(_ id: UUID) { previews.insert(id); send(["action": "busy", "value": true]) }
-    func endPreview(_ id: UUID) { previews.remove(id); send(["action": "busy", "value": searchBusy || !previews.isEmpty]) }
+    func setSearchBusy(_ value: Bool) { searchBusy = value; updateForegroundBusy() }
+    func beginPreview(_ id: UUID) { previews.insert(id); updateForegroundBusy() }
+    func endPreview(_ id: UUID) { previews.remove(id); updateForegroundBusy() }
+    private func updateForegroundBusy() {
+        let value = searchBusy || !previews.isEmpty
+        send(["action": "busy", "value": value])
+        Importing.shared.setBusy(value)
+    }
     func refreshEditors() {
         let present = NSWorkspace.shared.runningApplications.contains {
             ($0.localizedName ?? "").localizedCaseInsensitiveContains("CapCut") || ["com.lemon.lvoverseas", "com.lemon.lv"].contains($0.bundleIdentifier ?? "")
