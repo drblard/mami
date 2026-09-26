@@ -5,6 +5,14 @@ struct MamiSettings: View {
     @ObservedObject private var photos = PhotosImporting.shared
     @ObservedObject private var importing = Importing.shared
     private var busy: Bool { photos.running || importing.photosTransfer }
+    private var transferStatus: String {
+        if importing.photosTransfer, let progress = importing.progress {
+            return progress.current.isEmpty ? progress.phase : "\(progress.phase) · \(progress.current)"
+        }
+        if photos.needsPhotosAccess { return "Waiting for Photos access" }
+        if photos.error != nil { return "Import needs attention" }
+        return photos.running ? "Waiting for completed downloads…" : "Nothing to do right now"
+    }
     var body: some View {
         Form {
             Section("iCloud Photos") {
@@ -31,7 +39,7 @@ struct MamiSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Check Photos now") { Task { await photos.scan() } }
                     .disabled(!photos.enabled || busy || importing.running)
-                Text(photos.status).font(.caption)
+                Text(photos.status).font(.caption).lineLimit(2, reservesSpace: true).help(photos.status)
                 if photos.needsPhotosAccess {
                     HStack {
                         Button("Allow Photos access…") { photos.enable() }.disabled(busy)
@@ -40,13 +48,10 @@ struct MamiSettings: View {
                         }
                     }
                 }
-                if photos.running {
-                    Text("\(photos.transferred) originals saved and verified · Fetching and transfer run in parallel")
-                        .font(.caption)
-                    if importing.photosTransfer, let progress = importing.progress {
-                        Text("\(progress.phase) · \(progress.current)").font(.caption).lineLimit(1)
-                    }
-                }
+                Text("\(photos.transferred) originals saved and verified this pass")
+                    .font(.caption).lineLimit(1)
+                Text(transferStatus).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).help(transferStatus)
                 if let error = photos.error { Text(error).font(.caption).foregroundStyle(.orange) }
             }
             Section("Archiving") {
