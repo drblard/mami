@@ -1,6 +1,7 @@
 """Incremental local inference, using pinned cached models only."""
 import json
 import math
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -8,6 +9,9 @@ from pathlib import Path
 
 class Backend:
     def __init__(self, artifacts):
+        # mlx-whisper invokes ffmpeg by name when reading saved audio. Finder-
+        # launched apps do not inherit Homebrew's bin directory from a shell.
+        os.environ['PATH'] = '/opt/homebrew/bin:' + os.environ.get('PATH', '/usr/bin:/bin')
         self.artifacts = Path(artifacts)
         self.visual = None
         self.speech_model = None

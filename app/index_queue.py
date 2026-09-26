@@ -24,9 +24,11 @@ class Stopped(Exception):
 
 
 class Queue:
-    def __init__(self, database, root, artifacts, backend, emit=lambda event: None):
+    def __init__(self, database, root, artifacts, backend, emit=lambda event: None, gpu_wait=None):
         self.database, self.root, self.artifacts = map(Path, (database, root, artifacts))
         self.backend, self.emit = backend, emit
+        self.gpu_wait = gpu_wait
+        self.gpu_utilization = None
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.busy = threading.Event()
@@ -80,7 +82,7 @@ class Queue:
         if force or changed or error or now - self.last_emit >= .2:
             self.last_emit = now
             self.emit(dict(phase=self.phase, done=self.done, total=self.total, current=self.current,
-                           paused=self.paused.is_set(), busy=self.busy.is_set(), waiting=self.waiting, changed=changed, error=error))
+                           paused=self.paused.is_set(), busy=self.busy.is_set(), waiting=self.waiting, gpu_utilization=self.gpu_utilization, changed=changed, error=error))
 
     def command(self, command):
         action = command.get('action')
@@ -109,12 +111,15 @@ class Queue:
             if self.stop.is_set():
                 raise Stopped()
             if gpu and self.gpu_busy.is_set():
-                self.phase = 'Waiting for CapCut'
+                self.phase = 'Waiting for GPU'
             self.status()
             self.wake.wait(.2)
             self.wake.clear()
         if self.stop.is_set():
             raise Stopped()
+        if gpu and self.gpu_wait:
+            self.gpu_wait(self)
+            self.checkpoint()
         self.waiting = False
         self.phase = phase
 

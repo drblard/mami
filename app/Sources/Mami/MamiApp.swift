@@ -43,6 +43,7 @@ struct MediaCard: View {
     let media: Media
     let nearby: Bool
     @ObservedObject var annotations: Annotations
+    @ObservedObject var clips: ClipSelection
     let open: (Media, Double?) -> Void
     @ViewState private var hovered: Int?
     @ViewState private var image: NSImage?
@@ -81,6 +82,15 @@ struct MediaCard: View {
                             .padding(7).background(.black.opacity(0.6), in: Circle())
                     }.buttonStyle(.plain).padding(7).disabled(!annotations.ready)
                         .help(annotation.favorite ? "Remove from favorites" : "Add to favorites")
+                }
+                .overlay(alignment: .topLeading) {
+                    Button { clips.toggle(media, sample: sample) } label: {
+                        Image(systemName: clips.contains(media) ? "checkmark.circle.fill" : "plus.circle.fill")
+                            .foregroundStyle(clips.contains(media) ? Color.accentColor : Color.white)
+                            .padding(7).background(.black.opacity(0.6), in: Circle())
+                    }.buttonStyle(.plain).padding(7).disabled(!clips.ready)
+                        .help(clips.contains(media) ? "Remove from selected clips" : "Add to selected clips")
+                        .accessibilityLabel(clips.contains(media) ? "Remove from selected clips" : "Add to selected clips")
                 }
                 .contentShape(Rectangle())
                 .onContinuousHover { phase in
@@ -161,6 +171,7 @@ struct Selection: Identifiable {
 struct Playback: View {
     let selection: Selection
     @ObservedObject var annotations: Annotations
+    @ObservedObject var clips: ClipSelection
     var previous: (() -> Void)? = nil
     var next: (() -> Void)? = nil
     @StateObject private var transport = PlaybackTransport()
@@ -234,6 +245,8 @@ struct Playback: View {
                             if let evidence = selection.media.match.evidence { Text(evidence).font(.callout).textSelection(.enabled) }
                         }.padding(20).frame(width: 340, alignment: .leading)
                     }
+                Button(clips.contains(selection.media) ? "Remove from selection" : "Add to selection") { clips.toggle(selection.media) }
+                    .disabled(!clips.ready).keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([selection.media.url]) }
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -273,6 +286,8 @@ struct Playback: View {
 
 struct LibraryView: View {
     @StateObject private var library: Library
+    @StateObject private var clips: ClipSelection
+    @ViewState private var showClips = true
     @ViewState private var selection: Selection?
     @ViewState private var nearby = true
     @ViewState private var kind = "all"
@@ -310,7 +325,10 @@ struct LibraryView: View {
         guard let index = items.firstIndex(where: { $0.id == selection.media.id }), items.indices.contains(index + offset) else { return nil }
         return items[index + offset]
     }
-    @MainActor init(library: Library? = nil) { _library = StateObject(wrappedValue: library ?? Library()) }
+    @MainActor init(library: Library? = nil, clips: ClipSelection? = nil) {
+        _library = StateObject(wrappedValue: library ?? Library())
+        _clips = StateObject(wrappedValue: clips ?? ClipSelection())
+    }
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 14) {
@@ -319,6 +337,8 @@ struct LibraryView: View {
                     Text("Your moments, within reach").font(.callout).foregroundStyle(.secondary)
                     Spacer()
                     Button(importing.running ? "Import progress…" : "Import media…") { showImport = true }
+                    Button { showClips.toggle() } label: { Label("\(clips.items.count)", systemImage: "sidebar.right") }
+                        .help("Show or hide selected clips").accessibilityLabel("Selected clips, \(clips.items.count)")
                     Label("On this Mac", systemImage: "desktopcomputer").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 14) {
@@ -406,6 +426,7 @@ struct LibraryView: View {
             if let error = backups.error { Text(error).foregroundStyle(.red).font(.caption).padding() }
             IndexingBar()
             Divider()
+            HStack(spacing: 0) {
             ScrollView {
                 if visibleItems.isEmpty, library.ready, !library.searching {
                     ContentUnavailableView {
@@ -418,10 +439,17 @@ struct LibraryView: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14)], spacing: 14) {
                     ForEach(visibleItems) { media in
-                        MediaCard(media: media, nearby: nearby && library.showingMatches, annotations: annotations) { item, timestamp in selection = Selection(media: item, timestamp: timestamp) }
+                        MediaCard(media: media, nearby: nearby && library.showingMatches, annotations: annotations, clips: clips) { item, timestamp in selection = Selection(media: item, timestamp: timestamp) }
                     }
                 }.padding(14)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if showClips {
+                SelectionIsland(clips: clips, open: { clip in
+                    let media = library.catalogMedia.first { $0.assetID == clip.assetID } ?? clip.media
+                    selection = Selection(media: media, timestamp: clip.timestamp)
+                }, collapse: { showClips = false })
             }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 850, minHeight: 600)
         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
@@ -429,6 +457,8 @@ struct LibraryView: View {
         .background(Button("Focus search") { searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden())
         .task { await library.load() }
         .task { await annotations.load() }
+        .task { await clips.load() }
+        .task { PhotosImporting.shared.startAutomatic() }
         .task {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
@@ -436,15 +466,13 @@ struct LibraryView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); backups.flush() }
-        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in indexing.refreshEditors() }
-        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in indexing.refreshEditors() }
         .task(id: indexing.catalogGeneration) {
-            if indexing.catalogGeneration > 0 { await library.refreshCatalog() }
+            if indexing.catalogGeneration > 0 { await library.refreshCatalog(); clips.reconnect(library.catalogMedia) }
         }
         .sheet(item: $selection) { item in
             let before = adjacent(to: item, offset: -1)
             let after = adjacent(to: item, offset: 1)
-            Playback(selection: item, annotations: annotations,
+            Playback(selection: item, annotations: annotations, clips: clips,
                      previous: before.map { media in { selection = Selection(media: media, timestamp: media.match.timestamp) } },
                      next: after.map { media in { selection = Selection(media: media, timestamp: media.match.timestamp) } })
                 .id(item.id)
@@ -532,7 +560,7 @@ struct MamiApp: App {
         try snapshot("completed.png")
         indexing.stop()
         window.orderOut(nil)
-        print("SCAN UI TEST PASSED: native progress, persisted pause, no writes while paused, resume and 498-file automatic scan; CapCut detected=\(indexing.capCutRunning)")
+        print("SCAN UI TEST PASSED: native progress, persisted pause, no writes while paused, resume and 498-file automatic scan")
     }
 
     @MainActor static func uiTest(_ directory: URL) async throws {
@@ -564,7 +592,31 @@ struct MamiApp: App {
               try SQLDatabase(annotationTest.catalog.database, readOnly: true).scalar("SELECT count(*) FROM annotation_history") == "2" else {
             throw AppError.message("Annotation history was not preserved")
         }
-        let host = NSHostingView(rootView: LibraryView(library: library))
+        let selectionCatalog = Catalog(directory: directory.appendingPathComponent("selection-check"))
+        let selectedMedia = Array(library.items.prefix(2))
+        try selectionCatalog.synchronize(selectedMedia)
+        let clips = ClipSelection(catalog: selectionCatalog)
+        await clips.load()
+        selectedMedia.forEach { clips.toggle($0) }
+        let savedSelection = try selectionCatalog.snapshotIfChanged()
+        clips.save(clips.items)
+        guard try selectionCatalog.snapshotIfChanged().file == savedSelection.file else { throw AppError.message("Unchanged selection created a backup") }
+        let reopened = ClipSelection(catalog: selectionCatalog)
+        await reopened.load()
+        guard reopened.items == clips.items, reopened.items.count == 2 else { throw AppError.message("Selected clips did not survive reload") }
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("mami-selection-test-\(UUID().uuidString)"))
+        let writers = try ClipDragHandle.writers(clips.items)
+        guard pasteboard.writeObjects(writers), pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])?.count == 2 else {
+            throw AppError.message("Selection did not provide two native file drag items")
+        }
+        let selectedRestore = Catalog(directory: directory.appendingPathComponent("selection-restored"))
+        try FileManager.default.createDirectory(at: selectedRestore.directory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: selectionCatalog.backups.appendingPathComponent(savedSelection.file), to: selectedRestore.database)
+        guard try selectedRestore.selectedClips() == clips.items else { throw AppError.message("Selection snapshot restore failed") }
+        clips.move(clips.items[1].id, by: -1)
+        guard clips.items.first?.assetID == selectedMedia[1].assetID else { throw AppError.message("Selection ordering failed") }
+        print("SELECTION persistence, no-op backup, snapshot restore, ordering and two native file drag items passed")
+        let host = NSHostingView(rootView: LibraryView(library: library, clips: clips))
         host.appearance = NSAppearance(named: .darkAqua)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)

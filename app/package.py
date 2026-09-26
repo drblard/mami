@@ -23,7 +23,7 @@ resources = contents / 'Resources'
 executable.mkdir(parents=True)
 resources.mkdir()
 shutil.copy2(root / '.build/release/Mami', executable / 'Mami')
-for name in ['search_worker.py', 'lab.py', 'index_worker.py', 'index_queue.py', 'index_backend.py', 'metadata.py', 'import_media.py']:
+for name in ['search_worker.py', 'lab.py', 'index_worker.py', 'index_queue.py', 'index_backend.py', 'metadata.py', 'import_media.py', 'gpu_activity.py']:
     shutil.copy2(root / name, resources / name)
 with (resources / 'configuration.json').open('x') as f:
     config = {'index': args.index}
@@ -58,6 +58,7 @@ with (contents / 'Info.plist').open('xb') as f:
                   'CFBundleName': 'Mami', 'CFBundleDisplayName': 'Mami',
                   'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1',
                   'CFBundleShortVersionString': '0.1.0', 'LSMinimumSystemVersion': '14.0',
-                  'NSHighResolutionCapable': True}, f)
+                  'NSHighResolutionCapable': True,
+                  'NSPhotoLibraryUsageDescription': 'Mami imports full originals from your synced Photos library into independent, verified local copies. Mami never deletes from Photos or iCloud.'}, f)
 subprocess.run(['/usr/bin/codesign', '--sign', '-', str(bundle)], check=True)
 print(bundle)

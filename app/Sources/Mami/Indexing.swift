@@ -15,6 +15,7 @@ import SwiftUI
         let waiting: Bool?
         let changed: Bool
         let error: String?
+        let gpu_utilization: Double?
     }
     @Published private(set) var phase = "Automatic scanning starts with the library"
     @Published private(set) var current = ""
@@ -26,15 +27,13 @@ import SwiftUI
     @Published private(set) var error: String?
     @Published private(set) var running = false
     @Published private(set) var catalogGeneration = 0
-    @Published private(set) var capCutRunning = false
+    @Published private(set) var gpuUtilization: Double?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
     private var buffer = Data()
     private var searchBusy = false
     private var previews = Set<UUID>()
-    private var lastCapCutSeen = Date.distantPast
-    private var editorTask: Task<Void, Never>?
     private var retries = 0
     private var quitting = false
     var active: Bool { running && !["Up to date", "Needs attention", "Scan needs attention"].contains(phase) }
@@ -97,16 +96,7 @@ import SwiftUI
             output = stdout.fileHandleForReading
             running = true
             error = nil
-            refreshEditors()
-            send(["action": "gpu-busy", "value": capCutRunning])
             send(["action": "busy", "value": searchBusy || !previews.isEmpty])
-            editorTask?.cancel()
-            editorTask = Task {
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(3)) } catch { return }
-                    refreshEditors()
-                }
-            }
         } catch { self.error = "Could not start background indexing: \(error.localizedDescription)" }
     }
 
@@ -120,6 +110,7 @@ import SwiftUI
                 phase = progress.phase; done = progress.done; total = progress.total
                 current = progress.current; paused = progress.paused
                 waiting = progress.waiting ?? false; foregroundBusy = progress.busy
+                gpuUtilization = progress.gpu_utilization
                 if let message = progress.error { error = message }
                 else if phase == "Up to date" { error = nil }
                 if progress.changed { catalogGeneration += 1 }
@@ -146,20 +137,8 @@ import SwiftUI
         send(["action": "busy", "value": value])
         Importing.shared.setBusy(value)
     }
-    func refreshEditors() {
-        let present = NSWorkspace.shared.runningApplications.contains {
-            ($0.localizedName ?? "").localizedCaseInsensitiveContains("CapCut") || ["com.lemon.lvoverseas", "com.lemon.lv"].contains($0.bundleIdentifier ?? "")
-        }
-        if present { lastCapCutSeen = Date() }
-        let busy = present || Date().timeIntervalSince(lastCapCutSeen) < 15
-        if busy != capCutRunning || process != nil && editorTask == nil {
-            capCutRunning = busy
-            send(["action": "gpu-busy", "value": busy])
-        }
-    }
     func stop() {
         quitting = true
-        editorTask?.cancel()
         send(["action": "stop"])
         try? input?.close()
         process?.terminate()
@@ -182,7 +161,10 @@ struct IndexingBar: View {
                 if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }
                 else { ProgressView().controlSize(.small) }
             }
-            if indexing.capCutRunning { Text("GPU transcription waits while CapCut is running. CPU indexing remains low priority.").font(.caption2).foregroundStyle(.secondary) }
+            if indexing.phase.contains("GPU"), let usage = indexing.gpuUtilization {
+                Text("Graphics activity: \(Int(usage))% · Transcription resumes after a quiet interval. CapCut can stay open.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             if let error = indexing.error {
                 HStack {
                     Text(error).foregroundStyle(.orange).lineLimit(2)

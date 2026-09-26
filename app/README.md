@@ -165,8 +165,8 @@ folder (DJI/iPhone presets or a custom name), then **Import & verify**. All supp
 media in the selected folder tree is considered. The importer copies to
 `~/Media/Originals/<device>/<year>/<YYYY-MM-DD>/`, using capture metadata or, when
 unavailable, the source's modification date. It records which date source it used.
-Direct USB/PTP iPhone transfer is not implemented: Image Capture can first copy
-iPhone originals into a folder, which this importer can then organize and verify.
+Direct USB/PTP iPhone transfer is not implemented. For a synced iPhone library,
+use the iCloud Photos importer below.
 
 The worker hashes the source, copies in fsynced 4 MiB blocks, rereads the copy and
 verifies SHA-256, and confirms the source stat signature is unchanged. Only then
@@ -187,8 +187,67 @@ the scanner. Completed staging files are retained as hard links to published
 originals, so they do not consume another full copy of the media. Failed attempts
 can consume extra storage and are not automatically removed. The import journal
 is separate from catalog snapshots; back up the entire originals tree to retain
-it too. Sources are never removed or edited. Published copies trigger an automatic
-scan; indexing's own pause state and CapCut policy still apply.
+it too. Published copies trigger an automatic scan; indexing's own pause state
+and GPU activity policy still apply.
+
+Source removal is explicitly selectable in the import sheet. Per-file exceptions
+are **Skip — leave untouched**, **Import & keep**, and **Import & remove**; choices
+are remembered per source path. Before removing each file, including duplicates,
+the worker full-syncs the independent destination inside Originals, freshly rereads
+and SHA-256 hashes both files, commits a verification receipt, checks their full
+stat signatures again, and only then unlinks the source. Any mismatch/error retains
+the source. SQLite fullfsync and macOS F_FULLFSYNC are used for this boundary.
+After a crash, a prior verification receipt never authorizes removal without fresh
+verification. This is selective file removal, not device formatting: `.LRF`, hidden,
+unsupported and skipped files remain. No physical DJI was connected for testing.
+The retained `prototype-20260926T100312588736Z/removal-check` fixture passed on
+the Mac with real video bytes, F_FULLFSYNC, a durable removal receipt, and keep/
+skip/proxy retention. The 33 Python checks include a real process crash after
+verification and before unlink, followed by corruption of the destination and a
+successful verified recovery to a new destination.
+
+## Cable-free Photos imports
+
+**Import media… → Enable Photos import…** asks for macOS Photos permission. The
+Mac must use the same iCloud-synced System Photo Library as the phone. Apple’s
+PhotoKit supplies full original photo/video resources, including Live Photo paired
+videos, and downloads cloud-only data using `isNetworkAccessAllowed`. Mami never
+calls Photos modification or deletion APIs. Deleting a photo in the synced Photos
+library still propagates through iCloud, but an already imported Mami copy is independent.
+
+While enabled and Mami is open, checks run every five minutes. Downloads are
+streamed and hashed off the UI thread, flushed and reread, then fed through the
+verified importer with source removal disabled. Copies go to
+`Originals/iCloud-Photos/year/date/`. Completed resources have individual receipts;
+interrupted downloads restart that resource, retaining the failed attempt. A failed
+resource does not prevent other completed downloads from importing. Completed
+exports are excluded from future import passes. Formats outside JPG/JPEG, PNG,
+HEIC, MP4 and MOV are reported as unsupported and left in Photos.
+
+Exports and receipts are retained in `~/Media/Incoming/.mami-photos`; unlike the
+destination's hard-linked staging, these consume additional media storage. Back
+up Incoming as well to retain this transfer history. The Photos integration builds
+successfully; real authorization/cloud-download validation requires granting access
+in the final app. It has not yet been validated against the user's Photos library.
+
+## Selected clips island
+
+Use **+** on a thumbnail, or **Add to selection** in playback (Command-Shift-S),
+to collect originals across searches and filters. The collapsible right-hand island
+shows thumbnails, removal controls, context-menu reordering, and a multi-file
+**Drag originals to CapCut** handle. It exports full original files, not rendered
+subclips. Selection order and content identities survive restarts in the catalog
+and its change-aware snapshots. Original paths reconnect after catalog refresh.
+Missing originals stop the drag with a visible error rather than silently omitting
+files. Native tests verify two independent file pasteboard items, reload, order,
+no-op backups, and restoration from a snapshot. Actual drop acceptance in CapCut
+still needs an unlocked interactive check.
+
+Latest native verification: `prototype-20260926T100509862908Z/ui-check` passed
+selection persistence/restoration/multi-file pasteboard, all 498 original paths,
+shape/search controls, the native import controller (new copy plus duplicate),
+and playback seeking/keyboard controls. `library.png` and `import-complete.png`
+retain the new island and Photos/import UI. This bundle was opened on the Mac.
 
 Verification: `prototype-20260926T080506558677Z/ui-check` passed native search,
 shape filtering, import controls (one new file plus one verified catalog duplicate),
@@ -196,8 +255,9 @@ and seeking/keyboard controls. `prototype-20260926T080009646906Z/import-index-ch
 passed byte verification, duplicate re-import, and new-file CPU indexing in an
 isolated retained library. Continuous playback passed while unlocked in
 `prototype-20260926T074822742894Z/playback-check`; a later continuous-playback check
-stalled after the session locked again. GPU speech remains deferred while CapCut
-is open. Automated Python checks cover abrupt process exits in both copying and
+stalled after the session locked again. Real GPU transcription later passed with
+CapCut open in `prototype-20260926T092711536655Z/gpu-resume-check`.
+Automated Python checks cover abrupt process exits in both copying and
 indexing, pause/resume, damaged partial copies, source mutation, and cache repair.
 
 ## Background scanning and indexing
@@ -242,15 +302,18 @@ not a hard guarantee of zero performance impact. `.background` QoS proved too
 restrictive for macOS disk I/O in the first native scan test; utility QoS resumed
 the 213 saved file checks and completed the 498-file scan.
 
-GPU transcription waits whenever CapCut is running, including background exports,
-and resumes 15 seconds after CapCut quits. App launch/termination notifications
-and a three-second check drive this conservative policy. It is **not global GPU
-utilization detection**: an idle open CapCut also blocks GPU transcription, and
-other GPU applications are not yet monitored. In-flight inference finishes its
-current chunk before yielding. The serial queue may wait at a speech stage until
-the editor exits. The current integration fixture has verified that real photo/
-video previews, CPU embeddings and audio are checkpointed before waiting for
-CapCut; its GPU transcription remains deferred because CapCut is running.
+GPU transcription reads Apple IOAccelerator utilization without elevated privileges.
+Before each inference boundary it requires three consecutive seconds below 15%,
+using the maximum device/renderer/tiler reading across available devices. Missing
+telemetry never means idle; the UI reports that it is waiting. A fresh window after
+each chunk prevents Mami's previous GPU burst from being mistaken for an editor.
+CapCut can remain open. These driver counters are best-effort, not a supported
+per-process export detector; a CPU/media-engine export may show low GPU utilization.
+In-flight inference finishes its current chunk before yielding. The serial queue
+can still wait at a speech stage while GPU load stays high. Real pinned Whisper
+inference and a saved speech checkpoint completed with CapCut open in the retained
+`prototype-20260926T092711536655Z/gpu-resume-check` fixture. Finder-launched worker
+PATH now includes Homebrew so Whisper can invoke ffmpeg.
 
 The grid refreshes as previews become available. Committed embeddings and speech
 segments are loaded by the existing search worker on its next query. Results

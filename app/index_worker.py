@@ -18,6 +18,7 @@ os.environ['MKL_NUM_THREADS'] = '1'
 def main():
     from index_queue import Queue
     from index_backend import Backend
+    from gpu_activity import wait_for_quiet
     parser = argparse.ArgumentParser()
     parser.add_argument('--database', required=True)
     parser.add_argument('--root', required=True)
@@ -37,7 +38,7 @@ def main():
             emit(dict(phase='Another Mami instance is indexing', done=0, total=0, current='', paused=False, busy=False, changed=False, error='Close the other Mami instance before restarting this worker.'))
             return
         with contextlib.redirect_stdout(sys.stderr):
-            queue = Queue(args.database, args.root, args.artifacts, Backend(args.artifacts), emit)
+            queue = Queue(args.database, args.root, args.artifacts, Backend(args.artifacts), emit, gpu_wait=wait_for_quiet)
             signal.signal(signal.SIGTERM, lambda *_: (queue.stop.set(), queue.wake.set()))
             def controls():
                 try:

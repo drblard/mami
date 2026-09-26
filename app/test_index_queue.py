@@ -174,9 +174,9 @@ q.work()
         thread.join()
         self.assertFalse(self.queue().paused.is_set())
 
-    def test_capcut_blocks_gpu_boundary_but_not_cpu_scan(self):
+    def test_gpu_busy_blocks_gpu_boundary_but_not_cpu_scan(self):
         waiting, finished = threading.Event(), threading.Event()
-        q = self.queue(lambda event: waiting.set() if event.get('phase') == 'Waiting for CapCut' else None)
+        q = self.queue(lambda event: waiting.set() if event.get('phase') == 'Waiting for GPU' else None)
         q.command({'action': 'gpu-busy', 'value': True})
         q.scan()
         thread = threading.Thread(target=lambda: (q.checkpoint(gpu=True), finished.set()))

@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -122,6 +123,71 @@ Importer(sys.argv[1], sys.argv[2], 'Camera', emit=emit, date_reader=lambda _: ('
             importer.stop.set()
             importer.wake.set()
             thread.join(3)
+
+    def test_remove_only_verified_media_and_honor_exceptions(self):
+        for name in ('remove.mp4', 'keep.mov', 'skip.jpg', 'proxy.LRF'):
+            (self.source / name).write_bytes(name.encode())
+        importer = self.importer(remove_source=True, policy_json=json.dumps({'keep.mov': 'keep', 'skip.jpg': 'skip'}))
+        importer.run()
+        self.assertEqual((importer.removed, importer.copied, importer.failed), (1, 2, 0))
+        self.assertFalse((self.source / 'remove.mp4').exists())
+        self.assertEqual({p.name for p in self.source.iterdir()}, {'keep.mov', 'skip.jpg', 'proxy.LRF'})
+        self.assertFalse(list(self.destination.glob('Camera/**/skip.jpg')))
+        with importer.db() as db:
+            receipt = db.execute('SELECT * FROM removals').fetchone()
+            self.assertEqual(receipt['state'], 'removed')
+            self.assertEqual(hashlib.sha256(Path(receipt['destination']).read_bytes()).hexdigest(), receipt['digest'])
+
+    def test_duplicate_requires_fresh_destination_read_before_removal(self):
+        source = self.source / 'a.mp4'; source.write_bytes(b'original')
+        self.importer().run()
+        importer = self.importer(remove_source=True)
+        importer.run()
+        self.assertEqual((importer.duplicates, importer.removed, importer.failed), (1, 1, 0))
+        self.assertFalse(source.exists())
+
+    def test_final_corruption_or_source_change_prevents_removal(self):
+        source = self.source / 'a.mp4'; source.write_bytes(b'original')
+        self.importer().run()
+        target = self.destination / 'Camera/2026/2026-09-18/a.mp4'
+        for mutate in (target, source):
+            source.write_bytes(b'original'); target.write_bytes(b'original')
+            fired = []
+            def event(value):
+                if value['phase'] == 'Rechecking saved original before removal' and not fired:
+                    fired.append(True); mutate.write_bytes(b'changed!')
+            importer = self.importer(remove_source=True, emit=event)
+            importer.run()
+            self.assertTrue(fired)
+            self.assertEqual((importer.removed, importer.failed), (0, 1))
+            self.assertTrue(source.exists())
+
+    def test_crash_after_removal_receipt_rechecks_bytes_on_resume(self):
+        source = self.source / 'a.mp4'; source.write_bytes(b'original')
+        script = """
+import os,sys
+from pathlib import Path
+from import_media import Importer
+original_unlink = Path.unlink
+def crash_before_removal(path, *args, **kwargs):
+    if path == Path(sys.argv[1]) / 'a.mp4': os._exit(78)
+    return original_unlink(path, *args, **kwargs)
+Path.unlink = crash_before_removal
+Importer(sys.argv[1],sys.argv[2],'Camera',remove_source=True,date_reader=lambda _:('2026-09-18','fixture')).run()
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(self.source), str(self.destination)], cwd=Path(__file__).parent)
+        self.assertEqual(result.returncode, 78)
+        self.assertEqual(source.read_bytes(), b'original')
+        target = self.destination / 'Camera/2026/2026-09-18/a.mp4'
+        target.write_bytes(b'corrupt!')
+        importer = self.importer(remove_source=True)
+        importer.run()
+        self.assertEqual((importer.copied, importer.removed, importer.failed), (1, 1, 0))
+        self.assertFalse(source.exists())
+        self.assertEqual(target.read_bytes(), b'corrupt!')
+        with importer.db() as db:
+            receipt = db.execute("SELECT * FROM removals WHERE state='removed'").fetchone()
+            self.assertEqual(Path(receipt['destination']).read_bytes(), b'original')
 
 
 if __name__ == '__main__':

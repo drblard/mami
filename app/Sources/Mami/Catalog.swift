@@ -106,6 +106,31 @@ struct Catalog: Sendable {
         }
     }
 
+    private func selectionTable(_ db: SQLDatabase) throws {
+        guard try db.rows("SELECT name FROM sqlite_master WHERE name='clip_selection'").isEmpty else { return }
+        try db.transaction {
+            try db.execute("CREATE TABLE clip_selection(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL)")
+            try db.execute("INSERT INTO clip_selection VALUES(1,'[]')")
+            try db.execute("CREATE TRIGGER clip_selection_UPDATE AFTER UPDATE ON clip_selection BEGIN UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1; END")
+            try db.execute("UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1")
+        }
+    }
+
+    func selectedClips() throws -> [SelectedClip] {
+        try access { db in
+            try selectionTable(db)
+            return try JSONDecoder().decode([SelectedClip].self, from: Data(db.scalar("SELECT payload FROM clip_selection WHERE id=1").utf8))
+        }
+    }
+
+    func saveSelectedClips(_ items: [SelectedClip]) throws {
+        try access { db in
+            try selectionTable(db)
+            let payload = try Self.json(items)
+            try db.execute("UPDATE clip_selection SET payload=? WHERE id=1 AND payload != ?", [payload, payload])
+        }
+    }
+
     /// Import once, in original event order. Existing JSON history stays intact.
     func migrateAnnotations(from source: URL, identities: [String: String]) throws {
         guard FileManager.default.fileExists(atPath: source.path) else { return }

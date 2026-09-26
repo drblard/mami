@@ -1,4 +1,4 @@
-"""Resumable card/folder imports. Source files are never changed.
+"""Resumable card/folder imports with optional verified source removal.
 
 Only verified files are published in Originals. Hidden staging files and the
 durable journal are retained, including failed or interrupted attempts.
@@ -15,6 +15,7 @@ import re
 import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import uuid
 
@@ -23,8 +24,17 @@ from index_queue import EXTENSIONS, Queue, Stopped
 CHUNK = 4 * 1024 * 1024
 
 
+def sync_original(descriptor):
+    os.fsync(descriptor)
+    if sys.platform == 'darwin':
+        # macOS fsync alone need not flush a drive's write cache. Source removal
+        # requires the stronger full-sync operation to succeed too.
+        fcntl.fcntl(descriptor, 51)  # F_FULLFSYNC
+
+
 class Importer:
-    def __init__(self, source, destination, device, catalog=None, emit=lambda value: None, date_reader=None):
+    def __init__(self, source, destination, device, catalog=None, emit=lambda value: None, date_reader=None,
+                 remove_source=False, policy_json='{}'):
         self.source, self.destination = Path(source).resolve(), Path(destination).resolve()
         if self.source == self.destination or self.source in self.destination.parents or self.destination in self.source.parents:
             raise ValueError('Choose a card or folder outside Originals')
@@ -32,6 +42,10 @@ class Importer:
         if not re.fullmatch(r'[\w .-]{1,100}', device) or device in ('.', '..') or device.startswith('.'):
             raise ValueError('Use a device folder name with letters, numbers, spaces, dashes or underscores')
         self.device, self.catalog, self.emit = device, catalog, emit
+        self.remove_source = remove_source
+        self.policies = json.loads(policy_json)
+        if not isinstance(self.policies, dict) or any(v not in ('skip', 'keep', 'remove') for v in self.policies.values()):
+            raise ValueError('Invalid per-file import policies')
         if not self.device:
             raise ValueError('A device folder name is required')
         self.date_reader = date_reader or self.capture_date
@@ -42,8 +56,10 @@ class Importer:
         self.database = self.directory / 'journal.sqlite'
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS files(source TEXT, signature TEXT, device TEXT, digest TEXT, date TEXT, date_source TEXT, part TEXT, destination TEXT, PRIMARY KEY(source,signature,device))')
+            db.execute('CREATE TABLE IF NOT EXISTS removals(id TEXT PRIMARY KEY, source TEXT, signature TEXT, destination TEXT, digest TEXT, state TEXT, verified_at TEXT)')
         self.done = self.total = self.copied = self.duplicates = self.failed = self.skipped = 0
         self.current, self.phase = '', 'Ready to import'
+        self.removed = 0
 
     @contextlib.contextmanager
     def db(self):
@@ -51,6 +67,7 @@ class Importer:
         db.row_factory = sqlite3.Row
         try:
             db.execute('PRAGMA synchronous=FULL')
+            db.execute('PRAGMA fullfsync=ON')
             with db:
                 yield db
         finally:
@@ -59,7 +76,52 @@ class Importer:
     def status(self, error=None, bytes_done=0, bytes_total=0):
         self.emit(dict(phase=self.phase, current=self.current, done=self.done, total=self.total,
                        copied=self.copied, duplicates=self.duplicates, failed=self.failed, skipped=self.skipped,
-                       paused=self.paused.is_set(), bytes_done=bytes_done, bytes_total=bytes_total, error=error))
+                       removed=self.removed, paused=self.paused.is_set(), bytes_done=bytes_done, bytes_total=bytes_total, error=error))
+
+    def policy(self, source):
+        return self.policies.get(str(source.relative_to(self.source)), 'remove' if self.remove_source else 'keep')
+
+    def remove_verified(self, source):
+        """Never infer permission or successful verification from a prior run."""
+        self.checkpoint()
+        signature = Queue.signature(source)
+        with self.db() as db:
+            row = db.execute('SELECT * FROM files WHERE source=? AND signature=? AND device=?',
+                             (str(source), signature, self.device)).fetchone()
+        if row is None or not row['destination']:
+            raise RuntimeError('No verified import record; source retained')
+        target = Path(row['destination'])
+        if source.is_symlink() or target.is_symlink() or not target.is_file() or self.destination not in target.resolve().parents:
+            raise RuntimeError('Removal requires an independent original inside Originals; source retained')
+        if self.source not in source.resolve().parents or os.path.samefile(source, target):
+            raise RuntimeError('Source is not independent of the destination; source retained')
+        # Fresh hashes, including resumed imports and previously imported duplicates.
+        # fsync before the destination read and flush its directory entry as well.
+        with target.open('rb') as saved:
+            sync_original(saved.fileno())
+        directory = os.open(target.parent, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        target_signature = Queue.signature(target)
+        self.phase = 'Rechecking source before removal'
+        source_digest = self.digest(source)
+        self.phase = 'Rechecking saved original before removal'
+        if self.digest(target) != row['digest'] or source_digest != row['digest']:
+            raise RuntimeError('Final hash verification failed; source retained')
+        receipt = uuid.uuid4().hex
+        with self.db() as db:
+            db.execute('INSERT INTO removals VALUES(?,?,?,?,?,?,?)',
+                       (receipt, str(source), signature, str(target), row['digest'], 'verified', datetime.now().isoformat()))
+        self.checkpoint()
+        if source.is_symlink() or target.is_symlink() or Queue.signature(source) != signature or Queue.signature(target) != target_signature:
+            raise RuntimeError('A file changed after verification; source retained')
+        source.unlink()
+        directory = os.open(source.parent, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        with self.db() as db:
+            db.execute("UPDATE removals SET state='removed' WHERE id=?", (receipt,))
+        self.removed += 1
 
     def checkpoint(self):
         phase = self.phase
@@ -217,7 +279,7 @@ class Importer:
                     path = Path(root) / name
                     if name.startswith('.') or path.is_symlink() or not path.is_file():
                         continue
-                    if path.suffix.lower() not in EXTENSIONS:
+                    if path.suffix.lower() not in EXTENSIONS or self.policy(path) == 'skip':
                         self.skipped += 1
                     else:
                         files.append(path)
@@ -230,6 +292,7 @@ class Importer:
                     result = self.copy_one(source)
                     if result == 'copied': self.copied += 1
                     else: self.duplicates += 1
+                    if self.policy(source) == 'remove': self.remove_verified(source)
                 except Stopped:
                     raise
                 except Exception as error:
@@ -246,7 +309,13 @@ def main():
     for name in ('source', 'destination', 'device'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--catalog')
+    parser.add_argument('--remove-source', action='store_true')
+    parser.add_argument('--policy-json', default='{}')
+    parser.add_argument('--policy-file')
     args = parser.parse_args()
+    if args.policy_file:
+        args.policy_json = Path(args.policy_file).read_text()
+    del args.policy_file
     os.nice(10)
     importer = Importer(**vars(args), emit=lambda value: print(json.dumps(value), flush=True))
     signal.signal(signal.SIGTERM, lambda *_: (importer.stop.set(), importer.wake.set()))

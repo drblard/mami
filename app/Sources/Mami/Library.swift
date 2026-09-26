@@ -197,6 +197,7 @@ actor SearchWorker {
     func matchesFormat(_ media: Media) -> Bool { format == .all || formats[media.path, default: .unknown] == format }
     @Published var speechAvailable = false
     private var all: [Media] = []
+    var catalogMedia: [Media] { all }
     private var byPath: [String: Media] = [:]
     private var generation = 0
     let worker = SearchWorker()
