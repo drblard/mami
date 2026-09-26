@@ -595,6 +595,7 @@ struct LibraryView: View {
         .task { await annotations.load() }
         .task { await clips.load() }
         .task { PhotosImporting.shared.startAutomatic() }
+        .task { Importing.shared.startAutomatic() }
         .task {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
@@ -1018,6 +1019,23 @@ struct MamiApp: App {
         await library.search()?.value
         guard library.items.count == 498, !library.showingMatches else { throw AppError.message("Clear search failed") }
         await library.worker.stop()
+        var cameraConnections = CameraConnections()
+        let cameraFixture = URL(fileURLWithPath: "/Volumes/DJI-Test")
+        guard cameraConnections.next([cameraFixture], enabled: false, busy: false) == nil,
+              cameraConnections.next([cameraFixture], enabled: true, busy: true) == nil,
+              cameraConnections.next([cameraFixture], enabled: true, busy: false) == cameraFixture,
+              cameraConnections.next([cameraFixture], enabled: true, busy: false) == nil else {
+            throw AppError.message("Camera enable/busy/once-per-connection scheduling failed")
+        }
+        cameraConnections.disconnected(cameraFixture)
+        guard cameraConnections.next([cameraFixture], enabled: true, busy: false) == cameraFixture else {
+            throw AppError.message("Camera reconnect retry failed")
+        }
+        cameraConnections.retry()
+        guard cameraConnections.next([cameraFixture], enabled: true, busy: false) == cameraFixture else {
+            throw AppError.message("Camera explicit retry failed")
+        }
+        print("CAMERA automatic enable, busy deferral, once-per-connection, reconnect and explicit retry passed")
         if let source = ProcessInfo.processInfo.environment["MAMI_IMPORT_TEST_SOURCE"],
            ProcessInfo.processInfo.environment["MAMI_IMPORT_TEST_DESTINATION"] != nil {
             let importer = Importing.shared

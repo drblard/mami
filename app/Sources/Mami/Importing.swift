@@ -1,6 +1,18 @@
 import AppKit
 import SwiftUI
 
+struct CameraConnections {
+    private var attempted = Set<URL>()
+    mutating func next(_ connected: [URL], enabled: Bool, busy: Bool) -> URL? {
+        attempted.formIntersection(Set(connected))
+        guard enabled, !busy, let next = connected.first(where: { !attempted.contains($0) }) else { return nil }
+        attempted.insert(next)
+        return next
+    }
+    mutating func retry() { attempted.removeAll() }
+    mutating func disconnected(_ url: URL) { attempted.remove(url) }
+}
+
 @MainActor final class Importing: ObservableObject {
     static let shared = Importing()
     struct Progress: Decodable {
@@ -21,9 +33,23 @@ import SwiftUI
     }
     @Published var source: URL?
     @Published var device = "DJI-Pocket-4P"
-    @Published var removeSource = false
-    @Published var includeProxies = false
-    @Published var ejectAfter = true
+    @Published var automaticDJI = UserDefaults.standard.object(forKey: "dji.automatic") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(automaticDJI, forKey: "dji.automatic") }
+    }
+    @Published var removeSource = UserDefaults.standard.bool(forKey: "dji.removeSource") {
+        didSet { UserDefaults.standard.set(removeSource, forKey: "dji.removeSource") }
+    }
+    @Published var includeProxies = UserDefaults.standard.bool(forKey: "dji.includeProxies") {
+        didSet { UserDefaults.standard.set(includeProxies, forKey: "dji.includeProxies") }
+    }
+    @Published var ejectAfter = UserDefaults.standard.object(forKey: "dji.ejectAfter") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(ejectAfter, forKey: "dji.ejectAfter") }
+    }
+    @Published private(set) var cameraStatus = "Waiting for DJI camera"
+    @Published private(set) var cameraError: String?
+    private var cameraTimer: Timer?
+    private var cameraObservers: [NSObjectProtocol] = []
+    private var connections = CameraConnections()
     @Published var policies: [String: String] = [:]
     @Published private(set) var sourceFiles: [String] = []
     @Published private(set) var listing = false
@@ -42,6 +68,46 @@ import SwiftUI
         if let photosDestination { return photosDestination }
         if CommandLine.arguments.contains("--ui-test"), let path = ProcessInfo.processInfo.environment["MAMI_IMPORT_TEST_DESTINATION"] { return URL(fileURLWithPath: path) }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals")
+    }
+
+    func startAutomatic() {
+        guard cameraTimer == nil, !CommandLine.arguments.contains("--ui-test") else { return }
+        cameraObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let url = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
+            Task { @MainActor in self?.connections.disconnected(url) }
+        })
+        cameraTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkCamera() }
+        }
+        checkCamera()
+    }
+
+    func retryCamera() {
+        connections.retry()
+        checkCamera(manual: true)
+    }
+
+    private func checkCamera(manual: Bool = false) {
+        let keys: Set<URLResourceKey> = [.volumeIsInternalKey, .volumeIsLocalKey]
+        let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: Array(keys), options: [.skipHiddenVolumes]) ?? []
+        // Recognize this camera by its DJI database and DCIM layout, rather than
+        // importing arbitrary removable drives or relying on a mutable disk name.
+        let cameras = volumes.filter { url in
+            guard let values = try? url.resourceValues(forKeys: keys), values.volumeIsInternal == false,
+                  values.volumeIsLocal == true else { return false }
+            return FileManager.default.fileExists(atPath: url.appendingPathComponent("MISC/PP-041.db").path)
+                && FileManager.default.fileExists(atPath: url.appendingPathComponent("DCIM").path)
+        }.sorted { $0.path < $1.path }
+        if manual && cameras.isEmpty { cameraStatus = "No DJI camera connected"; return }
+        guard let camera = connections.next(cameras, enabled: automaticDJI || manual, busy: running || listing || photosTransfer) else { return }
+        source = camera
+        device = "DJI-Pocket-4P"
+        policies = UserDefaults.standard.dictionary(forKey: "import-policies:" + camera.path) as? [String: String] ?? [:]
+        sourceFiles = []
+        cameraError = nil
+        cameraStatus = "Starting DJI offload…"
+        start()
+        if !running { cameraError = error; cameraStatus = "Offload needs attention — retry when ready" }
     }
 
     func chooseSource() {
@@ -84,11 +150,11 @@ import SwiftUI
     }
     func importPhotosFolder(_ folder: URL, destination: URL, receipts: [URL]) async throws {
         guard !running, !listing, !photosTransfer else { throw AppError.message("Camera import is busy. Photos will retry automatically.") }
-        let previous = (source, device, removeSource, policies, sourceFiles)
+        let previous = (source, device, policies, sourceFiles)
         photosTransfer = true
         photosDestination = destination
-        defer { (source, device, removeSource, policies, sourceFiles) = previous; photosTransfer = false; photosDestination = nil }
-        source = folder; device = "iCloud"; removeSource = false; policies = [:]; sourceFiles = []
+        defer { (source, device, policies, sourceFiles) = previous; photosTransfer = false; photosDestination = nil }
+        source = folder; device = "iCloud"; policies = [:]; sourceFiles = []
         start(photos: true, receipts: receipts)
         while running { try await Task.sleep(for: .milliseconds(250)) }
         if let error { throw AppError.message(error) }
@@ -148,6 +214,10 @@ import SwiftUI
         running = false
         input = nil; process = nil; output = nil
         if status != 0 { error = "Import stopped unexpectedly. Choose the same source and device folder to resume saved work." }
+        if !photosTransfer {
+            cameraError = error
+            cameraStatus = error == nil ? (progress?.ejection ?? progress?.phase ?? "Offload finished") : "Offload needs attention — reconnect and retry"
+        }
         requestScan()
     }
     private func requestScan() { if !CommandLine.arguments.contains("--ui-test") { Indexing.shared.scanNow() } }
@@ -159,6 +229,10 @@ import SwiftUI
             do {
                 let value = try JSONDecoder().decode(Progress.self, from: line)
                 progress = value
+                if !photosTransfer {
+                    cameraStatus = value.ejection ?? (value.current.isEmpty ? value.phase : "\(value.phase) · \(value.current)")
+                    if let message = value.error { cameraError = message }
+                }
                 if let message = value.error { error = message }
                 if value.copied > lastCopyCount {
                     lastCopyCount = value.copied
@@ -216,13 +290,8 @@ struct ImportSheet: View {
             }.disabled(importing.running)
             Text("Saved to \(importing.destination.appendingPathComponent(importing.device).path)/year/date/")
                 .font(.caption).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
-            Toggle("Remove imported files from this source after full verification", isOn: $importing.removeSource)
-                .disabled(importing.running)
+            SettingsLink { Text("Camera offload settings…") }
             Text("Each removal requires freshly matching SHA-256 hashes of both the source and the saved copy. This also applies to duplicates. Skipped files stay on the device.")
-                .font(.caption).foregroundStyle(.secondary)
-            Toggle("Include DJI .LRF proxy files", isOn: $importing.includeProxies).disabled(importing.running)
-            Toggle("Eject camera/card after successful import", isOn: $importing.ejectAfter).disabled(importing.running)
-            Text("Off: proxies stay untouched. On: proxies are copied into Originals/.mami-proxies/device/year/date, outside the media grid. The same remove-after-verification and per-file exceptions apply.")
                 .font(.caption).foregroundStyle(.secondary)
             if importing.listing { ProgressView("Listing source files…") }
             if !importing.sourceFiles.isEmpty {

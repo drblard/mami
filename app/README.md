@@ -311,7 +311,25 @@ is separate from catalog snapshots; back up the entire originals tree to retain
 it too. Published copies trigger an automatic scan; indexing's own pause state
 and GPU activity policy still apply.
 
-Source removal is explicitly selectable in the import sheet. Per-file exceptions
+Persistent camera preferences live in **Settings (⌘,) → DJI Camera**, including
+automatic offload on connection, verified source removal, LRF inclusion and eject.
+Automatic offload and eject default on; source removal and LRF inclusion default
+off. All four preferences survive app restarts. **Import** remains available for
+manual folders, and Settings offers **Review files / exceptions…** and retry.
+
+While Mami is open, external local volumes with the Pocket4P's `MISC/PP-041.db`
+and `DCIM` layout are recognized without relying on their volume name. The camera
+waits for the shared importer to finish any active Photos batch. One attempt runs
+per connection; a reconnect or **Check camera / retry** permits another attempt.
+Camera status/errors remain visible in Settings even when Photos subsequently
+uses the importer. Disable automatic offload before connecting to review exceptions.
+Native scheduling checks cover disabled/busy deferral, one attempt per connection,
+reconnect and explicit retry. The tested signed build
+`prototype-20260926T183506337829Z` is deployed; the new connection-triggered workflow
+still awaits a fresh physical camera connection. Manual verified offload/eject was
+already checked on the hardware as recorded below.
+
+Source removal is explicitly selectable in Settings. Per-file exceptions
 are **Skip — leave untouched**, **Import & keep**, and **Import & remove**; choices
 are remembered per source path. Before removing each file, including duplicates,
 the worker full-syncs the independent destination inside Originals, freshly rereads

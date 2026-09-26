@@ -4,6 +4,7 @@ import AppKit
 struct MamiSettings: View {
     @ObservedObject private var photos = PhotosImporting.shared
     @ObservedObject private var importing = Importing.shared
+    @ViewState private var reviewCamera = false
     private var busy: Bool { photos.running || importing.photosTransfer }
     private var transferStatus: String {
         if importing.photosTransfer, let progress = importing.progress {
@@ -54,11 +55,37 @@ struct MamiSettings: View {
                     .lineLimit(1).help(transferStatus)
                 if let error = photos.error { Text(error).font(.caption).foregroundStyle(.orange) }
             }
+            Section("DJI Camera") {
+                Toggle("Automatically offload DJI when connected", isOn: $importing.automaticDJI)
+                Toggle("Remove source files after verified offload", isOn: $importing.removeSource)
+                    .disabled(importing.running)
+                Toggle("Include DJI .LRF proxy files", isOn: $importing.includeProxies)
+                    .disabled(importing.running)
+                Toggle("Eject camera after successful offload", isOn: $importing.ejectAfter)
+                    .disabled(importing.running)
+                Text("While Mami is open, your DJI Pocket is detected automatically. Originals are saved in ~/Media/Originals/DJI-Pocket-4P/year/date. Proxies are saved separately in .mami-proxies. Removal always requires a verified independent copy.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(importing.cameraStatus).font(.caption).lineLimit(2, reservesSpace: true)
+                if let error = importing.cameraError { Text(error).font(.caption).foregroundStyle(.orange) }
+                HStack {
+                    Button("Check camera / retry") { importing.retryCamera() }
+                    Button("Review files / exceptions…") { reviewCamera = true }
+                }.disabled(importing.running || importing.listing)
+                if importing.running && !importing.photosTransfer {
+                    HStack {
+                        Button(importing.progress?.paused == true ? "Resume" : "Pause") { importing.togglePause() }
+                        Button("Stop offload") { importing.stop() }
+                    }
+                }
+                Text("If disconnected early, reconnect to resume verified work. Failed or stopped offloads do not eject. Turn automatic offload off before connecting to review per-file exceptions first.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Archiving") {
                 Text("Completed imports are remembered in the backed-up catalog. Changing the destination or moving an imported file does not request another iCloud download.")
                 Text("Managed NFS / HDD archiving is not available yet. It will need verified moves and catalog location updates so originals remain accessible when the archive is connected.")
                     .foregroundStyle(.secondary)
             }.font(.caption)
-        }.formStyle(.grouped).padding().frame(width: 580, height: 520)
+        }.formStyle(.grouped).padding().frame(width: 620, height: 740)
+            .sheet(isPresented: $reviewCamera) { ImportSheet() }
     }
 }
