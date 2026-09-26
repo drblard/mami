@@ -62,12 +62,17 @@ import SwiftUI
             task.standardInput = stdin
             task.standardOutput = stdout
             task.standardError = FileHandle.standardError
-            task.qualityOfService = .background
+            // Utility QoS avoids macOS's severe background disk throttling;
+            // the worker still uses nice(10), one CPU thread and foreground yields.
+            task.qualityOfService = .utility
             buffer = Data()
-            stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            stdout.fileHandleForReading.readabilityHandler = { [weak self, weak task] handle in
                 let data = handle.availableData
                 if data.isEmpty { handle.readabilityHandler = nil; return }
-                Task { @MainActor in self?.receive(data) }
+                Task { @MainActor in
+                    guard let self, self.process === task else { return }
+                    self.receive(data)
+                }
             }
             task.terminationHandler = { [weak self] ended in
                 Task { @MainActor in

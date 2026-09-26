@@ -39,6 +39,23 @@ def speech_hits(query, segments, by_path):
     return result
 
 
+def combine_hits(visual, spoken, limit=60):
+    """Reciprocal-rank fusion avoids comparing unrelated model/lexical scores.
+
+For a file matched by speech, open the actual spoken segment and retain its
+excerpt. Agreement between searches boosts the file, not a claimed same moment.
+"""
+    merged, scores = {}, {}
+    for results in (visual, spoken):
+        for rank, hit in enumerate(results, start=1):
+            path = hit['path']
+            scores[path] = scores.get(path, 0) + 1 / (60 + rank)
+            if path not in merged or hit.get('evidence'):
+                merged[path] = hit
+    order = sorted(scores, key=lambda path: (-scores[path], path))
+    return [{**merged[path], 'score': scores[path]} for path in order[:limit]]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--index', required=True)
@@ -114,7 +131,10 @@ def main():
             if not query or len(query) > 2000:
                 raise ValueError('Query must contain between 1 and 2000 characters')
             started = time.monotonic()
-            if request.get('mode') == 'speech':
+            mode = request.get('mode', 'both')
+            if mode not in ('both', 'visual', 'speech'):
+                raise ValueError('Unknown search mode')
+            if mode == 'speech':
                 hits = speech_hits(query, segments, by_path)
                 print(json.dumps({'hits': hits, 'elapsed': time.monotonic() - started, 'indexed_samples': len(samples)}, ensure_ascii=False), flush=True)
                 continue
@@ -134,6 +154,8 @@ def main():
                 hits.append({**sample, 'score': float(scores[i])})
                 if len(hits) >= 60:
                     break
+            if mode == 'both':
+                hits = combine_hits(hits, speech_hits(query, segments, by_path))
             response = {'hits': hits, 'elapsed': time.monotonic() - started, 'indexed_samples': len(samples)}
         except Exception as exc:
             response = {'error': str(exc)}

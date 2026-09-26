@@ -40,7 +40,8 @@ or cached search artifacts. Existing Mac files and previous results are preserve
 
 Browsing, cached scrubbing, local visual/spoken-word search, playback controls,
 manual labels, content-based relocation, and change-aware catalog backups are
-implemented. Automatic scanning/indexing with pause/resume and per-unit crash
-recovery is undergoing Mac integration checks. Visual search remains approximate.
+implemented. Automatic scanning with pause/resume passed Mac integration checks;
+incremental CPU indexing and live search refresh passed real-media checks. GPU
+transcription yields while CapCut is running. Visual search remains approximate.
 Verified device imports, collections, named people, and archive management are
 still planned.

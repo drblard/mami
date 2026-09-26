@@ -102,7 +102,7 @@ actor SearchWorker {
         let error: String?
     }
 
-    func search(_ query: String, mode: String = "visual") throws -> Reply {
+    func search(_ query: String, mode: String = "both") throws -> Reply {
         guard let input, process?.isRunning == true else { throw AppError.message("Search process is not running.") }
         var data = try JSONSerialization.data(withJSONObject: ["query": query, "mode": mode])
         data.append(10)
@@ -147,7 +147,7 @@ actor SearchWorker {
     @Published var ready = false
     @Published var searching = false
     @Published var showingMatches = false
-    @Published var mode = "visual"
+    @Published var mode = "both"
     @Published var speechAvailable = false
     private var all: [Media] = []
     private var byPath: [String: Media] = [:]
@@ -242,7 +242,9 @@ actor SearchWorker {
                     guard let original = byPath[sample.path] else { return nil }
                     return Media(path: original.path, kind: original.kind, url: original.url, frames: original.frames, match: sample, metadata: original.metadata, assetID: original.assetID)
                 }
-                let label = searchMode == "speech" ? "transcript matches · Automatic Romanian transcription" : "nearest matches · Matches may be approximate"
+                let label = searchMode == "speech" ? "transcript matches · Automatic Romanian transcription"
+                    : searchMode == "both" ? "combined matches · Visual similarity + Romanian speech"
+                    : "nearest matches · Matches may be approximate"
                 status = "\(items.count) \(label) · \(String(format: "%.2f", reply.elapsed ?? 0))s"
                 showingMatches = true
                 searching = false

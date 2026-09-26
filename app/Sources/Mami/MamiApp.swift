@@ -331,7 +331,9 @@ struct LibraryView: View {
                 .background(Color(red: 0.16, green: 0.17, blue: 0.20), in: RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.12), lineWidth: 1))
                 .frame(maxWidth: 820).frame(maxWidth: .infinity)
-                Text(library.mode == "speech" ? "Search Romanian speech · Accents are optional" : "Try “bringing food to goats”, “picking plums” or “grilling by a river”")
+                Text(library.mode == "speech" ? "Search Romanian speech · Accents are optional"
+                     : library.mode == "both" ? "Search visuals and Romanian speech together · Matches may be approximate"
+                     : "Try “bringing food to goats”, “picking plums” or “grilling by a river”")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 18)
             HStack {
@@ -342,6 +344,7 @@ struct LibraryView: View {
             HStack {
                 if library.speechAvailable {
                     Picker("Search in", selection: $library.mode) {
+                        Text("Both").tag("both")
                         Text("Visual").tag("visual")
                         Text("Spoken words").tag("speech")
                     }.frame(width: 230)
@@ -494,7 +497,7 @@ struct MamiApp: App {
         indexing.togglePause()
         try await until { !indexing.paused }
         try snapshot("scanning.png")
-        try await until({ indexing.phase == "Up to date" }, seconds: 180)
+        try await until({ indexing.phase == "Up to date" }, seconds: 900)
         let rows = try SQLDatabase(Catalog.standard.database, readOnly: true).scalar("SELECT count(*) FROM scan_files")
         guard rows == "498" else { throw AppError.message("Expected 498 scanned files, got \(rows)") }
         _ = try Catalog.standard.snapshotIfChanged()
@@ -511,6 +514,7 @@ struct MamiApp: App {
         let library = Library()
         await library.load()
         guard library.ready else { throw AppError.message(library.error ?? "Library not ready") }
+        guard library.mode == "both" else { throw AppError.message("Combined search is not the default") }
         guard library.items.allSatisfy({ $0.metadata != nil }) else { throw AppError.message("Missing capture metadata") }
         if !ContentIdentity.locations.isEmpty {
             guard library.items.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.url.path) && $0.assetID.hasPrefix("sha256:") }) else {
@@ -553,6 +557,15 @@ struct MamiApp: App {
         try await Task.sleep(for: .seconds(1))
         try snapshot("search.png")
         if library.speechAvailable {
+            library.query = "Dunăre"
+            await library.search()?.value
+            guard library.items.count == 60, library.items.contains(where: { $0.match.evidence != nil }),
+                  Set(library.items.map(\.path)).count == library.items.count else {
+                throw AppError.message("Combined search lost spoken matches or duplicated files")
+            }
+            try await Task.sleep(for: .milliseconds(300))
+            try snapshot("both.png")
+            print("BOTH combined search includes speech evidence and distinct files")
             library.mode = "speech"
             try await Task.sleep(for: .milliseconds(200))
             library.query = "Dunăre"

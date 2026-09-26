@@ -9,6 +9,11 @@ under `~/mami-lab/apps` with a unique timestamp.
 - Lazy media grid for all 498 files, video/photo filters, Reveal in Finder.
 - Persistent offline SigLIP process: the model stays loaded between searches.
 - Up to 60 distinct files per visual query, starting at each file's best frame.
+- Search defaults to **Both**: visual and Romanian spoken-word results are merged
+  using reciprocal ranks, with duplicate files combined. Speech evidence and its
+  exact segment timestamp are retained when a file matches spoken words. This
+  does not imply both searches matched the same moment. Visual-only and spoken-
+  word-only modes remain available.
 - Hover scrubbing from one-second JPEGs, off-main-thread decoding, a 192 MiB
   decoded-image cache, and neighboring-frame prefetch.
 - Search results default to a ±8-second neighborhood; disable the switch to
@@ -34,15 +39,18 @@ under `~/mami-lab/apps` with a unique timestamp.
 - SHA-256 content identities, with compatibility for earlier path-keyed labels.
   `build_catalog.py --inventory INVENTORY` fingerprints originals read-only and
   writes a fresh catalog plus per-file checkpoints. It reports exact duplicates.
+- Automatic background scanning of `~/Media/Originals`, persistent Pause/Resume,
+  progress, and incremental metadata/frame/embedding/transcription checkpoints.
+  Search reloads committed incremental results without restarting its model.
 
 This is a usable search/browser prototype, not the complete media manager.
-The SQLite catalog is seeded from a fixed experiment index. Resumable ingestion,
-automatic relocation discovery, named people, collections, camera imports,
-duplicate review, archive migration and media-backup management remain
-to be implemented. Content identities let labels follow an unchanged file once
-its new path is included in a rebuilt catalog; moving files is not yet detected
-automatically. Checkpoints are preserved but fingerprint runs do not yet resume.
-Import requirement: skip camera `.LRF` proxy files. A future explicit cleanup
+The SQLite catalog was seeded from a fixed experiment index; new files now enter
+the resumable indexing queue. Named people, collections, verified camera imports,
+duplicate review, archive migration and media-backup management remain planned.
+The scanner reconnects moved files by content when their earlier location is
+unavailable. The separate one-off fingerprint experiment does not resume, but
+the application's scanner checkpoints hashes per file and reuses unchanged ones.
+Scanning ignores camera `.LRF` proxy files. A future explicit cleanup
 action should handle existing `.LRF` files; current tools do not delete media.
 Visual results remain approximate; returning 60 neighbors does not mean 60
 confirmed matches. The Python environment and model cache must remain installed.
@@ -61,8 +69,8 @@ caffeinate -is swift build -c release
 ~/mami-lab/.venv/bin/python package.py \
   --index /Users/ludi/mami-lab/runs/visual-repaired-20260925T180807825809Z \
   --speech /Users/ludi/mami-lab/runs/speech-20260925T151338631656Z \
-  --inventory /Users/ludi/mami-lab/runs/inventory-20260925T150632007122Z/inventory.json \
-  --catalog /Users/ludi/mami-lab/catalog/fingerprints-20260926T052452141336Z/catalog.json
+  --metadata /Users/ludi/mami-lab/apps/prototype-20260926T065946500677Z/Mami.app/Contents/Resources/metadata.json \
+  --relocations /Users/ludi/mami-lab/catalog/relocation-20260926T065754403542Z/relocations.json
 Mami.app/Contents/MacOS/Mami --self-test
 open Mami.app
 ```
@@ -139,6 +147,66 @@ This selects the restored copy for that launch and leaves the original live
 catalog intact. Media/index files must also be available for full search and
 playback. Database records can still be read when the source index is unavailable;
 cached-image browsing requires the referenced frame files.
+
+## Background scanning and indexing
+
+The app starts one worker after the library opens and rescans every five minutes
+while running. **Scan now** requests an earlier pass. Supported inputs currently
+include MP4, MOV, JPG/JPEG, PNG and HEIC (actual decoding depends on FFmpeg/Pillow).
+Hidden files, symlinks and `.LRF` proxies are skipped. No originals are changed.
+
+The progress area shows discovery, file checking, preview creation, visual
+indexing and transcription. Discovery has an indeterminate indicator until the
+file total is known; subsequent phases show completed/total work. **Pause** is
+persisted in SQLite and survives restarting Mami. While a unit is in flight the
+UI says it is pausing; it then waits at the next safe boundary. **Resume** uses
+the existing checkpoints. File checks cache size, nanosecond mtime/ctime, inode
+and device; unchanged scans do not hash the files again or mutate the catalog.
+
+Durable checkpoints are stored in the same catalog (and its snapshots):
+
+- A full SHA-256 hash after each successfully checked file. During hashing,
+  pause/foreground requests are checked between 8 MiB reads; a process crash
+  may require hashing that one unfinished file again.
+- Metadata, each preview frame, each embedding, extracted audio chunks and
+  each completed 30-second Romanian transcription chunk.
+- Job state and bounded automatic retries; **Retry** keeps successful units.
+
+Artifacts live under `~/mami-lab/index-artifacts` and are fsynced before their
+checkpoint commits. Crash-orphaned outputs are retained. On restart, interrupted
+jobs return to the queue and valid units are reused. A source changing during
+processing invalidates that job rather than publishing mixed-version results.
+Chunked speech can lose context at chunk boundaries; it does not establish an
+accuracy improvement over whole-clip transcription.
+
+Work runs out of process at utility QoS with nice(10), single-threaded CPU visual
+inference and limited FFmpeg threads. It yields at checkpoints while Mami is
+showing a preview or performing a search. This is resource-conscious scheduling,
+not a hard guarantee of zero performance impact. `.background` QoS proved too
+restrictive for macOS disk I/O in the first native scan test; utility QoS resumed
+the 213 saved file checks and completed the 498-file scan.
+
+GPU transcription waits whenever CapCut is running, including background exports,
+and resumes 15 seconds after CapCut quits. App launch/termination notifications
+and a three-second check drive this conservative policy. It is **not global GPU
+utilization detection**: an idle open CapCut also blocks GPU transcription, and
+other GPU applications are not yet monitored. In-flight inference finishes its
+current chunk before yielding. The serial queue may wait at a speech stage until
+the editor exits. The current integration fixture has verified that real photo/
+video previews, CPU embeddings and audio are checkpointed before waiting for
+CapCut; its GPU transcription remains deferred because CapCut is running.
+
+The grid refreshes as previews become available. Committed embeddings and speech
+segments are loaded by the existing search worker on its next query. Results
+already on screen are not automatically reranked. Existing experimental indexes
+remain the base corpus; no full reindex of those 498 assets is needed.
+
+`--scan-ui-test NEW_DIRECTORY` verifies the native controller, pause persistence,
+no scan writes while paused, resume, and the 498-file baseline scan. The successful
+run is in `prototype-20260926T073246953188Z/scan-ui-check`. Isolated fixtures under
+`prototype-20260926T071912826752Z/real-index-check` retain real new-file pipeline
+checkpoints; `prototype-20260926T073246953188Z/search-refresh-check` verified the
+same search process seeing 7,132 then 7,133 samples after a new checkpoint.
 
 ## Measured on the M1 Max
 
