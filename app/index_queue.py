@@ -5,6 +5,7 @@ independently. Artifacts are fsynced before SQLite references them. Interrupted
 artifacts are retained; only the unfinished unit is retried after a crash.
 """
 import contextlib
+from datetime import datetime
 import fcntl
 import hashlib
 import json
@@ -20,6 +21,9 @@ EXTENSIONS = {'.mp4': 'video', '.mov': 'video', '.jpg': 'image', '.jpeg': 'image
 
 
 class Stopped(Exception):
+    pass
+
+class Reprioritize(Exception):
     pass
 
 
@@ -38,6 +42,9 @@ class Queue:
         self.last_emit = 0
         self.waiting = False
         self.scan_errors = 0
+        self.scan_requested = threading.Event()
+        self.last_scan = time.monotonic()
+        self.active_job = False
         self.initialize()
 
     @contextlib.contextmanager
@@ -72,6 +79,8 @@ class Queue:
                 db.execute('UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1')
             if db.execute('SELECT version FROM index_schema').fetchone()[0] != 1:
                 raise ValueError('Unsupported indexing queue version')
+            if 'capture_time' not in {r['name'] for r in db.execute('PRAGMA table_info(index_jobs)')}:
+                db.execute('ALTER TABLE index_jobs ADD COLUMN capture_time REAL')
             if db.execute('SELECT paused FROM scan_control WHERE id=1').fetchone()[0]:
                 self.paused.set()
             # Only jobs interrupted mid-flight change on startup.
@@ -101,6 +110,8 @@ class Queue:
                 db.execute("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE state='error'")
         elif action == 'stop':
             self.stop.set()
+        if action in ('scan', 'retry'):
+            self.scan_requested.set()
         self.wake.set()
         self.status(force=True)
 
@@ -117,6 +128,8 @@ class Queue:
             self.wake.clear()
         if self.stop.is_set():
             raise Stopped()
+        if self.active_job and ((self.scan_requested.is_set() and time.monotonic() - self.last_scan >= 15) or time.monotonic() - self.last_scan >= 60):
+            raise Reprioritize()
         if gpu and self.gpu_wait:
             self.gpu_wait(self)
             self.checkpoint()
@@ -145,6 +158,7 @@ class Queue:
         return 'sha256:' + digest.hexdigest(), signature
 
     def scan(self):
+        self.scan_requested.clear()
         self.scan_errors = 0
         self.phase, self.done, self.total, self.current = 'Discovering files', 0, 0, ''
         self.status(force=True)
@@ -159,12 +173,26 @@ class Queue:
         if not directories:
             raise FileNotFoundError('Media folders unavailable; reconnect the destination drive')
         files = []
+        imported_times = {}
         while directories:
             self.checkpoint()
             directory = directories.pop()
             with os.scandir(directory) as entries:
                 for entry in entries:
                     self.checkpoint()
+                    if entry.name == '.mami-imports' and not entry.is_symlink():
+                        journal = Path(entry.path) / 'journal.sqlite'
+                        if journal.is_file():
+                            # Photos exports preserve PhotoKit creation time as
+                            # source mtime. The durable import journal retains it
+                            # even after staging removal. Prefer that authoritative
+                            # date to edited media tags or destination copy time.
+                            try:
+                                with contextlib.closing(sqlite3.connect(journal.as_uri() + '?mode=ro', uri=True)) as imports:
+                                    for digest, signature in imports.execute("SELECT digest,signature FROM files WHERE device='iCloud' AND destination IS NOT NULL"):
+                                        imported_times['sha256:' + digest] = json.loads(signature)[1] / 1e9
+                            except (sqlite3.Error, ValueError, TypeError, IndexError):
+                                pass
                     if entry.name.startswith('.') or entry.is_symlink():
                         continue
                     if entry.is_dir(follow_symlinks=False):
@@ -190,7 +218,7 @@ class Queue:
                 with self.db() as db:
                     db.execute('INSERT INTO scan_files VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET signature=excluded.signature,asset=excluded.asset WHERE scan_files.signature != excluded.signature OR scan_files.asset != excluded.asset', (str(path), signature, asset))
                     known = db.execute('SELECT path,payload FROM media WHERE asset=?', (asset,)).fetchone()
-                    job = db.execute('SELECT state FROM index_jobs WHERE asset=?', (asset,)).fetchone()
+                    job = db.execute('SELECT state,capture_time FROM index_jobs WHERE asset=?', (asset,)).fetchone()
                     if known:
                         if known['path'] != str(path) and not Path(known['path']).exists():
                             media = json.loads(known['payload'])
@@ -203,6 +231,19 @@ class Queue:
                         db.execute("INSERT INTO index_jobs(asset,path,kind,signature,logical,state) VALUES(?,?,?,?,?,'queued')", (asset, str(path), EXTENSIONS[path.suffix.lower()], signature, 'library:' + asset))
                     elif job:
                         db.execute('UPDATE index_jobs SET path=?,signature=? WHERE asset=? AND (path != ? OR signature != ?)', (str(path), signature, asset, str(path), signature))
+                imported_time = imported_times.get(asset)
+                if (not known and not job) or (job and job['state'] != 'complete' and (job['capture_time'] is None or (imported_time is not None and job['capture_time'] != imported_time))):
+                    queued = dict(asset=asset, path=str(path), kind=EXTENSIONS[path.suffix.lower()], signature=signature)
+                    capture_time = imported_time
+                    if capture_time is None:
+                        probe = self.read_probe(queued)
+                        raw = (probe.get('metadata') or {}).get('sortDate')
+                        try:
+                            capture_time = datetime.strptime(str(raw), '%Y%m%d%H%M%S').timestamp()
+                        except (ValueError, TypeError, OverflowError):
+                            capture_time = path.stat().st_mtime
+                    with self.db() as db:
+                        db.execute('UPDATE index_jobs SET capture_time=? WHERE asset=?', (capture_time, asset))
                 if changed:
                     self.status(changed=True)
             except Stopped:
@@ -278,14 +319,8 @@ class Queue:
         if changed:
             self.status(changed=True)
 
-    def run_job(self, job):
+    def read_probe(self, job):
         asset = job['asset']
-        self.valid_source(job)
-        with self.db() as db:
-            db.execute("UPDATE index_jobs SET state='running',error=NULL WHERE asset=?", (asset,))
-        self.phase, self.current, self.done, self.total = 'Reading metadata', Path(job['path']).name, 0, 0
-        self.status(force=True)
-        self.checkpoint()
         probe = self.unit(asset, 'metadata', 0)
         if probe is None or probe.get('metadataVersion', 0) < getattr(self.backend, 'metadata_version', 0):
             refreshed = self.backend.probe(Path(job['path']), job['kind'])
@@ -299,9 +334,21 @@ class Queue:
             with self.db() as db:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='photos_import_history'").fetchone():
                     if db.execute('SELECT 1 FROM photos_import_history WHERE digest=? LIMIT 1', (asset.removeprefix('sha256:'),)).fetchone():
-                        probe['metadata']['source'] = 'iCloud'
+                        if probe.get('metadata') is not None:
+                            probe['metadata']['source'] = 'iCloud'
             self.valid_source(job)
             self.store_unit(asset, 'metadata', 0, probe)
+        return probe
+
+    def run_job(self, job):
+        asset = job['asset']
+        self.valid_source(job)
+        with self.db() as db:
+            db.execute("UPDATE index_jobs SET state='running',error=NULL WHERE asset=?", (asset,))
+        self.phase, self.current, self.done, self.total = 'Reading metadata', Path(job['path']).name, 0, 0
+        self.status(force=True)
+        self.checkpoint()
+        probe = self.read_probe(job)
         timestamps = probe['timestamps']
         speech_times = probe['speech_times']
         self.total = len(timestamps) * 2 + len(speech_times)
@@ -361,12 +408,24 @@ class Queue:
         self.status(force=True, changed=True)
 
     def work(self):
-        with self.db() as db:
-            jobs = [dict(r) for r in db.execute("SELECT * FROM index_jobs WHERE state IN ('queued','running') OR (state='error' AND attempts<3) ORDER BY path")]
-        for job in jobs:
+        attempted = set()
+        self.last_scan = time.monotonic()
+        while True:
+            if (self.scan_requested.is_set() and time.monotonic() - self.last_scan >= 15) or time.monotonic() - self.last_scan >= 60:
+                self.scan()
+                self.last_scan = time.monotonic()
+            with self.db() as db:
+                jobs = [dict(r) for r in db.execute("SELECT * FROM index_jobs WHERE state IN ('queued','running') OR (state='error' AND attempts<3) ORDER BY capture_time DESC, rowid DESC")]
+            job = next((job for job in jobs if job['asset'] not in attempted), None)
+            if job is None:
+                break
             self.checkpoint()
             try:
+                self.active_job = True
                 self.run_job(job)
+            except Reprioritize:
+                self.scan_requested.set()
+                continue
             except Stopped:
                 raise
             except Exception as error:
@@ -377,6 +436,9 @@ class Queue:
                 with self.db() as db:
                     db.execute("UPDATE index_jobs SET state='error',error=?,attempts=attempts+1 WHERE asset=?", (str(error), job['asset']))
                 self.status(error=f"{Path(job['path']).name}: {error}")
+            finally:
+                self.active_job = False
+            attempted.add(job['asset'])
         with self.db() as db:
             errors = db.execute("SELECT count(*) FROM index_jobs WHERE state='error'").fetchone()[0]
         errors += self.scan_errors

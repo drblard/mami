@@ -1,4 +1,6 @@
 import json
+import os
+import time
 import contextlib
 from pathlib import Path
 import sqlite3
@@ -57,6 +59,70 @@ class QueueTests(unittest.TestCase):
 
     def queue(self, emit=lambda event: None):
         return Queue(self.database, self.root, self.base / 'artifacts', self.backend, emit)
+
+    def test_capture_time_order_beats_filename_and_arrival_time(self):
+        newer = self.root / 'z.mp4'
+        newer.write_bytes(b'newest capture')
+        os.utime(newer, (1, 1))
+        probe = self.backend.probe
+        def dated(path, kind):
+            value = probe(path, kind)
+            value['metadata'] = {'sortDate': '20260926120000' if path == newer else '20260101120000'}
+            return value
+        self.backend.probe = dated
+        q = self.queue()
+        q.scan()
+        order = []
+        run = q.run_job
+        def record(job):
+            order.append(Path(job['path']).name)
+            run(job)
+        q.run_job = record
+        q.work()
+        self.assertEqual(order, ['z.mp4', 'a.mp4'])
+        resumed = self.queue()
+        with resumed.db() as db:
+            rows = db.execute('SELECT path FROM index_jobs ORDER BY capture_time DESC').fetchall()
+        self.assertEqual([Path(r[0]).name for r in rows], order)
+
+    def test_photos_creation_time_survives_staging_removal_and_overrides_copy_time(self):
+        q = self.queue()
+        q.scan()
+        with q.db() as db:
+            asset = db.execute('SELECT asset FROM index_jobs').fetchone()[0]
+        folder = self.root / '.mami-imports'
+        folder.mkdir()
+        with sqlite3.connect(folder / 'journal.sqlite') as db:
+            db.execute('CREATE TABLE files(digest TEXT,signature TEXT,device TEXT,destination TEXT)')
+            db.execute('INSERT INTO files VALUES(?,?,?,?)', (asset.removeprefix('sha256:'), json.dumps([8, 1700000000000000000, 1, 1, 1]), 'iCloud', str(self.source)))
+        q.scan()
+        with q.db() as db:
+            self.assertEqual(db.execute('SELECT capture_time FROM index_jobs').fetchone()[0], 1700000000)
+
+    def test_new_arrival_preempts_at_checkpoint_without_repeating_frames(self):
+        newer = self.root / 'new.mp4'
+        probe = self.backend.probe
+        def dated(path, kind):
+            value = probe(path, kind)
+            value['metadata'] = {'sortDate': '20260926120000' if path == newer else '20260101120000'}
+            return value
+        self.backend.probe = dated
+        q = self.queue()
+        q.scan()
+        frames = []
+        original_frame = self.backend.frame
+        def arrival(path, target, timestamp):
+            frames.append((path.name, timestamp))
+            original_frame(path, target, timestamp)
+            if not newer.exists():
+                newer.write_bytes(b'new arrival')
+                q.command({'action': 'scan'})
+                q.last_scan = time.monotonic() - 20
+        self.backend.frame = arrival
+        q.work()
+        self.assertEqual(frames, [('a.mp4', .5), ('new.mp4', .5), ('new.mp4', 1.5), ('new.mp4', 2.5), ('a.mp4', 1.5), ('a.mp4', 2.5)])
+        with q.db() as db:
+            self.assertTrue(all(row['state'] == 'complete' and row['attempts'] == 0 for row in db.execute('SELECT * FROM index_jobs')))
 
     def test_custom_and_offline_roots(self):
         custom = self.base / 'custom'

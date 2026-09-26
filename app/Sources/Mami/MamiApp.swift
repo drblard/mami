@@ -838,6 +838,10 @@ struct MamiApp: App {
             throw AppError.message("Configured Photos start date was not inclusive and open-ended")
         }
         let range = PhotosExporter.yearRange()
+        guard let newestFirst = PhotosExporter.fetchOptions(range: range).sortDescriptors?.first,
+              newestFirst.key == "creationDate", !newestFirst.ascending else {
+            throw AppError.message("Photos must fetch newest capture dates first")
+        }
         let predicate = PhotosExporter.fetchOptions(range: range).predicate!
         guard predicate.evaluate(with: ["creationDate": range.start]),
               predicate.evaluate(with: ["creationDate": range.end.addingTimeInterval(-1)]),

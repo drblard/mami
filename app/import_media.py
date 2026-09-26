@@ -172,6 +172,11 @@ class Importer:
 
     @staticmethod
     def capture_date(path):
+        captured, origin = Importer.capture_time(path)
+        return captured.strftime('%Y-%m-%d'), origin
+
+    @staticmethod
+    def capture_time(path):
         result = subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_entries',
                                  'format_tags:stream_tags', '-of', 'json', str(path)], capture_output=True, text=True, check=True, timeout=60)
         probe = json.loads(result.stdout)
@@ -180,7 +185,7 @@ class Importer:
             raw = tag.get('com.apple.quicktime.creationdate') or tag.get('creation_time')
             if raw:
                 try:
-                    return datetime.fromisoformat(raw.replace('Z', '+00:00')).strftime('%Y-%m-%d'), 'capture metadata'
+                    return datetime.fromisoformat(raw.replace('Z', '+00:00')), 'capture metadata'
                 except ValueError:
                     pass
         if path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.heic'):
@@ -190,10 +195,24 @@ class Importer:
                     exif = image.getexif()
                     raw = exif.get_ifd(34665).get(36867) or exif.get(306)
                     if raw:
-                        return datetime.strptime(str(raw), '%Y:%m:%d %H:%M:%S').strftime('%Y-%m-%d'), 'capture metadata'
+                        return datetime.strptime(str(raw), '%Y:%m:%d %H:%M:%S'), 'capture metadata'
             except (OSError, ValueError):
                 pass
-        return datetime.fromtimestamp(path.stat().st_mtime).strftime('%Y-%m-%d'), 'file modification date'
+        return datetime.fromtimestamp(path.stat().st_mtime), 'file modification date'
+
+    @staticmethod
+    def priority(path):
+        # DJI includes the full capture time in both original and proxy names.
+        match = re.match(r'DJI_(\d{14})_', path.name, re.IGNORECASE)
+        if match:
+            try:
+                return datetime.strptime(match[1], '%Y%m%d%H%M%S').timestamp()
+            except ValueError:
+                pass
+        try:
+            return Importer.capture_time(path)[0].timestamp()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return path.stat().st_mtime
 
     def candidates(self, digest):
         with self.db() as db:
@@ -324,6 +343,7 @@ class Importer:
                         files.append(path)
                 self.status()
             self.total = len(files)
+            files.sort(key=self.priority, reverse=True)
             for source in files:
                 self.checkpoint()
                 self.current = source.name

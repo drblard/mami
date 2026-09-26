@@ -374,6 +374,41 @@ successful verified recovery to a new destination.
 
 ## Cable-free Photos imports
 
+### Newest-first scheduling
+
+Photos downloads use descending PhotoKit creation dates. The asset list refreshes
+every 60 seconds between assets during a long pass so newly synced captures can
+jump ahead of the historical backlog. Already staged receipts are drained newest
+first within the existing bounded staging pipeline; an active download finishes.
+Camera files are sorted by capture timestamp (DJI timestamped names, otherwise
+capture metadata, with file modification time as fallback).
+
+Index jobs persist capture-time priorities. For Photos, the durable import journal
+retains PhotoKit's capture timestamp in the staged source signature even after
+staging is removed; this takes precedence over edited-file tags or destination copy
+time. Other media uses cached metadata, then modification time as fallback.
+Equal timestamps use newest enqueue order. Existing
+unfinished jobs have priorities filled during the next scan; completed indexing
+is retained. The scheduler chooses the next job afresh, rather than walking an
+old snapshot of the backlog. Incoming scan requests are coalesced at 15 seconds;
+a 60-second periodic check also discovers arrivals. At a cooperative checkpoint,
+older work yields, is reprioritized, and resumes without repeating saved frames,
+embeddings or speech chunks. Active model/FFmpeg calls finish before yielding.
+
+`prototype-20260926T185402022252Z` passed 40 Python tests on Linux/macOS and native
+integration, including PhotoKit ordering, capture-date precedence over filename/
+arrival time, authoritative Photos journal dates, priority persistence and mid-job
+arrival without duplicate frames. This signed build is deployed and running.
+
+The old `32 of 16866` Photos message represented position in the entire matching
+library, not downloads remaining, and reset when ordering changed. It is replaced
+by `newest first · capture date · filename`. A live audit against the 21:48:54
+catalog snapshot retained all 4,285 previously completed resource IDs, found 151
+new IDs and confirmed none of the latest 30 imported files was previously completed.
+Evidence is in `prototype-20260926T184845814982Z/redownload-audit.json`. Filenames
+can legitimately repeat: IMG_9823.HEIC exists as distinct March 2 and September 24
+Photos resources, each tracked independently.
+
 **Import media… → Enable Photos import…** asks for macOS Photos permission. The
 Mac must use the same iCloud-synced System Photo Library as the phone. Apple’s
 PhotoKit supplies full original photo/video resources, including Live Photo paired

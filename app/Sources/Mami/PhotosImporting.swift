@@ -138,6 +138,7 @@ enum PhotosExporter {
     static func fetchOptions(range: DateInterval) -> PHFetchOptions {
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate < %@", range.start as NSDate, range.end as NSDate)
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         return options
     }
     struct Receipt: Codable {
@@ -179,8 +180,11 @@ enum PhotosExporter {
         var history = try Catalog.standard.photosHistory()
         // Past completed exports are excluded from subsequent importer passes.
         // The importer still freshly verifies any pending download or retry.
-        for url in try fm.contentsOfDirectory(at: receipts, includingPropertiesForKeys: nil) where url.pathExtension == "json" {
-            let receipt = try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: url))
+        let saved = try fm.contentsOfDirectory(at: receipts, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+            .map { ($0, try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: $0))) }
+            .sorted { ($0.1.captureDate ?? .distantPast) > ($1.1.captureDate ?? .distantPast) }
+        for (url, receipt) in saved {
             let key = url.deletingPathExtension().lastPathComponent
             if receipt.imported == true {
                 try Catalog.standard.recordPhotosImport(resource: key, digest: receipt.digest, size: receipt.size)
@@ -208,11 +212,22 @@ enum PhotosExporter {
             report.failures.append("Photos access is unavailable for this app build. Re-enable Photos import in Settings to request access. Completed downloads can still be saved.")
             return report
         }
-        let assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
+        var assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
         report.assets = assets.count
-        for index in 0..<assets.count {
+        var index = 0
+        var refreshed = Date()
+        var visited = Set<String>()
+        while index < assets.count {
             try cancellation.check()
+            if Date().timeIntervalSince(refreshed) >= 60 {
+                assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
+                report.assets = assets.count
+                index = 0; refreshed = Date()
+                if assets.count == 0 { break }
+            }
             let asset = assets.object(at: index)
+            index += 1
+            guard visited.insert(asset.localIdentifier).inserted else { continue }
             guard let date = asset.creationDate, date >= range.start, date < range.end else { continue }
             let resources = PHAssetResource.assetResources(for: asset).filter { [.photo, .video, .pairedVideo].contains($0.type) }
             for (resourceIndex, resource) in resources.enumerated() {
@@ -233,7 +248,7 @@ enum PhotosExporter {
                     }
                     // Preserve a damaged export; only the replacement receipt is queued.
                 }
-                progress("Fetching Photos original \(index + 1) of \(assets.count) · \(resource.originalFilename)")
+                progress("Fetching Photos original · newest first · \(date.formatted(date: .abbreviated, time: .omitted)) · \(resource.originalFilename)")
                 let folder = root.appendingPathComponent(key)
                 try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                 let name = URL(fileURLWithPath: resource.originalFilename).lastPathComponent

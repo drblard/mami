@@ -23,6 +23,20 @@ class ImportTests(unittest.TestCase):
     def importer(self, **kwargs):
         return Importer(self.source, self.destination, 'Camera', date_reader=lambda _: ('2026-09-18', 'fixture'), **kwargs)
 
+    def test_dji_capture_time_order(self):
+        names = ['DJI_20260101120000_0001_D.MP4', 'DJI_20260926120000_0002_D.MP4', 'DJI_20260926090000_0003_D.JPG']
+        for name in reversed(names):
+            (self.source / name).write_bytes(name.encode())
+        imp = self.importer()
+        order = []
+        copy = imp.copy_one
+        def record(path):
+            order.append(path.name)
+            return copy(path)
+        imp.copy_one = record
+        imp.run()
+        self.assertEqual(order, [names[1], names[2], names[0]])
+
     def test_exact_photos_destination_and_retry(self):
         (self.source / 'a.mov').write_bytes(b'cloud original')
         importer = self.importer(direct_destination=True)
