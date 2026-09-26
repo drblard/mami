@@ -3,8 +3,9 @@ import argparse
 import json
 import plistlib
 import shutil
-import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
+import signing
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--index', required=True)
@@ -14,6 +15,7 @@ parser.add_argument('--catalog')
 parser.add_argument('--metadata', help='Reuse previously extracted capture metadata for unchanged media')
 parser.add_argument('--relocations', help='Verified SHA-256 relocation report')
 args = parser.parse_args()
+signing.load()  # No silent fallback to build-specific ad-hoc signing.
 root = Path(__file__).resolve().parent
 bundle = root / 'Mami.app'
 bundle.mkdir(exist_ok=False)
@@ -56,9 +58,9 @@ elif args.catalog:
 with (contents / 'Info.plist').open('xb') as f:
     plistlib.dump({'CFBundleExecutable': 'Mami', 'CFBundleIdentifier': 'local.mami.prototype',
                   'CFBundleName': 'Mami', 'CFBundleDisplayName': 'Mami',
-                  'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1',
+                  'CFBundlePackageType': 'APPL', 'CFBundleVersion': str(int(datetime.now(timezone.utc).timestamp())),
                   'CFBundleShortVersionString': '0.1.0', 'LSMinimumSystemVersion': '14.0',
                   'NSHighResolutionCapable': True,
                   'NSPhotoLibraryUsageDescription': 'Mami imports full originals from your synced Photos library into independent, verified local copies. Mami never deletes from Photos or iCloud.'}, f)
-subprocess.run(['/usr/bin/codesign', '--sign', '-', str(bundle)], check=True)
+signing.sign(bundle)
 print(bundle)

@@ -4,6 +4,36 @@ SwiftUI macOS browser backed by the existing local experiments. The application
 reads the original media, cached JPEGs, and index; all deployments are created
 under `~/mami-lab/apps` with a unique timestamp.
 
+## Persistent local signing
+
+Packaging now requires a persistent code-signing identity rather than ad-hoc
+signatures, whose designated requirement changes with every build. Run
+`~/mami-lab/.venv/bin/python signing.py` once on the Mac to create a dedicated
+keychain and a ten-year local code-signing certificate. It preserves existing
+identity material on subsequent runs. The printed `security add-trusted-cert`
+command must run interactively in Terminal on the Mac: macOS requires the user
+to approve certificate trust. Trust is scoped to code signing in the user's
+trust settings, not general TLS trust or the system trust store.
+
+Private material stays in `~/mami-lab/signing` (mode 0700): a dedicated keychain,
+encrypted PKCS#12 recovery copy, and a mode-0600 password file. Keep that directory
+in the Mac's protected backup; don't commit it or generate a replacement certificate
+for each build. Packaging unlocks only this keychain, pins the designated requirement
+to the certificate fingerprint plus the existing bundle ID, and verifies the signed
+bundle. It records public signing details beside the bundle and never falls back
+to ad-hoc signing. The normal user keychain search list is preserved.
+
+This identity is for this local Mac workflow, not notarized public distribution.
+Switching from the old ad-hoc identity requires Photos approval once more. Permission
+retention must then be tested across two different signed builds before being marked
+verified. As of 2026-09-26, certificate creation is complete; interactive trust approval
+and that two-build Photos test are pending. The existing ad-hoc build keeps running.
+
+Agreed next priorities: finish signing/permission retention, then physical DJI
+verified-cleanup checks and `.LRF` handling, then English semantic retrieval over
+Romanian speech. Initial import/indexing continues in the background; NFS/HDD
+archive support is deferred until closer to the storage purchase.
+
 ### Worker-pipe crash fix (2026-09-26)
 
 The macOS launchd log confirmed that Mami PID 63898 exited on SIGPIPE at
