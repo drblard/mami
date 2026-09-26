@@ -213,7 +213,7 @@ Name collisions preserve the existing file and give the new copy a unique suffix
 Hidden files, symlinks and unsupported types (including `.LRF`) are skipped.
 
 **Pause**, **Resume**, **Stop**, and background progress are available in the import
-sheet. Import I/O yields between chunks during Mami preview/search. After a crash
+sheet. Imports continue while Mami previews or searches media. After a crash
 or closing Mami, choose the same source and device folder again: the importer
 checks saved partial bytes against the source and appends the remaining bytes.
 Damaged partial attempts are retained and replaced with new attempts. The tests
@@ -414,8 +414,9 @@ Chunked speech can lose context at chunk boundaries; it does not establish an
 accuracy improvement over whole-clip transcription.
 
 Work runs out of process at utility QoS with nice(10), single-threaded CPU visual
-inference and limited FFmpeg threads. It yields at checkpoints while Mami is
-showing a preview or performing a search. This is resource-conscious scheduling,
+inference and limited FFmpeg threads. Previews and searches do not send scheduling
+commands or pause imports/indexing. Manual Pause and GPU-load checks remain.
+This is resource-conscious scheduling,
 not a hard guarantee of zero performance impact. `.background` QoS proved too
 restrictive for macOS disk I/O in the first native scan test; utility QoS resumed
 the 213 saved file checks and completed the 498-file scan.

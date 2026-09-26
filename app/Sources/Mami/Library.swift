@@ -287,7 +287,6 @@ actor SearchWorker {
     }
 
     @discardableResult func search() -> Task<Void, Never>? {
-        Indexing.shared.setSearchBusy(false)
         generation += 1
         let current = generation
         let searchMode = mode
@@ -297,10 +296,8 @@ actor SearchWorker {
         if text.isEmpty { items = all; searching = false; showingMatches = false; status = "\(all.count) files"; return nil }
         guard ready else { return nil }
         searching = true
-        Indexing.shared.setSearchBusy(true)
         status = "Searching locally…"
         return Task {
-            defer { if generation == current { Indexing.shared.setSearchBusy(false) } }
             do {
                 let reply = try await worker.search(text, mode: searchMode, paths: paths)
                 guard generation == current else { return }

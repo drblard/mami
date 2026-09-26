@@ -303,8 +303,7 @@ struct Playback: View {
                 if photo == nil { failure = "Could not decode this photo." }
             }
         }
-        .onAppear { Indexing.shared.beginPreview(selection.id) }
-        .onDisappear { transport.stop(); Indexing.shared.endPreview(selection.id) }
+        .onDisappear { transport.stop() }
     }
 }
 

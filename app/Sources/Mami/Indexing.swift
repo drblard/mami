@@ -23,7 +23,6 @@ import SwiftUI
     @Published private(set) var total = 0
     @Published private(set) var paused = false
     @Published private(set) var waiting = false
-    @Published private(set) var foregroundBusy = false
     @Published private(set) var error: String?
     @Published private(set) var running = false
     @Published private(set) var catalogGeneration = 0
@@ -32,14 +31,11 @@ import SwiftUI
     private var input: FileHandle?
     private var output: FileHandle?
     private var buffer = Data()
-    private var searchBusy = false
-    private var previews = Set<UUID>()
     private var retries = 0
     private var quitting = false
     var active: Bool { running && !["Up to date", "Needs attention", "Scan needs attention"].contains(phase) }
     var label: String {
         if paused { return waiting || !active ? "Paused — progress saved" : "Pausing after current step…" }
-        if foregroundBusy && active { return "Yielding to preview/search" }
         return phase
     }
 
@@ -62,7 +58,7 @@ import SwiftUI
             task.standardOutput = stdout
             task.standardError = FileHandle.standardError
             // Utility QoS avoids macOS's severe background disk throttling;
-            // the worker still uses nice(10), one CPU thread and foreground yields.
+            // the worker still uses nice(10), one CPU thread and GPU-load checks.
             task.qualityOfService = .utility
             buffer = Data()
             stdout.fileHandleForReading.readabilityHandler = { [weak self, weak task] handle in
@@ -96,7 +92,6 @@ import SwiftUI
             output = stdout.fileHandleForReading
             running = true
             error = nil
-            send(["action": "busy", "value": searchBusy || !previews.isEmpty])
         } catch { self.error = "Could not start background indexing: \(error.localizedDescription)" }
     }
 
@@ -109,7 +104,7 @@ import SwiftUI
                 let progress = try JSONDecoder().decode(Progress.self, from: line)
                 phase = progress.phase; done = progress.done; total = progress.total
                 current = progress.current; paused = progress.paused
-                waiting = progress.waiting ?? false; foregroundBusy = progress.busy
+                waiting = progress.waiting ?? false
                 gpuUtilization = progress.gpu_utilization
                 if let message = progress.error { error = message }
                 else if phase == "Up to date" { error = nil }
@@ -129,14 +124,6 @@ import SwiftUI
     func togglePause() { send(["action": paused ? "resume" : "pause"]) }
     func scanNow() { if !running { retries = 0; start() }; send(["action": "scan"]) }
     func retry() { error = nil; if !running { retries = 0; start() }; send(["action": "retry"]) }
-    func setSearchBusy(_ value: Bool) { searchBusy = value; updateForegroundBusy() }
-    func beginPreview(_ id: UUID) { previews.insert(id); updateForegroundBusy() }
-    func endPreview(_ id: UUID) { previews.remove(id); updateForegroundBusy() }
-    private func updateForegroundBusy() {
-        let value = searchBusy || !previews.isEmpty
-        send(["action": "busy", "value": value])
-        Importing.shared.setBusy(value)
-    }
     func stop() {
         quitting = true
         send(["action": "stop"])

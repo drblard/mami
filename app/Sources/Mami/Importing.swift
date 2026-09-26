@@ -33,7 +33,6 @@ import SwiftUI
     private var output: FileHandle?
     private var buffer = Data()
     private var lastCopyCount = 0
-    private var busy = false
     private var photosDestination: URL?
     var removesAnySource: Bool { removeSource || policies.values.contains("remove") }
     var destination: URL {
@@ -124,7 +123,6 @@ import SwiftUI
             try task.run()
             process = task; input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading
             running = true
-            send(busy ? "busy" : "idle")
             // Consume all final progress before handling exit. A termination
             // callback can otherwise race the final pipe readability callback.
             Task.detached { [weak self] in
@@ -167,14 +165,10 @@ import SwiftUI
             var data = try JSONSerialization.data(withJSONObject: ["action": action])
             data.append(10)
             try WorkerPipe.write(data, to: input)
-        } catch let error as POSIXError where error.code == .EPIPE && ["busy", "idle"].contains(action) {
-            // A completed batch no longer needs foreground scheduling updates.
-            // Its stdout reader still owns final progress and exit handling.
         } catch { self.error = error.localizedDescription }
     }
     func togglePause() { send(progress?.paused == true ? "resume" : "pause") }
     func stop() { send("stop") }
-    func setBusy(_ value: Bool) { busy = value; send(value ? "busy" : "idle") }
     func shutdown() { stop(); try? input?.close(); process?.terminate() }
 }
 
