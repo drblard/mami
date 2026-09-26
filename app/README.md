@@ -33,7 +33,9 @@ verified. As of 2026-09-26, interactive trust approval is complete. The signed b
 for the update test after the user grants Photos access to the signed identity.
 Both strictly verify against the same certificate-pinned requirement and have
 different signature hashes; the latter deployment records this in
-`signing-cross-build-check.json`. Actual Photos permission retention is still pending.
+`signing-cross-build-check.json`. Photos permission retention is now verified:
+after approval on the first build, the second resumed fetching automatically
+at 20:10:57 +0300 on 2026-09-26 (PID 83748), with no new permission request.
 
 All native worker launches set `PYTHONDONTWRITEBYTECODE=1`: Python cache files inside
 `Contents/Resources` invalidate the sealed app. Native integration checks (including
@@ -174,8 +176,9 @@ duplicate review, archive migration and media-backup management remain planned.
 The scanner reconnects moved files by content when their earlier location is
 unavailable. The separate one-off fingerprint experiment does not resume, but
 the application's scanner checkpoints hashes per file and reuses unchanged ones.
-Scanning ignores camera `.LRF` proxy files. A future explicit cleanup
-action should handle existing `.LRF` files; verified import cleanup excludes them.
+Scanning ignores camera `.LRF` proxy files. Camera import optionally preserves them
+in the hidden `.mami-proxies` tree and can remove them only after independent-copy
+verification, using the same keep/skip/remove policies as original media.
 Visual results remain approximate; returning 60 neighbors does not mean 60
 confirmed matches. The Python environment and model cache must remain installed.
 
@@ -287,7 +290,11 @@ verifies SHA-256, and confirms the source stat signature is unchanged. Only then
 does it atomically publish the destination filename. It checks catalog/import
 journal duplicate candidates by rehashing the existing copy before skipping one.
 Name collisions preserve the existing file and give the new copy a unique suffix.
-Hidden files, symlinks and unsupported types (including `.LRF`) are skipped.
+Hidden files, symlinks and unsupported types are skipped. `.LRF` proxies are skipped
+unless **Include DJI .LRF proxy files** is enabled. When enabled, copies are preserved
+under `Originals/.mami-proxies/<device>/<year>/<date>/`, outside the media index;
+the proxy's own bytes must be saved and verified before its source can be removed.
+Per-file skip/keep/remove applies independently to each listed file.
 
 **Pause**, **Resume**, **Stop**, and background progress are available in the import
 sheet. Imports continue while Mami previews or searches media. After a crash
@@ -312,8 +319,14 @@ and SHA-256 hashes both files, commits a verification receipt, checks their full
 stat signatures again, and only then unlinks the source. Any mismatch/error retains
 the source. SQLite fullfsync and macOS F_FULLFSYNC are used for this boundary.
 After a crash, a prior verification receipt never authorizes removal without fresh
-verification. This is selective file removal, not device formatting: `.LRF`, hidden,
-unsupported and skipped files remain. No physical DJI was connected for testing.
+verification. This is selective file removal, not device formatting: unselected
+`.LRF`, hidden, unsupported and skipped files remain. No physical DJI was connected
+for testing. The `prototype-20260926T171304898633Z` build adds explicit proxy import
+and cleanup controls. 34 Python tests passed on Linux and macOS, including proxy
+keep/skip/removal and retention after destination corruption. Native integration
+checks passed and the app's signature remained valid afterward. Physical DJI
+verification requires the camera/card to be connected; English semantic speech
+retrieval is next after that priority.
 The retained `prototype-20260926T100312588736Z/removal-check` fixture passed on
 the Mac with real video bytes, F_FULLFSYNC, a durable removal receipt, and keep/
 skip/proxy retention. The 33 Python checks include a real process crash after

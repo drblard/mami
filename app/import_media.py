@@ -34,7 +34,8 @@ def sync_original(descriptor):
 
 class Importer:
     def __init__(self, source, destination, device, catalog=None, emit=lambda value: None, date_reader=None,
-                 remove_source=False, policy_json='{}', direct_destination=False):
+                 remove_source=False, policy_json='{}', direct_destination=False, include_proxies=False):
+        self.include_proxies = include_proxies
         self.direct_destination = direct_destination
         self.local_candidates_only = False
         self.source, self.destination = Path(source).resolve(), Path(destination).resolve()
@@ -244,6 +245,8 @@ class Importer:
         if self.digest(part) != digest or Queue.signature(source) != signature:
             raise RuntimeError('Verification failed; saved attempt retained, no original published')
         base = self.destination if self.direct_destination else self.destination / self.device
+        if source.suffix.lower() == '.lrf':
+            base = self.destination / '.mami-proxies' / self.device
         folder = base / row['date'][:4] / row['date']
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / source.name
@@ -283,7 +286,8 @@ class Importer:
                     path = Path(root) / name
                     if name.startswith('.') or path.is_symlink() or not path.is_file():
                         continue
-                    if path.suffix.lower() not in EXTENSIONS or self.policy(path) == 'skip':
+                    supported = path.suffix.lower() in EXTENSIONS or (self.include_proxies and path.suffix.lower() == '.lrf')
+                    if not supported or self.policy(path) == 'skip':
                         self.skipped += 1
                     else:
                         files.append(path)
@@ -315,6 +319,7 @@ def main():
     parser.add_argument('--catalog')
     parser.add_argument('--direct-destination', action='store_true')
     parser.add_argument('--remove-source', action='store_true')
+    parser.add_argument('--include-proxies', action='store_true', help='Preserve DJI .LRF files in .mami-proxies; source removal still requires a verified independent copy')
     parser.add_argument('--policy-json', default='{}')
     parser.add_argument('--policy-file')
     args = parser.parse_args()

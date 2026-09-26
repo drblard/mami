@@ -33,6 +33,34 @@ class ImportTests(unittest.TestCase):
         retry.run()
         self.assertEqual((retry.copied, retry.duplicates, retry.failed), (0, 1, 0))
 
+    def test_proxy_cleanup_preserves_independent_bytes_and_exceptions(self):
+        for name in ('remove.LRF', 'keep.LRF', 'skip.LRF'):
+            (self.source / name).write_bytes(name.encode())
+        imp = self.importer(include_proxies=True, remove_source=True,
+                            policy_json=json.dumps({'keep.LRF': 'keep', 'skip.LRF': 'skip'}))
+        imp.run()
+        self.assertEqual((imp.copied, imp.removed, imp.failed, imp.skipped), (2, 1, 0, 1))
+        folder = self.destination / '.mami-proxies/Camera/2026/2026-09-18'
+        self.assertEqual((folder / 'remove.LRF').read_bytes(), b'remove.LRF')
+        self.assertFalse((self.source / 'remove.LRF').exists())
+        self.assertEqual((self.source / 'keep.LRF').read_bytes(), b'keep.LRF')
+        self.assertEqual((self.source / 'skip.LRF').read_bytes(), b'skip.LRF')
+        self.assertFalse((folder / 'skip.LRF').exists())
+
+    def test_proxy_is_not_removed_when_destination_changes_before_cleanup(self):
+        source = self.source / 'proxy.LRF'
+        source.write_bytes(b'proxy bytes')
+        imp = self.importer(include_proxies=True, remove_source=True)
+        remove = imp.remove_verified
+        def corrupt_then_remove(path):
+            target = next((self.destination / '.mami-proxies').rglob('*.LRF'))
+            target.write_bytes(b'damaged copy')
+            remove(path)
+        imp.remove_verified = corrupt_then_remove
+        imp.run()
+        self.assertEqual((imp.removed, imp.failed), (0, 1))
+        self.assertEqual(source.read_bytes(), b'proxy bytes')
+
     def test_verified_copy_duplicate_proxy_exclusion_and_collision(self):
         (self.source / 'a.mp4').write_bytes(b'original footage')
         (self.source / 'duplicate.MOV').write_bytes(b'original footage')

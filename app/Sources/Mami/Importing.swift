@@ -21,6 +21,7 @@ import SwiftUI
     @Published var source: URL?
     @Published var device = "DJI-Pocket-4P"
     @Published var removeSource = false
+    @Published var includeProxies = false
     @Published var policies: [String: String] = [:]
     @Published private(set) var sourceFiles: [String] = []
     @Published private(set) var listing = false
@@ -62,7 +63,7 @@ import SwiftUI
                         while let file = entries.nextObject() as? URL {
                             let info = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
                             if info.isSymbolicLink == true { entries.skipDescendants(); continue }
-                            if info.isRegularFile == true, ["mp4", "mov", "jpg", "jpeg", "png", "heic"].contains(file.pathExtension.lowercased()) {
+                            if info.isRegularFile == true, ["mp4", "mov", "jpg", "jpeg", "png", "heic", "lrf"].contains(file.pathExtension.lowercased()) {
                                 result.append(String(file.path.dropFirst(url.path.count + 1)))
                             }
                         }
@@ -106,6 +107,7 @@ import SwiftUI
                               "--source", source.path, "--destination", destination.path, "--device", device,
                                "--catalog", Catalog.standard.database.path]
             if removeSource { task.arguments?.append("--remove-source") }
+            if includeProxies && !photos { task.arguments?.append("--include-proxies") }
             if photos { task.arguments?.append("--direct-destination") }
             let policyDirectory = Catalog.standard.directory.appendingPathComponent("import-policies")
             try FileManager.default.createDirectory(at: policyDirectory, withIntermediateDirectories: true)
@@ -213,7 +215,10 @@ struct ImportSheet: View {
                 .font(.caption).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
             Toggle("Remove imported files from this source after full verification", isOn: $importing.removeSource)
                 .disabled(importing.running)
-            Text("Each removal requires freshly matching SHA-256 hashes of both the source and the saved original. This also applies to duplicates. Skipped files and .LRF proxies stay on the device.")
+            Text("Each removal requires freshly matching SHA-256 hashes of both the source and the saved copy. This also applies to duplicates. Skipped files stay on the device.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Include DJI .LRF proxy files", isOn: $importing.includeProxies).disabled(importing.running)
+            Text("Off: proxies stay untouched. On: proxies are copied into Originals/.mami-proxies/device/year/date, outside the media grid. The same remove-after-verification and per-file exceptions apply.")
                 .font(.caption).foregroundStyle(.secondary)
             if importing.listing { ProgressView("Listing source files…") }
             if !importing.sourceFiles.isEmpty {
@@ -222,7 +227,7 @@ struct ImportSheet: View {
                         LazyVStack {
                             ForEach(importing.sourceFiles, id: \.self) { file in
                                 HStack {
-                                    Text(file).font(.caption).lineLimit(1).truncationMode(.middle)
+                                    Text(file + (file.lowercased().hasSuffix(".lrf") ? " · DJI proxy" : "")).font(.caption).lineLimit(1).truncationMode(.middle)
                                     Spacer()
                                     Picker("Action", selection: Binding(get: { importing.policies[file] ?? "default" }, set: { importing.setPolicy($0, for: file) })) {
                                         Text(importing.removeSource ? "Default: import & remove" : "Default: import & keep").tag("default")
@@ -230,6 +235,7 @@ struct ImportSheet: View {
                                         Text("Import & keep").tag("keep")
                                         Text("Import & remove").tag("remove")
                                     }.labelsHidden().frame(width: 220)
+                                        .disabled(file.lowercased().hasSuffix(".lrf") && !importing.includeProxies)
                                 }
                             }
                         }
@@ -247,7 +253,7 @@ struct ImportSheet: View {
                 }
                 Text("\(value.done) of \(value.total) files checked · \(value.copied) copied · \(value.duplicates) already imported · \(value.failed) need attention · \(value.skipped) unsupported/proxy files skipped")
                     .font(.caption).foregroundStyle(.secondary)
-                if let removed = value.removed, removed > 0 { Text("\(removed) verified originals removed from source").font(.caption) }
+                if let removed = value.removed, removed > 0 { Text("\(removed) verified files removed from source").font(.caption) }
             }
             if let error = importing.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
             HStack {
