@@ -151,6 +151,18 @@ after repair. New-build Photos access still requires user approval.
   a transient shortcuts popover, dismissed with Escape/Done/outside click. Browser
   and Settings use en_US display locale for comma-grouped numbers. Native checks
   and strict signature verification passed; the update is open.
+  Footer correction `prototype-20260927T060840761999Z` reserves a 22-point control
+  row, a 4-point progress track and one 18-point detail row in every state. Errors
+  replace GPU details instead of adding another row; the Retry control retains
+  its layout slot while hidden/disabled. This keeps the grid/footer boundary fixed
+  without extra padding beneath the message. Release build/signature checks passed.
+  `prototype-20260927T061134750268Z` additionally shows persistent queue totals in
+  the existing footer row: **N left · M indexed**, plus failed-job count when needed.
+  Left includes queued/running/error jobs; indexed counts completed queue jobs,
+  not separately seeded baseline indexes. SQL counts refresh at most every two
+  seconds during ordinary progress and on forced phase boundaries. The per-file
+  progress indicator remains separate. All 41 Python tests passed on Linux/macOS,
+  including active/error/completed count transitions; signed release is deployed.
   Space previews a multiple selection using only those items, in grid order.
   **B** adds highlighted files to Selected clips, or removes them when all are already
   present. In a preview B toggles the displayed item. Text entry keeps normal typing.

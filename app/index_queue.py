@@ -40,6 +40,8 @@ class Queue:
         self.paused = threading.Event()
         self.phase, self.done, self.total, self.current = 'Waiting', 0, 0, ''
         self.last_emit = 0
+        self.last_queue_count = 0
+        self.queue_counts = dict(remaining=0, completed=0, failed=0)
         self.waiting = False
         self.scan_errors = 0
         self.scan_requested = threading.Event()
@@ -90,8 +92,15 @@ class Queue:
         now = time.monotonic()
         if force or changed or error or now - self.last_emit >= .2:
             self.last_emit = now
+            if force or now - self.last_queue_count >= 2:
+                with self.db() as db:
+                    counts = dict(db.execute('SELECT state,count(*) FROM index_jobs GROUP BY state').fetchall())
+                self.queue_counts = dict(remaining=sum(value for state, value in counts.items() if state != 'complete'),
+                                         completed=counts.get('complete', 0), failed=counts.get('error', 0))
+                self.last_queue_count = now
             self.emit(dict(phase=self.phase, done=self.done, total=self.total, current=self.current,
-                           paused=self.paused.is_set(), busy=self.busy.is_set(), waiting=self.waiting, gpu_utilization=self.gpu_utilization, changed=changed, error=error))
+                           paused=self.paused.is_set(), busy=self.busy.is_set(), waiting=self.waiting, gpu_utilization=self.gpu_utilization, changed=changed, error=error,
+                           queue_counts=self.queue_counts))
 
     def command(self, command):
         action = command.get('action')

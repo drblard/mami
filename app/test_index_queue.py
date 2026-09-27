@@ -60,6 +60,23 @@ class QueueTests(unittest.TestCase):
     def queue(self, emit=lambda event: None):
         return Queue(self.database, self.root, self.base / 'artifacts', self.backend, emit)
 
+    def test_queue_counts_include_active_and_failed_until_complete(self):
+        events = []
+        q = self.queue(emit=events.append)
+        q.scan()
+        q.status(force=True)
+        self.assertEqual(events[-1]['queue_counts'], dict(remaining=1, completed=0, failed=0))
+        with q.db() as db:
+            db.execute("UPDATE index_jobs SET state='running'")
+        q.status(force=True)
+        self.assertEqual(events[-1]['queue_counts']['remaining'], 1)
+        with q.db() as db:
+            db.execute("UPDATE index_jobs SET state='error'")
+        q.status(force=True)
+        self.assertEqual(events[-1]['queue_counts'], dict(remaining=1, completed=0, failed=1))
+        q.work()
+        self.assertEqual(events[-1]['queue_counts'], dict(remaining=0, completed=1, failed=0))
+
     def test_capture_time_order_beats_filename_and_arrival_time(self):
         newer = self.root / 'z.mp4'
         newer.write_bytes(b'newest capture')

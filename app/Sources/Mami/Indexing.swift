@@ -6,6 +6,11 @@ import SwiftUI
 @MainActor final class Indexing: ObservableObject {
     static let shared = Indexing()
     struct Progress: Decodable {
+        struct Counts: Decodable {
+            let remaining: Int
+            let completed: Int
+            let failed: Int
+        }
         let phase: String
         let done: Int
         let total: Int
@@ -16,6 +21,7 @@ import SwiftUI
         let changed: Bool
         let error: String?
         let gpu_utilization: Double?
+        let queue_counts: Counts?
     }
     @Published private(set) var phase = "Automatic scanning starts with the library"
     @Published private(set) var current = ""
@@ -27,6 +33,7 @@ import SwiftUI
     @Published private(set) var running = false
     @Published private(set) var catalogGeneration = 0
     @Published private(set) var gpuUtilization: Double?
+    @Published private(set) var queueCounts: Progress.Counts?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -107,6 +114,7 @@ import SwiftUI
                 current = progress.current; paused = progress.paused
                 waiting = progress.waiting ?? false
                 gpuUtilization = progress.gpu_utilization
+                if let counts = progress.queue_counts { queueCounts = counts }
                 if let message = progress.error { error = message }
                 else if phase == "Up to date" { error = nil }
                 if progress.changed { catalogGeneration += 1 }
@@ -133,8 +141,28 @@ import SwiftUI
     }
 }
 
+struct IndexQueueSummary: View {
+    @ObservedObject private var indexing = Indexing.shared
+    var body: some View {
+        HStack(spacing: 8) {
+            if let counts = indexing.queueCounts {
+                Text("\(counts.remaining) left · \(counts.completed) indexed")
+                if counts.failed > 0 { Text("\(counts.failed) need attention").foregroundStyle(.orange) }
+            } else { Text("Counting indexing queue…") }
+        }.monospacedDigit().lineLimit(1)
+            .help("Files in the background indexing queue. Left includes the current file and failed jobs; completed imports and existing baseline indexes are tracked separately. The progress bar below shows work within the current file or scan.")
+    }
+}
+
 struct IndexingBar: View {
     @ObservedObject var indexing = Indexing.shared
+    private var detail: String {
+        if let error = indexing.error { return error }
+        if indexing.phase.contains("GPU"), let usage = indexing.gpuUtilization {
+            return "Graphics activity: \(Int(usage))% · Transcription resumes after a quiet interval."
+        }
+        return ""
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
@@ -145,21 +173,24 @@ struct IndexingBar: View {
                 if indexing.total > 0 && indexing.active { Text("\(indexing.done) / \(indexing.total)").monospacedDigit().foregroundStyle(.secondary) }
                 Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(!indexing.running)
                 Button("Scan now") { indexing.scanNow() }
-            }.font(.caption)
+            }.font(.caption).frame(height: 22)
              Group {
                  if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }
                  else { ProgressView().progressViewStyle(.linear) }
              }.frame(height: 4).opacity(indexing.active ? 1 : 0)
-            if indexing.phase.contains("GPU"), let usage = indexing.gpuUtilization {
-                Text("Graphics activity: \(Int(usage))% · Transcription resumes after a quiet interval.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            if let error = indexing.error {
-                HStack {
-                    Text(error).foregroundStyle(.orange).lineLimit(1).help(error)
-                    Button("Retry") { indexing.retry() }
-                }.font(.caption)
-            }
+             // Keep one message slot allocated in every state. Error messages
+             // take precedence over GPU details instead of adding another row.
+             HStack {
+                 Text(detail.isEmpty ? " " : detail)
+                     .foregroundStyle(indexing.error == nil ? Color.secondary : Color.orange)
+                     .lineLimit(1).truncationMode(.tail).help(detail)
+                 Spacer(minLength: 0)
+                 Button("Retry") { indexing.retry() }
+                     .controlSize(.mini)
+                     .opacity(indexing.error == nil ? 0 : 1)
+                     .disabled(indexing.error == nil)
+                     .accessibilityHidden(indexing.error == nil)
+             }.font(.caption2).frame(height: 18)
         }.padding(.horizontal, 14).padding(.bottom, 6)
     }
 }
