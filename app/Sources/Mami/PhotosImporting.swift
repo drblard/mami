@@ -166,7 +166,13 @@ enum PhotosExporter {
     static func hash(_ file: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
         var hash = SHA256()
-        while let data = try handle.read(upToCount: 4 * 1024 * 1024), !data.isEmpty { hash.update(data: data) }
+        // FileHandle returns autoreleased NSData storage on macOS. A long-lived
+        // synchronous export task otherwise retains every chunk until it returns.
+        while try autoreleasepool(invoking: { () throws -> Bool in
+            guard let data = try handle.read(upToCount: 4 * 1024 * 1024), !data.isEmpty else { return false }
+            hash.update(data: data)
+            return true
+        }) {}
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
     static func export(to root: URL, range: DateInterval, cancellation: PhotosCancellation,
@@ -182,7 +188,7 @@ enum PhotosExporter {
         // The importer still freshly verifies any pending download or retry.
         let saved = try fm.contentsOfDirectory(at: receipts, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" }
-            .map { ($0, try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: $0))) }
+            .map { url in try autoreleasepool { (url, try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: url))) } }
             .sorted { ($0.1.captureDate ?? .distantPast) > ($1.1.captureDate ?? .distantPast) }
         for (url, receipt) in saved {
             let key = url.deletingPathExtension().lastPathComponent
@@ -212,7 +218,7 @@ enum PhotosExporter {
             report.failures.append("Photos access is unavailable for this app build. Re-enable Photos import in Settings to request access. Completed downloads can still be saved.")
             return report
         }
-        var assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
+        var assets = autoreleasepool { PHAsset.fetchAssets(with: fetchOptions(range: range)) }
         report.assets = assets.count
         var index = 0
         var refreshed = Date()
@@ -220,15 +226,16 @@ enum PhotosExporter {
         while index < assets.count {
             try cancellation.check()
             if Date().timeIntervalSince(refreshed) >= 60 {
-                assets = PHAsset.fetchAssets(with: fetchOptions(range: range))
+                assets = autoreleasepool { PHAsset.fetchAssets(with: fetchOptions(range: range)) }
                 report.assets = assets.count
                 index = 0; refreshed = Date()
                 if assets.count == 0 { break }
             }
+            try autoreleasepool {
             let asset = assets.object(at: index)
             index += 1
-            guard visited.insert(asset.localIdentifier).inserted else { continue }
-            guard let date = asset.creationDate, date >= range.start, date < range.end else { continue }
+            guard visited.insert(asset.localIdentifier).inserted else { return }
+            guard let date = asset.creationDate, date >= range.start, date < range.end else { return }
             let resources = PHAssetResource.assetResources(for: asset).filter { [.photo, .video, .pairedVideo].contains($0.type) }
             for (resourceIndex, resource) in resources.enumerated() {
                 try cancellation.check()
@@ -277,6 +284,7 @@ enum PhotosExporter {
                     report.failures.append("\(resource.originalFilename): \(error.localizedDescription)")
                 }
             }
+            }
         }
         return report
     }
@@ -288,7 +296,7 @@ enum PhotosExporter {
         let options = PHAssetResourceRequestOptions(); options.isNetworkAccessAllowed = true
         let finished = DispatchSemaphore(value: 0)
         let state = PhotosDownloadState(handle: handle, cancellation: cancellation)
-        PHAssetResourceManager.default().requestData(for: resource, options: options, dataReceivedHandler: { state.receive($0) }, completionHandler: {
+        PHAssetResourceManager.default().requestData(for: resource, options: options, dataReceivedHandler: { data in autoreleasepool { state.receive(data) } }, completionHandler: {
             state.complete($0); finished.signal()
         })
         finished.wait()

@@ -6,6 +6,7 @@ struct MamiSettings: View {
     @ObservedObject private var importing = Importing.shared
     @ViewState private var reviewCamera = false
     private var busy: Bool { photos.running || importing.photosTransfer }
+    private var cameraBusy: Bool { importing.running && !importing.photosTransfer }
     private var transferStatus: String {
         if importing.photosTransfer, let progress = importing.progress {
             return progress.current.isEmpty ? progress.phase : "\(progress.phase) · \(progress.current)"
@@ -58,11 +59,11 @@ struct MamiSettings: View {
             Section("DJI Camera") {
                 Toggle("Automatically offload DJI when connected", isOn: $importing.automaticDJI)
                 Toggle("Remove source files after verified offload", isOn: $importing.removeSource)
-                    .disabled(importing.running)
+                    .disabled(cameraBusy)
                 Toggle("Include DJI .LRF proxy files", isOn: $importing.includeProxies)
-                    .disabled(importing.running)
+                    .disabled(cameraBusy)
                 Toggle("Eject camera after successful offload", isOn: $importing.ejectAfter)
-                    .disabled(importing.running)
+                    .disabled(cameraBusy)
                 Text("While Mami is open, your DJI Pocket is detected automatically. Originals are saved in ~/Media/Originals/DJI-Pocket-4P/year/date. Proxies are saved separately in .mami-proxies. Removal always requires a verified independent copy.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text(importing.cameraStatus).font(.caption).lineLimit(2, reservesSpace: true)
@@ -70,7 +71,7 @@ struct MamiSettings: View {
                 HStack {
                     Button("Check camera / retry") { importing.retryCamera() }
                     Button("Review files / exceptions…") { reviewCamera = true }
-                }.disabled(importing.running || importing.listing)
+                }.disabled(cameraBusy || importing.listing)
                 if importing.running && !importing.photosTransfer {
                     HStack {
                         Button(importing.progress?.paused == true ? "Resume" : "Pause") { importing.togglePause() }

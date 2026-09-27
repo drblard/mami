@@ -646,6 +646,10 @@ struct MamiApp: App {
                 exit(0)
             } catch { fputs("\(error)\n", stderr); exit(1) }
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--photos-memory-test"), CommandLine.arguments.indices.contains(index + 1) {
+            do { try PhotosMemoryCheck.run(file: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
+            catch { print("PHOTOS MEMORY FAILED: \(error)"); exit(1) }
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--scan-ui-test"), CommandLine.arguments.indices.contains(index + 1) {
             NSApplication.shared.setActivationPolicy(.accessory)
             Task {

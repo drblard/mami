@@ -50,6 +50,7 @@ struct CameraConnections {
     private var cameraTimer: Timer?
     private var cameraObservers: [NSObjectProtocol] = []
     private var connections = CameraConnections()
+    private var manualCameraPending = false
     @Published var policies: [String: String] = [:]
     @Published private(set) var sourceFiles: [String] = []
     @Published private(set) var listing = false
@@ -84,6 +85,7 @@ struct CameraConnections {
 
     func retryCamera() {
         connections.retry()
+        manualCameraPending = true
         checkCamera(manual: true)
     }
 
@@ -98,8 +100,14 @@ struct CameraConnections {
             return FileManager.default.fileExists(atPath: url.appendingPathComponent("MISC/PP-041.db").path)
                 && FileManager.default.fileExists(atPath: url.appendingPathComponent("DCIM").path)
         }.sorted { $0.path < $1.path }
-        if manual && cameras.isEmpty { cameraStatus = "No DJI camera connected"; return }
-        guard let camera = connections.next(cameras, enabled: automaticDJI || manual, busy: running || listing || photosTransfer) else { return }
+        if (manual || manualCameraPending) && cameras.isEmpty {
+            manualCameraPending = false
+            cameraStatus = "No DJI camera connected"
+            return
+        }
+        if manualCameraPending && photosTransfer { cameraStatus = "Camera check queued — waiting for the current Photos transfer" }
+        guard let camera = connections.next(cameras, enabled: automaticDJI || manualCameraPending, busy: running || listing || photosTransfer) else { return }
+        manualCameraPending = false
         source = camera
         device = "DJI-Pocket-4P"
         policies = UserDefaults.standard.dictionary(forKey: "import-policies:" + camera.path) as? [String: String] ?? [:]

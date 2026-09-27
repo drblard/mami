@@ -401,6 +401,41 @@ successful verified recovery to a new destination.
 
 ## Cable-free Photos imports
 
+### 2026-09-27 memory incident
+
+The overnight native process (PID 16145) reached a confirmed **95.6 GiB physical
+footprint**, with 89.7 GiB swapped, after almost eight hours. Its vmmap and stack
+sample are retained at `~/mami-lab/memory-incident-20260927-{vmmap,sample}.txt`.
+Normal quit timed out; the app and its identified worker tree were terminated.
+
+Reproduced cause: `FileHandle.read(upToCount:)` creates autoreleased NSData backing
+buffers. In the long synchronous Photos export task those survived Swift local
+scope, retaining approximately all bytes read during verification. A standalone
+12 × 64 MiB A/B reproduction grew from 6 MB to 815 MB without chunk pools; with
+per-chunk pools it stayed near 11 MB, with identical SHA-256 digests. Evidence and
+the reproduction are in `~/mami-lab/memory-incident-20260927/`.
+
+Production hashing now drains an autorelease pool per 4 MiB chunk. PhotoKit fetch
+creation, per-asset processing, receipt decoding and download callbacks also have
+scoped pools. `--photos-memory-test <file>` exercises the production hash 64 times
+inside one deliberately undrained outer pool, verifies all digests and fails if
+resident growth exceeds 64 MiB. With the 64 MiB fixture (4 GiB repeated reads),
+the corrected app stayed at 17.5–17.7 MB. Native integration and strict signing
+checks passed on `prototype-20260927T035230883204Z`, now deployed.
+
+Early supervised real-library importing measured 188, 245, 238 and 312 MiB native
+physical footprint over approximately 80 seconds; Photos fetching resumed from
+saved history. This is not yet overnight stability validation. A separate one-hour
+diagnostic monitor logs native footprint each minute and terminates this exact
+build's process tree if it exceeds 8 GiB. Evidence lives in that deployment's
+`live-memory-check.json` and `one-hour-memory-watch.jsonl`; the latter is ongoing.
+The subsequent `prototype-20260927T035713053696Z` retains that memory fix and
+keeps DJI Settings controls enabled during Photos batches. Only an actual camera
+import disables the camera controls. A manual camera retry during a Photos batch
+is remembered until the importer is free, including with automatic DJI disabled.
+Native integration and strict signing passed; this build is now open. The one-hour
+monitor was restarted for this exact new build (the prior monitor ends on exit).
+
 ### Newest-first scheduling
 
 Photos downloads use descending PhotoKit creation dates. The asset list refreshes
