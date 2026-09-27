@@ -144,6 +144,16 @@ after repair. New-build Photos access still requires user approval.
   policy checks, preview identity checks at both boundaries and cache eviction
   bounds. The layout was reviewed from a native snapshot. Physical grid-to-CapCut
   dragging and subjective trackpad scrolling still need hands-on verification.
+  Drag correction `prototype-20260927T190932713275Z`: native hit testing previously
+  used only `visibleRect`, which AppKit can extend beyond a non-clipping card's
+  bounds. The native regression reproduced both A and B claiming a press on B.
+  Hit testing now requires both bounds and visibleRect; one shared router chooses
+  a single owner and captures its provider on mouse-down, clearing ownership before
+  a native drag session begins. An AppKit regression selects an image, presses a
+  video after a stale image press, and verifies only the video's original URL is
+  returned even if SwiftUI replaces the provider before dragging. Native integration
+  and strict signing passed; this corrected build is running. End-to-end CapCut
+  drop confirmation remains a hands-on check.
   Follow-up `prototype-20260927T055807759699Z` hides the Show/Camera picker labels,
   calls the date picker **Date**, aligns sorting at the right of the lower filter
   row, removes static search/keyboard hints, and removes the footer's fixed-height

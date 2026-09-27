@@ -1032,6 +1032,37 @@ struct MamiApp: App {
         for size in 64..<330 { _ = await boundedCache.image(picks[0].match.frame, maxPixelSize: size) }
         guard await boundedCache.retainedCount <= 256, await boundedCache.retainedCost <= 96 * 1024 * 1024 else { throw AppError.message("Thumbnail cache exceeded limits") }
         print("GRID DRAG selection replacement/multiple originals and bounded thumbnail cache passed")
+        // Exercise actual AppKit card rectangles and mouse-down routing, not just
+        // the selection helper: A selected, press/drag B, even after a stale A press.
+        let dragRouter = MediaDragRouter()
+        let dragA = library.items.first { $0.kind == "image" }!
+        let dragB = library.items.first { $0.kind == "video" }!
+        let dragMedia = [dragA, dragB]
+        let dragWindow = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 500, height: 240), styleMask: [.titled], backing: .buffered, defer: false)
+        let dragRoot = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 240))
+        let cardA = MediaDragSurface.DragView(frame: NSRect(x: 10, y: 10, width: 200, height: 200))
+        let cardB = MediaDragSurface.DragView(frame: NSRect(x: 250, y: 10, width: 200, height: 200))
+        cardA.items = { navigation.itemsForDrag(dragA, in: dragMedia) }
+        cardB.items = { navigation.itemsForDrag(dragB, in: dragMedia) }
+        dragRoot.addSubview(cardA); dragRoot.addSubview(cardB)
+        dragWindow.contentView = dragRoot; dragWindow.makeKeyAndOrderFront(nil)
+        dragRouter.register(cardA); dragRouter.register(cardB)
+        func dragEvent(_ type: NSEvent.EventType, _ x: CGFloat) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 80), modifierFlags: [], timestamp: 0,
+                               windowNumber: dragWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        }
+        navigation.select(dragA, extending: false)
+        dragRouter.mouseDown(dragEvent(.leftMouseDown, 100))
+        dragRouter.mouseDown(dragEvent(.leftMouseDown, 330))
+        // A SwiftUI update must not replace the provider captured on mouse-down.
+        cardB.items = { [dragA] }
+        guard let routed = dragRouter.dragItems(dragEvent(.leftMouseDragged, 350)), routed.0 === cardB,
+              routed.1.map(\.url) == [dragB.url], navigation.selectedIDs == [dragB.id],
+              dragRouter.dragItems(dragEvent(.leftMouseDragged, 370)) == nil else {
+            throw AppError.message("Mouse-down on B dragged stale selection A")
+        }
+        dragWindow.orderOut(nil); window.makeKeyAndOrderFront(nil)
+        print("GRID DRAG AppKit mouse routing: stale A press, B press/drag, frozen provider, single session passed")
         let september = try DateSearch.parse("goats in September 2025")
         let leap = try DateSearch.parse("in February 2024")
         let exact = try DateSearch.parse("goats from 2026-01-01 to 2026-01-31")

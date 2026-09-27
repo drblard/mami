@@ -51,37 +51,71 @@ struct MediaDragSurface: NSViewRepresentable {
     final class DragView: NSView, NSDraggingSource {
         var items: () -> [Media] = { [] }
         var enabled = true
-        private var monitor: Any?
-        private var origin: CGPoint?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override init(frame: NSRect) {
             super.init(frame: frame)
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
-                guard let self, self.enabled, let window = self.window, event.window == window else { return event }
-                if event.type == .leftMouseUp { self.origin = nil; return event }
-                if event.type == .leftMouseDown {
-                    let point = self.convert(event.locationInWindow, from: nil)
-                    let corner = point.y > self.bounds.height - 52 && (point.x < 52 || point.x > self.bounds.width - 52)
-                    self.origin = self.visibleRect.contains(point) && !corner && window.attachedSheet == nil ? event.locationInWindow : nil
-                    return event
-                }
-                guard let origin = self.origin, hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 5 else { return event }
-                self.origin = nil
-                let media = self.items()
-                guard !media.isEmpty, media.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.url.path) }) else { NSSound.beep(); return event }
-                let point = self.convert(event.locationInWindow, from: nil)
-                let dragging = media.enumerated().map { index, media in
-                    let item = NSDraggingItem(pasteboardWriter: media.url as NSURL)
-                    item.setDraggingFrame(NSRect(x: point.x + CGFloat(index % 5) * 3, y: point.y, width: 40, height: 40), contents: NSWorkspace.shared.icon(forFile: media.url.path))
-                    return item
-                }
-                self.beginDraggingSession(with: dragging, event: event, source: self)
-                return nil
-            }
+            MediaDragRouter.shared.register(self)
         }
         required init?(coder: NSCoder) { fatalError() }
-        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+    }
+}
+
+/// One mouse-down owner for the whole grid. Per-card monitors can retain stale
+/// gestures across native drag sessions, which do not deliver normal mouse-up.
+@MainActor final class MediaDragRouter {
+    static let shared = MediaDragRouter()
+    private let views = NSHashTable<MediaDragSurface.DragView>.weakObjects()
+    private weak var owner: MediaDragSurface.DragView?
+    private var origin: CGPoint?
+    private var provider: (() -> [Media])?
+    private var monitor: Any?
+    init() {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .leftMouseDown { self.mouseDown(event); return event }
+            if event.type == .leftMouseUp { self.reset(); return event }
+            guard let (view, media) = self.dragItems(event) else { return event }
+            guard !media.isEmpty, media.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.url.path) }) else { NSSound.beep(); return event }
+            let point = view.convert(event.locationInWindow, from: nil)
+            let items = media.enumerated().map { index, media in
+                let item = NSDraggingItem(pasteboardWriter: media.url as NSURL)
+                item.setDraggingFrame(NSRect(x: point.x + CGFloat(index % 5) * 3, y: point.y, width: 40, height: 40), contents: NSWorkspace.shared.icon(forFile: media.url.path))
+                return item
+            }
+            view.beginDraggingSession(with: items, event: event, source: view)
+            return nil
+        }
+    }
+    deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    func register(_ view: MediaDragSurface.DragView) { views.add(view) }
+    private func reset() { owner = nil; origin = nil; provider = nil }
+    func mouseDown(_ event: NSEvent) {
+        reset()
+        guard let window = event.window, window.attachedSheet == nil else { return }
+        let candidates = views.allObjects.filter { view in
+            guard view.enabled, view.window == window, !view.isHiddenOrHasHiddenAncestor else { return false }
+            let point = view.convert(event.locationInWindow, from: nil)
+            let top = view.isFlipped ? point.y < 52 : point.y > view.bounds.height - 52
+            let actionButton = top && (point.x < 52 || point.x > view.bounds.width - 52)
+            // AppKit views need not clip to bounds: visibleRect may extend over
+            // neighboring cards. Both rectangles must contain the mouse-down.
+            return view.bounds.contains(point) && view.visibleRect.contains(point) && !actionButton
+        }
+        if CommandLine.arguments.contains("--ui-test") {
+            print("DRAG ROUTE point=\(event.locationInWindow) candidates=\(candidates.count) views=\(views.allObjects.map { "\($0.frame)/\($0.visibleRect)/\($0.window === window)" })")
+        }
+        // Never export another card if layout happens to supply overlapping regions.
+        guard candidates.count == 1, let view = candidates.first else { return }
+        owner = view; origin = event.locationInWindow; provider = view.items
+    }
+    func dragItems(_ event: NSEvent) -> (MediaDragSurface.DragView, [Media])? {
+        guard let view = owner, view.enabled, view.window == event.window,
+              let origin, let provider,
+              hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 5 else { return nil }
+        // Clear before selection publishes a SwiftUI update or native dragging starts.
+        reset()
+        return (view, provider())
     }
 }
 
