@@ -151,7 +151,7 @@ struct IndexingBar: View {
                  else { ProgressView().progressViewStyle(.linear) }
              }.frame(height: 4).opacity(indexing.active ? 1 : 0)
             if indexing.phase.contains("GPU"), let usage = indexing.gpuUtilization {
-                Text("Graphics activity: \(Int(usage))% · Transcription resumes after a quiet interval. CapCut can stay open.")
+                Text("Graphics activity: \(Int(usage))% · Transcription resumes after a quiet interval.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if let error = indexing.error {

@@ -8,12 +8,79 @@ import ImageIO
     @Published var preview: Selection?
     @Published var selectedIDs = Set<String>()
     var previewItems: [Media]?
+    func itemsForDrag(_ media: Media, in items: [Media]) -> [Media] {
+        if !selectedIDs.contains(media.id) { select(media, extending: false) }
+        return items.filter { selectedIDs.contains($0.id) }
+    }
     func select(_ media: Media, extending: Bool) {
         if extending {
             if !selectedIDs.insert(media.id).inserted { selectedIDs.remove(media.id) }
         } else { selectedIDs = [media.id] }
         if selectedIDs.contains(media.id) { focused = media }
         else if focused?.id == media.id || selectedIDs.isEmpty { focused = nil }
+    }
+}
+
+struct LibraryFooter: View {
+    @ObservedObject var library: Library
+    @ObservedObject private var backups = CatalogBackups.shared
+    var body: some View {
+        VStack(spacing: 8) {
+            Divider()
+            HStack(spacing: 12) {
+                Toggle("Lock grid", isOn: $library.gridLocked).toggleStyle(.checkbox).disabled(!library.ready)
+                    .help("Hold this view while media is indexed. Refresh brings in new arrivals.")
+                Text("\(library.pendingMediaCount) new media").monospacedDigit().opacity(library.gridLocked ? 1 : 0)
+                Button { library.refreshGrid() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
+                Spacer()
+                if let dates = library.queryDates { Text("Search dates: \(dates.label)").foregroundStyle(.secondary) }
+                if let error = backups.error { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange).help(error) }
+            }.font(.caption).padding(.horizontal, 14).frame(height: 24)
+            IndexingBar()
+        }.background(Color(red: 0.11, green: 0.12, blue: 0.14))
+    }
+}
+
+/// Observe drags without covering SwiftUI hover tracking and action buttons.
+struct MediaDragSurface: NSViewRepresentable {
+    var enabled: Bool
+    var items: () -> [Media]
+    func makeNSView(context: Context) -> DragView { DragView() }
+    func updateNSView(_ view: DragView, context: Context) { view.items = items; view.enabled = enabled }
+    final class DragView: NSView, NSDraggingSource {
+        var items: () -> [Media] = { [] }
+        var enabled = true
+        private var monitor: Any?
+        private var origin: CGPoint?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                guard let self, self.enabled, let window = self.window, event.window == window else { return event }
+                if event.type == .leftMouseUp { self.origin = nil; return event }
+                if event.type == .leftMouseDown {
+                    let point = self.convert(event.locationInWindow, from: nil)
+                    let corner = point.y > self.bounds.height - 52 && (point.x < 52 || point.x > self.bounds.width - 52)
+                    self.origin = self.visibleRect.contains(point) && !corner && window.attachedSheet == nil ? event.locationInWindow : nil
+                    return event
+                }
+                guard let origin = self.origin, hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 5 else { return event }
+                self.origin = nil
+                let media = self.items()
+                guard !media.isEmpty, media.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.url.path) }) else { NSSound.beep(); return event }
+                let point = self.convert(event.locationInWindow, from: nil)
+                let dragging = media.enumerated().map { index, media in
+                    let item = NSDraggingItem(pasteboardWriter: media.url as NSURL)
+                    item.setDraggingFrame(NSRect(x: point.x + CGFloat(index % 5) * 3, y: point.y, width: 40, height: 40), contents: NSWorkspace.shared.icon(forFile: media.url.path))
+                    return item
+                }
+                self.beginDraggingSession(with: dragging, event: event, source: self)
+                return nil
+            }
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+        func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
     }
 }
 

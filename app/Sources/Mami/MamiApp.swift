@@ -5,17 +5,28 @@ import ImageIO
 // Explicit alias selects the property wrapper on SDKs that also export a State macro.
 typealias ViewState<Value> = SwiftUI.State<Value>
 
-final class FrameCache: @unchecked Sendable {
+actor FrameCache {
     static let shared = FrameCache()
-    private let images = NSCache<NSString, NSImage>()
-    private let queue = DispatchQueue(label: "mami.frames", qos: .userInitiated, attributes: .concurrent)
-    init() { images.totalCostLimit = 192 * 1024 * 1024 }
+    private var images: [String: (NSImage, Int)] = [:]
+    private var order: [String] = []
+    private var bytes = 0
+    private var pending: [String: Task<NSImage?, Never>] = [:]
+    private let queue = DispatchQueue(label: "mami.frames", qos: .userInitiated)
+    var retainedCost: Int { bytes }
+    var retainedCount: Int { images.count }
 
     func image(_ path: String, maxPixelSize: Int = 640) async -> NSImage? {
         let key = "\(maxPixelSize):\(path)"
-        if let cached = images.object(forKey: key as NSString) { return cached }
-        return await withCheckedContinuation { continuation in
+        if let cached = images[key] {
+            order.removeAll { $0 == key }; order.append(key)
+            return cached.0
+        }
+        if let task = pending[key] { return await task.value }
+        guard !Task.isCancelled else { return nil }
+        let task = Task<NSImage?, Never> { [queue] in
+        await withCheckedContinuation { continuation in
             queue.async {
+                autoreleasepool {
                 guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
                       let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                         kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -24,10 +35,23 @@ final class FrameCache: @unchecked Sendable {
                         kCGImageSourceShouldCacheImmediately: true
                       ] as CFDictionary) else { continuation.resume(returning: nil); return }
                 let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-                self.images.setObject(image, forKey: key as NSString, cost: cg.bytesPerRow * cg.height)
                 continuation.resume(returning: image)
+                }
             }
         }
+        }
+        pending[key] = task
+        let image = await task.value
+        pending[key] = nil
+        if let image {
+            let cost = maxPixelSize * maxPixelSize * 4
+            while !order.isEmpty && (bytes + cost > 96 * 1024 * 1024 || order.count >= 256) {
+                let oldest = order.removeFirst()
+                if let removed = images.removeValue(forKey: oldest) { bytes -= removed.1 }
+            }
+            if cost <= 96 * 1024 * 1024 { images[key] = (image, cost); order.append(key); bytes += cost }
+        }
+        return image
     }
 }
 
@@ -46,11 +70,14 @@ struct MediaCard: View {
     @ObservedObject var clips: ClipSelection
     var focused = false
     var select: () -> Void = {}
+    var dragItems: () -> [Media] = { [] }
+    var dragEnabled = true
     let open: (Media, Double?) -> Void
     @ViewState private var hovered: Int?
     @ViewState private var hoverFraction: CGFloat?
     @ViewState private var image: NSImage?
     @ViewState private var unavailable = false
+    @ViewState private var pointerInside = false
     private var annotation: Annotation { annotations.value(for: media) }
     private var subtitle: String {
         let labels = ([annotation.place].filter { !$0.isEmpty } + annotation.tags.map { "#" + $0 })
@@ -106,10 +133,8 @@ struct MediaCard: View {
                     case .ended: hovered = nil; hoverFraction = nil
                     }
                 }
-                .onTapGesture {
-                    if NSEvent.modifierFlags.contains(.command) { select() }
-                    else { open(media, sample.timestamp) }
-                }
+                .onTapGesture(count: 2) { open(media, sample.timestamp) }
+                .onTapGesture { select() }
             }.frame(height: 175).clipShape(RoundedRectangle(cornerRadius: 8))
             HStack(spacing: 6) {
                 Text(media.metadata?.date ?? "Capture date unavailable").font(.system(size: 12, weight: .medium)).lineLimit(1)
@@ -123,10 +148,14 @@ struct MediaCard: View {
         }
         .padding(9)
         .background(Color(red: 0.14, green: 0.15, blue: 0.17), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(focused ? Color.accentColor : .clear, lineWidth: 2))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(focused ? Color.accentColor : pointerInside ? Color.accentColor.opacity(0.6) : .clear, lineWidth: 2))
         .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onHover { pointerInside = $0 }
+        .background(MediaDragSurface(enabled: dragEnabled, items: dragItems))
         .onTapGesture { select() }
         .task(id: sample.frame) {
+            if hovered != nil { try? await Task.sleep(for: .milliseconds(35)) }
+            guard !Task.isCancelled else { return }
             let path = sample.frame
             let decoded = await FrameCache.shared.image(path)
             guard !Task.isCancelled else { return }
@@ -141,6 +170,7 @@ struct MediaCard: View {
                 }
             }
         }
+        .onDisappear { image = nil; hovered = nil; pointerInside = false }
         .onChange(of: media.match.frame) { _, _ in hovered = nil }
         .onChange(of: nearby) { _, _ in
             if let fraction = hoverFraction { hovered = min(scrubFrames.count - 1, max(0, Int(fraction * CGFloat(scrubFrames.count)))) }
@@ -150,7 +180,7 @@ struct MediaCard: View {
             Button("Play from match") { open(media, media.match.timestamp) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([media.url]) }
         }
-        .help("Move across the thumbnail to scrub. Click to open at the displayed moment.")
+        .help("Click to select · ⌘ click to add/remove · Drag originals · Space or double-click to preview")
     }
 }
 
@@ -187,6 +217,7 @@ struct Playback: View {
     @ObservedObject var annotations: Annotations
     @ObservedObject var clips: ClipSelection
     var close: () -> Void = {}
+    var position: String = ""
     @StateObject private var transport = PlaybackTransport()
     @ViewState private var photo: NSImage?
     @ViewState private var failure: String?
@@ -207,6 +238,7 @@ struct Playback: View {
                     Text(selection.media.metadata?.subtitle ?? selection.media.path).font(.caption).foregroundStyle(.secondary).help(selection.media.path)
                 }
                 Spacer()
+                if !position.isEmpty { Text(position).monospacedDigit().foregroundStyle(.secondary).accessibilityLabel("Preview \(position)") }
                 Button { annotations.toggleFavorite(selection.media) } label: {
                     Image(systemName: annotations.value(for: selection.media).favorite ? "heart.fill" : "heart")
                 }.disabled(!annotations.ready).help("Toggle favorite")
@@ -332,10 +364,12 @@ struct LibraryView: View {
     @ViewState private var selectedLabels = Set<String>()
     @ViewState private var showImport = false
     @ViewState private var showDateRange = false
-    @ObservedObject private var importing = Importing.shared
+    private let importing = Importing.shared
     @StateObject private var annotations = Annotations()
-    @ObservedObject private var backups = CatalogBackups.shared
-    @ObservedObject private var indexing = Indexing.shared
+    private let backups = CatalogBackups.shared
+    private let indexing = Indexing.shared
+    @ViewState private var catalogGeneration = 0
+    @ViewState private var scrollTarget: String?
     @FocusState private var searchFocused: Bool
     private var visibleItems: [Media] {
         let filtered = library.items.filter {
@@ -408,11 +442,17 @@ struct LibraryView: View {
                 : max(0, min(items.count - 1, $0 + offset))
         } ?? 0
         if selection != nil {
+            guard index != target else { NSSound.beep(); return true }
             focusedMedia = items[target]
             if navigation.previewItems == nil { navigation.selectedIDs = [items[target].id] }
             selection = Selection(media: items[target], timestamp: items[target].match.timestamp)
-        } else { focus(items[target]) }
+        } else { focus(items[target]); scrollTarget = items[target].id }
         return true
+    }
+    private func previewPosition(_ selection: Selection, items: [Media]) -> String {
+        let scoped = navigation.previewItems ?? items
+        guard let index = scoped.firstIndex(where: { $0.id == selection.media.id }) else { return "" }
+        return "\(index + 1) / \(scoped.count)"
     }
     private func adjacent(to selection: Selection, offset: Int) -> Media? {
         let items = visibleItems
@@ -425,19 +465,16 @@ struct LibraryView: View {
         _navigation = StateObject(wrappedValue: navigation ?? BrowserSelection())
     }
     var body: some View {
+        let displayed = visibleItems
+        let positions = Dictionary(uniqueKeysWithValues: displayed.enumerated().map { ($0.element.id, $0.offset) })
         VStack(spacing: 0) {
             VStack(spacing: 14) {
                 HStack {
                     Text("Mami").font(.system(size: 25, weight: .semibold, design: .rounded))
                     Spacer()
                     Button("Import media…") { showImport = true }
-                        .overlay(alignment: .topTrailing) {
-                            Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                                .opacity(importing.running ? 1 : 0).allowsHitTesting(false)
-                        }
                     Button { showClips.toggle() } label: { Label("\(clips.items.count)", systemImage: "sidebar.right") }
                         .help("Show or hide selected clips").accessibilityLabel("Selected clips, \(clips.items.count)")
-                    Label("On this Mac", systemImage: "desktopcomputer").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 14) {
                     Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
@@ -445,6 +482,11 @@ struct LibraryView: View {
                         .font(.system(size: 21)).textFieldStyle(.plain).onSubmit { library.search() }
                         .focused($searchFocused)
                         .accessibilityLabel("Search your media")
+                        .task(id: library.query) {
+                            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                            guard library.ready, !Task.isCancelled else { return }
+                            library.search()
+                        }
                     if !library.query.isEmpty {
                         Button { library.query = ""; library.search() } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).foregroundStyle(.secondary).help("Clear search")
@@ -472,7 +514,7 @@ struct LibraryView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 18)
             HStack {
-                Text(hasFilters ? "\(visibleItems.count) shown · \(library.status)" : library.status)
+                Text("\(displayed.count) media").monospacedDigit()
                 Spacer()
                 Text("⌘ click: select · Space: preview · B: clips · ← →: browse").foregroundStyle(.secondary)
             }.font(.caption).padding(.horizontal, 14).padding(.bottom, 10)
@@ -481,24 +523,28 @@ struct LibraryView: View {
                     Text("All media").tag("all")
                     Text("Videos").tag("video")
                     Text("Photos").tag("image")
-                }.pickerStyle(.segmented).frame(width: 260)
+                }.pickerStyle(.segmented).frame(width: 220)
+                Divider().frame(height: 20)
                 ForEach([MediaFormat.vertical, .horizontal]) { shape in
-                    Toggle(shape.label, isOn: Binding(get: { library.format == shape }, set: { library.format = $0 ? shape : .all }))
+                    Toggle(isOn: Binding(get: { library.format == shape }, set: { library.format = $0 ? shape : .all })) {
+                        Label(shape.label, systemImage: shape == .vertical ? "rectangle.portrait" : "rectangle")
+                    }
                         .toggleStyle(.button)
                 }
+                Spacer()
                 Picker("Sort", selection: $sort) {
                     Text(library.showingMatches ? "Best match" : "Newest first").tag("default")
                     Text("Capture date: newest").tag("newest")
                     Text("Oldest first").tag("oldest")
                 }.labelsHidden().frame(width: 135)
                 Toggle(isOn: $favoritesOnly) { Image(systemName: "heart.fill") }.toggleStyle(.button).help("Show favorites only").accessibilityLabel("Favorites only")
-                Spacer()
             }.padding(.horizontal, 24).padding(.bottom, 10)
             HStack {
                 TagFilterPicker(available: availableLabels, selected: $selectedLabels)
                 Button { showDateRange = true } label: {
                     Label(library.dateEnabled ? DateFilterDraft.label(from: library.dateFrom, through: library.dateThrough) : "Capture date", systemImage: "calendar")
                 }
+                    .tint(library.dateEnabled ? Color.accentColor : Color.secondary)
                     .popover(isPresented: $showDateRange) {
                         DateFilterPopover(from: library.dateFrom, through: library.dateThrough, enabled: library.dateEnabled, earliest: library.earliestCaptureDate,
                             apply: { from, through in
@@ -507,7 +553,7 @@ struct LibraryView: View {
                             }, clear: { library.dateEnabled = false; library.search(); showDateRange = false },
                             cancel: { showDateRange = false })
                     }
-                Picker("Device", selection: $library.deviceFilter) {
+                Picker("Camera", selection: $library.deviceFilter) {
                     Text("All devices").tag("All devices")
                     ForEach(library.devices, id: \.self) { Text($0).tag($0) }
                 }.frame(maxWidth: 250).onChange(of: library.deviceFilter) { _, _ in library.search() }
@@ -517,33 +563,14 @@ struct LibraryView: View {
                 if library.showingMatches {
                     Toggle("Scrub ±8 seconds around match", isOn: $nearby).toggleStyle(.switch).controlSize(.small)
                 }
-            }.padding(.horizontal, 14).padding(.bottom, 10)
-            HStack(spacing: 10) {
-                Toggle("Lock grid", isOn: $library.gridLocked).toggleStyle(.checkbox)
-                    .disabled(!library.ready)
-                    .help("Hold this library snapshot while new media is indexed. Refresh includes new media and keeps the lock on.")
-                Text("\(library.pendingMediaCount) new media not displayed").monospacedDigit()
-                    .opacity(library.gridLocked ? 1 : 0)
-                    .help("New library items since the grid was locked. Refresh reruns the current filters and search.")
-                Button { library.refreshGrid() } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh grid").accessibilityLabel("Refresh grid")
-                Spacer()
-                Text([library.manualDates?.label, library.queryDates.map { "Search dates: \($0.label)" }].compactMap { $0 }.joined(separator: " · "))
-                    .lineLimit(1).foregroundStyle(.secondary)
-            }.font(.caption).frame(height: 24).padding(.horizontal, 14).padding(.bottom, 8)
+            }.controlSize(.regular).padding(.horizontal, 24).padding(.bottom, 12)
             if let error = library.error { Text(error).foregroundStyle(.red).padding() }
             if let error = annotations.error { Text(error).foregroundStyle(.red).font(.caption).padding() }
-            HStack {
-                Label(backups.status, systemImage: "externaldrive.badge.checkmark").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-            }.padding(.horizontal, 14).padding(.bottom, 8)
-            if let error = backups.error { Text(error).foregroundStyle(.red).font(.caption).padding() }
-            IndexingBar()
             Divider()
             HStack(spacing: 0) {
             ScrollViewReader { proxy in
             ScrollView {
-                if visibleItems.isEmpty, library.ready, !library.searching {
+                if displayed.isEmpty, library.ready, !library.searching {
                     ContentUnavailableView {
                         Label(hasFilters ? "No media fits these filters" : "No search results", systemImage: "magnifyingglass")
                     } description: {
@@ -553,9 +580,18 @@ struct LibraryView: View {
                     }
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14)], spacing: 14) {
-                    ForEach(visibleItems) { media in
+                    ForEach(displayed) { media in
                         MediaCard(media: media, nearby: (nearby && library.showingMatches) != commandHover, annotations: annotations, clips: clips,
-                                   focused: navigation.selectedIDs.contains(media.id), select: { selectCard(media) }, open: { open($0, timestamp: $1) }).id(media.id)
+                                    focused: navigation.selectedIDs.contains(media.id), select: { selectCard(media) },
+                                    dragItems: { navigation.itemsForDrag(media, in: displayed) }, dragEnabled: selection == nil && !showImport, open: { open($0, timestamp: $1) }).id(media.id)
+                            .task(id: media.match.frame) {
+                                guard let position = positions[media.id] else { return }
+                                let margin = max(3, navigation.columns * 2)
+                                for index in max(0, position - margin)..<min(displayed.count, position + margin + 1) {
+                                    guard !Task.isCancelled else { return }
+                                    _ = await FrameCache.shared.image(displayed[index].match.frame)
+                                }
+                            }
                     }
                 }
                 .onGeometryChange(for: Int.self) { geometry in
@@ -563,7 +599,7 @@ struct LibraryView: View {
                 } action: { navigation.columns = $0 }
                 .padding(14)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: focusedMedia?.id) { _, id in
+                .onChange(of: scrollTarget) { _, id in
                     if let id { proxy.scrollTo(id, anchor: .center) }
                 }
             }
@@ -574,6 +610,7 @@ struct LibraryView: View {
                 }, collapse: { showClips = false })
             }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            LibraryFooter(library: library)
         }
         .frame(minWidth: 850, minHeight: 600)
         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
@@ -599,15 +636,17 @@ struct LibraryView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); backups.flush() }
-        .task(id: indexing.catalogGeneration) {
-            if indexing.catalogGeneration > 0 { await library.refreshCatalog(); clips.reconnect(library.catalogMedia) }
+        .onReceive(indexing.$catalogGeneration.removeDuplicates()) { catalogGeneration = $0 }
+        .task(id: catalogGeneration) {
+            if catalogGeneration > 0 { await library.refreshCatalog(); clips.reconnect(library.catalogMedia) }
         }
         .overlay {
             if let item = selection {
                 GeometryReader { geometry in
                     ZStack {
                         Color.black.opacity(0.72).contentShape(Rectangle()).onTapGesture { selection = nil }
-                        Playback(selection: item, annotations: annotations, clips: clips, close: { selection = nil })
+                        Playback(selection: item, annotations: annotations, clips: clips, close: { selection = nil },
+                                 position: previewPosition(item, items: displayed))
                             .id(item.id)
                             .frame(width: max(1, geometry.size.width - 40), height: max(1, geometry.size.height - 40))
                             .background(Color(red: 0.08, green: 0.09, blue: 0.11), in: RoundedRectangle(cornerRadius: 14))
@@ -964,10 +1003,16 @@ struct MamiApp: App {
         let firstSelected = selectedPreview[0], lastSelected = selectedPreview[1]
         try await browserKey(123, characters: "\u{f702}")
         guard navigation.preview?.media.id == firstSelected.id else { throw AppError.message("Left did not stay within selected preview") }
+        let firstPreviewID = navigation.preview?.id
+        try await browserKey(123, characters: "\u{f702}")
+        guard navigation.preview?.id == firstPreviewID else { throw AppError.message("Preview reloaded at first boundary") }
         try await browserKey(125, characters: "\u{f701}")
         guard navigation.preview?.media.id == firstSelected.id else { throw AppError.message("Down navigated multi-preview") }
         try await browserKey(124, characters: "\u{f703}")
         guard navigation.preview?.media.id == lastSelected.id else { throw AppError.message("Right did not stay within selected preview") }
+        let lastPreviewID = navigation.preview?.id
+        try await browserKey(124, characters: "\u{f703}")
+        guard navigation.preview?.id == lastPreviewID else { throw AppError.message("Preview reloaded at last boundary") }
         try await browserKey(49, characters: " ")
         clips.clear()
         try await browserKey(11, characters: "b")
@@ -978,6 +1023,14 @@ struct MamiApp: App {
         navigation.select(picks[0], extending: true)
         guard navigation.selectedIDs.isEmpty, navigation.focused == nil else { throw AppError.message("Deselecting final item left a selection") }
         print("MULTISELECT additive toggle, selection-only left/right preview, ignored up/down and bulk B shortcut passed")
+        guard navigation.itemsForDrag(picks[0], in: picks).map(\.id) == [picks[0].id] else { throw AppError.message("Unselected drag did not select item") }
+        navigation.select(picks[2], extending: true)
+        guard navigation.itemsForDrag(picks[0], in: picks).map(\.id) == [picks[0].id, picks[2].id] else { throw AppError.message("Selected drag lost multi-selection") }
+        guard navigation.itemsForDrag(picks[1], in: picks).map(\.id) == [picks[1].id], navigation.selectedIDs == [picks[1].id] else { throw AppError.message("New-item drag did not replace selection") }
+        let boundedCache = FrameCache()
+        for size in 64..<330 { _ = await boundedCache.image(picks[0].match.frame, maxPixelSize: size) }
+        guard await boundedCache.retainedCount <= 256, await boundedCache.retainedCost <= 96 * 1024 * 1024 else { throw AppError.message("Thumbnail cache exceeded limits") }
+        print("GRID DRAG selection replacement/multiple originals and bounded thumbnail cache passed")
         let september = try DateSearch.parse("goats in September 2025")
         let leap = try DateSearch.parse("in February 2024")
         let exact = try DateSearch.parse("goats from 2026-01-01 to 2026-01-31")

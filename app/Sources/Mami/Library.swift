@@ -158,6 +158,7 @@ actor SearchWorker {
     }
 
     func search(_ query: String, mode: String = "both", paths: [String]? = nil) throws -> Reply {
+        try Task.checkCancellation()
         guard let input, process?.isRunning == true else { throw AppError.message("Search process is not running.") }
         var request: [String: Any] = ["query": query, "mode": mode]
         if let paths { request["paths"] = paths }
@@ -319,7 +320,9 @@ actor SearchWorker {
         } catch { self.error = "Could not refresh indexed media: \(error.localizedDescription)" }
     }
 
+    private var pendingSearch: Task<Void, Never>?
     @discardableResult func search() -> Task<Void, Never>? {
+        pendingSearch?.cancel()
         generation += 1
         let current = generation
         let searchMode = mode
@@ -337,7 +340,7 @@ actor SearchWorker {
         guard ready else { return nil }
         searching = true
         status = "Searching locally…"
-        return Task {
+        let task = Task {
             do {
                 let reply = try await worker.search(text, mode: searchMode, paths: paths)
                 guard generation == current else { return }
@@ -358,5 +361,7 @@ actor SearchWorker {
                 status = "Search failed"
             }
         }
+        pendingSearch = task
+        return task
     }
 }

@@ -110,12 +110,15 @@ after repair. New-build Photos access still requires user approval.
    such as screenshots or some edited exports, appear as **iCloud · Device
    unavailable** rather than being guessed to come from a phone. Import history
    identifies iCloud provenance even with a custom destination.
-- Hover scrubbing from one-second JPEGs, off-main-thread decoding, a 192 MiB
-  decoded-image cache, and neighboring-frame prefetch.
+- Hover scrubbing from one-second JPEGs, serial off-main-thread decoding with
+  autorelease pools, shared in-flight requests, and a strictly costed 96 MiB /
+  256-entry LRU thumbnail cache. Neighboring frames and two nearby grid rows are
+  prefetched. Offscreen cards release displayed images; scrub requests debounce
+  for 35 ms to avoid decoding every crossed frame during fast pointer movement.
 - Search results default to a ±8-second neighborhood; disable the switch to
    scrub the whole clip. Hold Command while hovering to temporarily invert that
    range, including when the pointer is stationary. One-second previews are discrete frames, not 30 fps video.
-- Click a displayed moment to play the original with AVPlayer at that timestamp.
+- Double-click a displayed moment to play the original with AVPlayer at that timestamp.
 - Romanian spoken-word search with accent-insensitive, whole-word matching.
   All requested words must occur in one transcript segment. Results display
   automatic transcript evidence and seek to the segment's start. This is lexical
@@ -123,8 +126,24 @@ after repair. New-build Photos access still requires user approval.
 - Offline cached browsing, with an explicit error if an original is unavailable.
 - Large centered search, ⌘F search focus, capture-date sorting, and two-line
   capture metadata cards. Invalid camera GPS placeholders are excluded.
-- Clicking a card's details/padding selects it; clicking its media opens the preview.
+- Clicking anywhere on a card selects it; double-clicking its media opens the preview.
   Command-click anywhere on a card toggles additive selection without opening it.
+  Native file drags from a selected card include all highlighted cards. Starting
+  a drag on an unselected card replaces the selection and drags only that file.
+  Drag sessions export original file URLs with copy semantics. Hover outlines
+  distinguish the card under the pointer from the persistent selection.
+  Preview navigation beeps at either boundary without recreating the preview or
+  player; its header shows the current position and total (including selection-only
+  previews). Search updates after a 250 ms typing debounce; superseded queued
+  worker requests are cancelled before execution.
+  Lock grid, arrivals/Refresh and indexing progress/Pause/Resume live in a pinned
+  bottom status bar. Frequent import/indexing progress no longer invalidates the
+  whole browser. Catalog-update chatter, On this Mac and CapCut-can-stay-open copy
+  are removed. Filters use aligned rows, a media/shape group and trailing sort.
+  `prototype-20260927T043305729764Z` passed native integration, drag-selection
+  policy checks, preview identity checks at both boundaries and cache eviction
+  bounds. The layout was reviewed from a native snapshot. Physical grid-to-CapCut
+  dragging and subjective trackpad scrolling still need hands-on verification.
   Space previews a multiple selection using only those items, in grid order.
   **B** adds highlighted files to Selected clips, or removes them when all are already
   present. In a preview B toggles the displayed item. Text entry keeps normal typing.
@@ -435,6 +454,10 @@ import disables the camera controls. A manual camera retry during a Photos batch
 is remembered until the importer is free, including with automatic DJI disabled.
 Native integration and strict signing passed; this build is now open. The one-hour
 monitor was restarted for this exact new build (the prior monitor ends on exit).
+Before the browser update, 36 samples over 35.7 minutes reached 654.6 MiB (peak
+also 654.6 MiB); this is improved but not month-long stability proof. The browser
+build `prototype-20260927T043305729764Z` is now open and has a fresh supervised
+one-hour watch in its deployment directory.
 
 ### Newest-first scheduling
 
