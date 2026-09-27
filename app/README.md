@@ -144,6 +144,13 @@ after repair. New-build Photos access still requires user approval.
   policy checks, preview identity checks at both boundaries and cache eviction
   bounds. The layout was reviewed from a native snapshot. Physical grid-to-CapCut
   dragging and subjective trackpad scrolling still need hands-on verification.
+  Follow-up `prototype-20260927T055807759699Z` hides the Show/Camera picker labels,
+  calls the date picker **Date**, aligns sorting at the right of the lower filter
+  row, removes static search/keyboard hints, and removes the footer's fixed-height
+  bottom gap. `?` (outside text entry) or the question-mark toolbar button opens
+  a transient shortcuts popover, dismissed with Escape/Done/outside click. Browser
+  and Settings use en_US display locale for comma-grouped numbers. Native checks
+  and strict signature verification passed; the update is open.
   Space previews a multiple selection using only those items, in grid order.
   **B** adds highlighted files to Selected clips, or removes them when all are already
   present. In a preview B toggles the displayed item. Text entry keeps normal typing.
@@ -458,6 +465,11 @@ Before the browser update, 36 samples over 35.7 minutes reached 654.6 MiB (peak
 also 654.6 MiB); this is improved but not month-long stability proof. The browser
 build `prototype-20260927T043305729764Z` is now open and has a fresh supervised
 one-hour watch in its deployment directory.
+That uninterrupted watch completed: 60 samples over 60.08 minutes, all PID 69446;
+232.3 MiB start, 339.3 MiB peak, 145.2 MiB end, and 144.3–189.4 MiB during the last
+20 samples. Memory was released rather than growing monotonically. Longer uptime
+validation is still needed; this does not establish month-long stability. The next
+UI build was deployed only after this watch completed.
 
 ### Newest-first scheduling
 

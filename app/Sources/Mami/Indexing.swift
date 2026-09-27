@@ -160,6 +160,6 @@ struct IndexingBar: View {
                     Button("Retry") { indexing.retry() }
                 }.font(.caption)
             }
-        }.frame(height: 64, alignment: .top).padding(.horizontal, 14).padding(.bottom, 10)
+        }.padding(.horizontal, 14).padding(.bottom, 6)
     }
 }

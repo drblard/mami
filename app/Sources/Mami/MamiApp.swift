@@ -364,6 +364,7 @@ struct LibraryView: View {
     @ViewState private var selectedLabels = Set<String>()
     @ViewState private var showImport = false
     @ViewState private var showDateRange = false
+    @ViewState private var showShortcuts = false
     private let importing = Importing.shared
     @StateObject private var annotations = Annotations()
     private let backups = CatalogBackups.shared
@@ -412,6 +413,7 @@ struct LibraryView: View {
     }
     private func handleKey(_ code: UInt16) -> Bool {
         guard !showImport else { return false }
+        if code == 191 { showShortcuts.toggle(); return true }
         if code == 53, selection != nil { selection = nil; return true }
         if code == 11 {
             let targets = selection.map { [$0.media] } ?? highlightedItems
@@ -472,6 +474,9 @@ struct LibraryView: View {
                 HStack {
                     Text("Mami").font(.system(size: 25, weight: .semibold, design: .rounded))
                     Spacer()
+                    Button { showShortcuts.toggle() } label: { Image(systemName: "questionmark.circle") }
+                        .help("Keyboard shortcuts (?)").accessibilityLabel("Keyboard shortcuts")
+                        .popover(isPresented: $showShortcuts) { ShortcutHelp { showShortcuts = false } }
                     Button("Import media…") { showImport = true }
                     Button { showClips.toggle() } label: { Label("\(clips.items.count)", systemImage: "sidebar.right") }
                         .help("Show or hide selected clips").accessibilityLabel("Selected clips, \(clips.items.count)")
@@ -508,22 +513,17 @@ struct LibraryView: View {
                         .accessibilityLabel("Search content")
                         .onChange(of: library.mode) { _, _ in library.search() }
                 }
-                Text(library.mode == "speech" ? "Find Romanian words spoken in videos · Accents are optional"
-                     : library.mode == "both" ? "Search visuals and Romanian speech together · Matches may be approximate"
-                     : "Try “bringing food to goats”, “picking plums” or “grilling by a river”")
-                    .font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 18)
             HStack {
                 Text("\(displayed.count) media").monospacedDigit()
                 Spacer()
-                Text("⌘ click: select · Space: preview · B: clips · ← →: browse").foregroundStyle(.secondary)
             }.font(.caption).padding(.horizontal, 14).padding(.bottom, 10)
             HStack {
                 Picker("Show", selection: $kind) {
                     Text("All media").tag("all")
                     Text("Videos").tag("video")
                     Text("Photos").tag("image")
-                }.pickerStyle(.segmented).frame(width: 220)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 220)
                 Divider().frame(height: 20)
                 ForEach([MediaFormat.vertical, .horizontal]) { shape in
                     Toggle(isOn: Binding(get: { library.format == shape }, set: { library.format = $0 ? shape : .all })) {
@@ -532,17 +532,12 @@ struct LibraryView: View {
                         .toggleStyle(.button)
                 }
                 Spacer()
-                Picker("Sort", selection: $sort) {
-                    Text(library.showingMatches ? "Best match" : "Newest first").tag("default")
-                    Text("Capture date: newest").tag("newest")
-                    Text("Oldest first").tag("oldest")
-                }.labelsHidden().frame(width: 135)
                 Toggle(isOn: $favoritesOnly) { Image(systemName: "heart.fill") }.toggleStyle(.button).help("Show favorites only").accessibilityLabel("Favorites only")
             }.padding(.horizontal, 24).padding(.bottom, 10)
             HStack {
                 TagFilterPicker(available: availableLabels, selected: $selectedLabels)
                 Button { showDateRange = true } label: {
-                    Label(library.dateEnabled ? DateFilterDraft.label(from: library.dateFrom, through: library.dateThrough) : "Capture date", systemImage: "calendar")
+                    Label(library.dateEnabled ? DateFilterDraft.label(from: library.dateFrom, through: library.dateThrough) : "Date", systemImage: "calendar")
                 }
                     .tint(library.dateEnabled ? Color.accentColor : Color.secondary)
                     .popover(isPresented: $showDateRange) {
@@ -556,13 +551,18 @@ struct LibraryView: View {
                 Picker("Camera", selection: $library.deviceFilter) {
                     Text("All devices").tag("All devices")
                     ForEach(library.devices, id: \.self) { Text($0).tag($0) }
-                }.frame(maxWidth: 250).onChange(of: library.deviceFilter) { _, _ in library.search() }
+                }.labelsHidden().frame(maxWidth: 210).onChange(of: library.deviceFilter) { _, _ in library.search() }
                 if favoritesOnly { Text("Favorites").font(.caption).foregroundStyle(.pink) }
                 if hasFilters { Button("Clear filters") { clearFilters() }.font(.caption) }
                 Spacer()
                 if library.showingMatches {
                     Toggle("Scrub ±8 seconds around match", isOn: $nearby).toggleStyle(.switch).controlSize(.small)
                 }
+                Picker("Sort", selection: $sort) {
+                    Text(library.showingMatches ? "Best match" : "Newest first").tag("default")
+                    Text("Date: newest").tag("newest")
+                    Text("Oldest first").tag("oldest")
+                }.labelsHidden().frame(width: 135)
             }.controlSize(.regular).padding(.horizontal, 24).padding(.bottom, 12)
             if let error = library.error { Text(error).foregroundStyle(.red).padding() }
             if let error = annotations.error { Text(error).foregroundStyle(.red).font(.caption).padding() }
@@ -615,6 +615,7 @@ struct LibraryView: View {
         .frame(minWidth: 850, minHeight: 600)
         .background(Color(red: 0.08, green: 0.09, blue: 0.11))
         .preferredColorScheme(.dark)
+        .environment(\.locale, Locale(identifier: "en_US"))
         .background(BrowserKeys(command: { commandHover = $0 }, key: handleKey, mouse: { point, size in
             guard selection != nil, !showImport,
                   !CGRect(origin: .zero, size: size).insetBy(dx: 20, dy: 20).contains(point) else { return false }

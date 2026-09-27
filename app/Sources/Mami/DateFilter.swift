@@ -145,7 +145,7 @@ struct DateFilterPopover: View {
             }.buttonStyle(.borderless).frame(width: 132, alignment: .leading)
             Divider()
             VStack(alignment: .leading, spacing: 14) {
-                Text("Capture date").font(.headline)
+                Text("Date").font(.headline)
                 Picker("Selection", selection: $mode) {
                     ForEach(DateFilterMode.allCases) { Text($0.rawValue).tag($0) }
                 }.pickerStyle(.segmented)

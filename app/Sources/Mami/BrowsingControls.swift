@@ -127,11 +127,45 @@ struct BrowserKeys: NSViewRepresentable {
                 }
                 guard !(window.firstResponder is NSTextView), window.attachedSheet == nil,
                       event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
-                return self.key(event.keyCode) ? nil : event
+                // A layout-independent '?' command, outside text entry only.
+                return self.key(event.characters == "?" ? 191 : event.keyCode) ? nil : event
             }
         }
         required init?(coder: NSCoder) { fatalError() }
         deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+}
+
+struct ShortcutHelp: View {
+    let close: () -> Void
+    private let shortcuts = [
+        ("?", "Show keyboard shortcuts"),
+        ("⌘ F", "Focus search"),
+        ("Return", "Search immediately"),
+        ("⌘ click", "Add or remove a media selection"),
+        ("Space", "Open or close preview"),
+        ("←  →", "Previous or next media"),
+        ("↑  ↓", "Move by a row in the grid"),
+        ("B", "Add/remove highlighted media in Selected clips"),
+        ("M", "Mute/unmute video in preview"),
+        ("Esc", "Close preview or popup"),
+        ("⌘ hover", "Invert thumbnail scrubbing scope"),
+        ("⌘ ,", "Open Settings")
+    ]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Keyboard shortcuts").font(.headline)
+            ForEach(shortcuts, id: \.0) { key, description in
+                HStack(spacing: 18) {
+                    Text(key).font(.system(.body, design: .monospaced)).frame(width: 85, alignment: .trailing)
+                    Text(description).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Divider()
+            Text("Click to select · Double-click to preview · Drag selected originals into your editor.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack { Spacer(); Button("Done", action: close).keyboardShortcut(.cancelAction) }
+        }.padding(20).frame(width: 440)
     }
 }
 

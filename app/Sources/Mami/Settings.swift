@@ -87,6 +87,7 @@ struct MamiSettings: View {
                     .foregroundStyle(.secondary)
             }.font(.caption)
         }.formStyle(.grouped).padding().frame(width: 620, height: 740)
+            .environment(\.locale, Locale(identifier: "en_US"))
             .sheet(isPresented: $reviewCamera) { ImportSheet() }
     }
 }
