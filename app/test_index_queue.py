@@ -11,7 +11,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from index_queue import Queue, Stopped
+from index_queue import Queue, Stopped, GPUDeferred
 
 
 class Backend:
@@ -59,6 +59,37 @@ class QueueTests(unittest.TestCase):
 
     def queue(self, emit=lambda event: None):
         return Queue(self.database, self.root, self.base / 'artifacts', self.backend, emit)
+
+    def test_busy_gpu_does_not_block_photo_and_saved_video_work_is_reused(self):
+        self.backend.interrupt = -999
+        photo = self.root / 'older.jpg'
+        photo.write_bytes(b'photo')
+        original_probe = self.backend.probe
+        def probe(source, kind):
+            result = original_probe(source, kind)
+            result['metadata'] = {'sortDate': '20260927000000' if kind == 'video' else '20260101000000'}
+            if kind == 'image': result.update(timestamps=[None], speech_times=[])
+            return result
+        self.backend.probe = probe
+        q = self.queue()
+        q.scan()
+        waits = []
+        def busy_then_available(queue):
+            waits.append(queue.allow_gpu_defer)
+            if queue.allow_gpu_defer:
+                from gpu_activity import wait_for_quiet
+                with patch('gpu_activity.read_utilization', return_value=96):
+                    wait_for_quiet(queue)
+            else:
+                with queue.db() as db:
+                    self.assertEqual(db.execute('SELECT state FROM index_jobs WHERE path=?', (str(photo),)).fetchone()[0], 'complete')
+        q.gpu_wait = busy_then_available
+        q.work()
+        self.assertEqual(waits, [True, False, False])
+        self.assertEqual(self.backend.frames, [.5, 1.5, 2.5, None])
+        self.assertEqual(self.backend.speech_calls, [0, 30])
+        with q.db() as db:
+            self.assertTrue(all(row['state'] == 'complete' and row['attempts'] == 0 for row in db.execute('SELECT * FROM index_jobs')))
 
     def test_queue_counts_include_active_and_failed_until_complete(self):
         events = []

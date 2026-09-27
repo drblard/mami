@@ -26,6 +26,9 @@ class Stopped(Exception):
 class Reprioritize(Exception):
     pass
 
+class GPUDeferred(Exception):
+    """Keep saved visual work and let CPU-only jobs pass a busy GPU."""
+    pass
 
 class Queue:
     def __init__(self, database, root, artifacts, backend, emit=lambda event: None, gpu_wait=None):
@@ -47,6 +50,7 @@ class Queue:
         self.scan_requested = threading.Event()
         self.last_scan = time.monotonic()
         self.active_job = False
+        self.allow_gpu_defer = False
         self.initialize()
 
     @contextlib.contextmanager
@@ -418,20 +422,33 @@ class Queue:
 
     def work(self):
         attempted = set()
+        deferred = set()
+        retry_gpu_at = time.monotonic() + 30
         self.last_scan = time.monotonic()
         while True:
+            if time.monotonic() >= retry_gpu_at:
+                attempted.difference_update(deferred)
+                retry_gpu_at = time.monotonic() + 30
             if (self.scan_requested.is_set() and time.monotonic() - self.last_scan >= 15) or time.monotonic() - self.last_scan >= 60:
                 self.scan()
                 self.last_scan = time.monotonic()
             with self.db() as db:
                 jobs = [dict(r) for r in db.execute("SELECT * FROM index_jobs WHERE state IN ('queued','running') OR (state='error' AND attempts<3) ORDER BY capture_time DESC, rowid DESC")]
             job = next((job for job in jobs if job['asset'] not in attempted), None)
+            self.allow_gpu_defer = job is not None
+            if job is None:
+                job = next((job for job in jobs if job['asset'] in deferred), None)
             if job is None:
                 break
             self.checkpoint()
             try:
                 self.active_job = True
                 self.run_job(job)
+                deferred.discard(job['asset'])
+            except GPUDeferred:
+                deferred.add(job['asset'])
+                self.phase = 'Speech waiting for GPU — continuing visual indexing'
+                self.status(force=True)
             except Reprioritize:
                 self.scan_requested.set()
                 continue
@@ -444,6 +461,7 @@ class Queue:
                     raise Stopped() from error
                 with self.db() as db:
                     db.execute("UPDATE index_jobs SET state='error',error=?,attempts=attempts+1 WHERE asset=?", (str(error), job['asset']))
+                deferred.discard(job['asset'])
                 self.status(error=f"{Path(job['path']).name}: {error}")
             finally:
                 self.active_job = False

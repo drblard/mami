@@ -485,6 +485,24 @@ UI build was deployed only after this watch completed.
 
 ### Newest-first scheduling
 
+Throughput update `prototype-20260927T063904930325Z`: GPU contention no longer
+blocks CPU-only work behind a video waiting for transcription. Speech checkpoints
+defer without an error/retry penalty, preserving previews/vectors/audio; the
+scheduler continues other visual jobs, revisits deferred speech every 30 seconds,
+and waits normally when only speech remains. GPU safety still requires three
+seconds below 15% utilization; frame sampling/transcription quality is unchanged.
+Visual inference now uses up to four CPU threads (one inter-op thread). On the
+target 8-performance-core M1 Max, eight-frame CPU benchmarks measured median
+89–92 ms at one thread, 70 ms at two, 62 ms at four and 56 ms at eight, with minimum
+cosine similarity 0.99999964. Four leaves headroom for editing. Evidence is in
+`~/mami-lab/benchmarks/index-threads-1790491013903299000/results.json`.
+At diagnosis GPU usage was 96% and a 133-frame video was waiting on speech while
+9,889 photos remained queued. The ~1.4x gain applies only to embedding inference,
+not overall indexing; avoiding head-of-line blocking is the larger scheduling fix.
+42 Python tests passed on Linux/macOS, including photo completion during simulated
+96% GPU usage and speech resumption without repeating frames or spending retries.
+The signed deployment reuses byte-identical tested Swift sources/executable.
+
 Photos downloads use descending PhotoKit creation dates. The asset list refreshes
 every 60 seconds between assets during a long pass so newly synced captures can
 jump ahead of the historical backlog. Already staged receipts are drained newest

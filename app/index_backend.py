@@ -88,7 +88,9 @@ class Backend:
         if self.visual is None:
             from transformers import AutoModel, AutoProcessor
             if not self.torch_configured:
-                torch.set_num_threads(1)
+                # Measured on the target M1 Max: four CPU threads improve visual
+                # inference ~1.4x while leaving cores available for the editor.
+                torch.set_num_threads(min(4, os.cpu_count() or 1))
                 torch.set_num_interop_threads(1)
                 self.torch_configured = True
             path = self.model_path('visual')

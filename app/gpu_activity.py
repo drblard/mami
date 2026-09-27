@@ -57,6 +57,9 @@ def wait_for_quiet(queue):
         queue.checkpoint()
         value = read_utilization()
         queue.gpu_utilization = value
+        if getattr(queue, 'allow_gpu_defer', False) and (value is None or value >= window.threshold):
+            from index_queue import GPUDeferred
+            raise GPUDeferred()
         if window.observe(value, time.monotonic()):
             return
         queue.waiting = True
