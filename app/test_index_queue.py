@@ -60,7 +60,7 @@ class QueueTests(unittest.TestCase):
     def queue(self, emit=lambda event: None):
         return Queue(self.database, self.root, self.base / 'artifacts', self.backend, emit)
 
-    def test_busy_gpu_does_not_block_photo_and_saved_video_work_is_reused(self):
+    def test_active_editor_does_not_block_photo_and_saved_video_work_is_reused(self):
         self.backend.interrupt = -999
         photo = self.root / 'older.jpg'
         photo.write_bytes(b'photo')
@@ -77,10 +77,11 @@ class QueueTests(unittest.TestCase):
         def busy_then_available(queue):
             waits.append(queue.allow_gpu_defer)
             if queue.allow_gpu_defer:
-                from gpu_activity import wait_for_quiet
-                with patch('gpu_activity.read_utilization', return_value=96):
-                    wait_for_quiet(queue)
+                from gpu_activity import wait_for_editor
+                queue.command({'action': 'editor-activity', 'active': True})
+                wait_for_editor(queue)
             else:
+                queue.command({'action': 'editor-activity', 'active': False})
                 with queue.db() as db:
                     self.assertEqual(db.execute('SELECT state FROM index_jobs WHERE path=?', (str(photo),)).fetchone()[0], 'complete')
         q.gpu_wait = busy_then_available
@@ -90,6 +91,32 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.backend.speech_calls, [0, 30])
         with q.db() as db:
             self.assertTrue(all(row['state'] == 'complete' and row['attempts'] == 0 for row in db.execute('SELECT * FROM index_jobs')))
+
+    def test_idle_editor_never_reads_gpu_or_sleeps_and_signal_expires(self):
+        from gpu_activity import wait_for_editor
+        q = self.queue()
+        with patch('gpu_activity.read_utilization', side_effect=AssertionError('Global GPU must not gate speech')), patch.object(q.wake, 'wait', side_effect=AssertionError('No idle sleep')):
+            wait_for_editor(q)
+            q.command({'action': 'editor-activity', 'active': True})
+            self.assertTrue(q.editor_activity.active())
+            q.command({'action': 'editor-activity', 'active': False})
+            wait_for_editor(q)
+            with patch('gpu_activity.time.monotonic', return_value=100):
+                q.command({'action': 'editor-activity', 'active': True})
+            with patch('gpu_activity.time.monotonic', return_value=116):
+                wait_for_editor(q)
+        events=[json.loads(line)['event'] for line in q.editor_activity.log.read_text().splitlines()]
+        self.assertIn('editor_signal_expired', events)
+
+    def test_active_editor_wait_resumes_and_records_duration(self):
+        from gpu_activity import wait_for_editor
+        q = self.queue()
+        q.command({'action': 'editor-activity', 'active': True})
+        with patch.object(q.wake, 'wait', side_effect=lambda _: q.command({'action': 'editor-activity', 'active': False})):
+            wait_for_editor(q)
+        events=[json.loads(line) for line in q.editor_activity.log.read_text().splitlines()]
+        self.assertEqual(events[-1]['event'], 'speech_wait_ended')
+        self.assertGreaterEqual(events[-1]['seconds'], 0)
 
     def test_queue_counts_include_active_and_failed_until_complete(self):
         events = []

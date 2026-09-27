@@ -35,6 +35,8 @@ class Queue:
         self.database, self.root, self.artifacts = map(Path, (database, root, artifacts))
         self.backend, self.emit = backend, emit
         self.gpu_wait = gpu_wait
+        from gpu_activity import EditorActivity
+        self.editor_activity = EditorActivity(self.database.parent / 'editor-activity.jsonl')
         self.gpu_utilization = None
         self.stop = threading.Event()
         self.wake = threading.Event()
@@ -108,6 +110,10 @@ class Queue:
 
     def command(self, command):
         action = command.get('action')
+        if action == 'editor-activity':
+            if self.editor_activity.update(command.get('active') is True):
+                self.wake.set()
+            return
         if action in ('pause', 'resume'):
             paused = action == 'pause'
             # Set the in-memory flag immediately; persist before acknowledging.
@@ -447,7 +453,7 @@ class Queue:
                 deferred.discard(job['asset'])
             except GPUDeferred:
                 deferred.add(job['asset'])
-                self.phase = 'Speech waiting for GPU — continuing visual indexing'
+                self.phase = 'Speech yielding to active editing — continuing visual indexing'
                 self.status(force=True)
             except Reprioritize:
                 self.scan_requested.set()

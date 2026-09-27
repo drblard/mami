@@ -3,6 +3,62 @@ import math
 import plistlib
 import subprocess
 import time
+import json
+from pathlib import Path
+import threading
+
+
+class EditorActivity:
+    """Expiring foreground+recent-input signal, never inferred from GPU load."""
+    def __init__(self, log):
+        self.log = Path(log)
+        self.until = 0
+        self.lock = threading.RLock()
+
+    def record(self, event, **details):
+        with self.lock:
+            # Bounded audit trail: one current and one previous 1 MiB file.
+            if self.log.exists() and self.log.stat().st_size >= 1024 * 1024:
+                self.log.replace(self.log.with_suffix('.jsonl.1'))
+            with self.log.open('a') as output:
+                output.write(json.dumps(dict(time=time.time(), event=event, **details)) + '\n')
+
+    def update(self, active):
+        with self.lock:
+            was_active = self.until > time.monotonic()
+            self.until = time.monotonic() + 15 if active else 0
+            if active != was_active:
+                self.record('editor_active' if active else 'editor_inactive', reason='CapCut foreground with input in last 60 seconds' if active else 'No active editing signal')
+            return active != was_active
+
+    def active(self):
+        with self.lock:
+            if self.until and self.until <= time.monotonic():
+                self.until = 0
+                self.record('editor_signal_expired')
+            return self.until > time.monotonic()
+
+
+def wait_for_editor(queue):
+    activity = queue.editor_activity
+    if not activity.active():
+        return
+    if queue.allow_gpu_defer:
+        from index_queue import GPUDeferred
+        activity.record('speech_deferred', file=queue.current)
+        raise GPUDeferred()
+    start = time.monotonic()
+    activity.record('speech_wait_started', file=queue.current)
+    try:
+        while activity.active():
+            queue.checkpoint()
+            queue.waiting = True
+            queue.phase = 'Waiting while CapCut is actively used'
+            queue.status()
+            queue.wake.wait(.5)
+            queue.wake.clear()
+    finally:
+        activity.record('speech_wait_ended', seconds=round(time.monotonic() - start, 3))
 
 
 def utilization(tree):

@@ -1128,6 +1128,14 @@ struct MamiApp: App {
         guard library.items.count == 498, !library.showingMatches else { throw AppError.message("Clear search failed") }
         await library.worker.stop()
         var cameraConnections = CameraConnections()
+        guard Indexing.activeEditing(bundleID: "com.lemon.lvoverseas", idleSeconds: 3),
+              !Indexing.activeEditing(bundleID: "com.lemon.lvoverseas", idleSeconds: 60),
+              !Indexing.activeEditing(bundleID: "com.lemon.lvoverseas", idleSeconds: 600),
+              !Indexing.activeEditing(bundleID: "local.mami.prototype", idleSeconds: 0),
+              !Indexing.activeEditing(bundleID: nil, idleSeconds: 0) else {
+            throw AppError.message("CapCut activity must require foreground and recent input")
+        }
+        print("EDITOR foreground/recent input yields; idle, background and Mami activity do not")
         let cameraFixture = URL(fileURLWithPath: "/Volumes/DJI-Test")
         guard cameraConnections.next([cameraFixture], enabled: false, busy: false) == nil,
               cameraConnections.next([cameraFixture], enabled: true, busy: true) == nil,

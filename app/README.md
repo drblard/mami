@@ -374,7 +374,7 @@ originals, so they do not consume another full copy of the media. Failed attempt
 can consume extra storage and are not automatically removed. The import journal
 is separate from catalog snapshots; back up the entire originals tree to retain
 it too. Published copies trigger an automatic scan; indexing's own pause state
-and GPU activity policy still apply.
+and active-editor policy still apply.
 
 Persistent camera preferences live in **Settings (⌘,) → DJI Camera**, including
 automatic offload on connection, verified source removal, LRF inclusion and eject.
@@ -489,8 +489,9 @@ Throughput update `prototype-20260927T063904930325Z`: GPU contention no longer
 blocks CPU-only work behind a video waiting for transcription. Speech checkpoints
 defer without an error/retry penalty, preserving previews/vectors/audio; the
 scheduler continues other visual jobs, revisits deferred speech every 30 seconds,
-and waits normally when only speech remains. GPU safety still requires three
-seconds below 15% utilization; frame sampling/transcription quality is unchanged.
+and waits normally when only speech remains. That build still required three
+seconds below 15% utilization; this global gate is superseded by the active-editor
+policy below. Frame sampling/transcription quality is unchanged.
 Visual inference now uses up to four CPU threads (one inter-op thread). On the
 target 8-performance-core M1 Max, eight-frame CPU benchmarks measured median
 89–92 ms at one thread, 70 ms at two, 62 ms at four and 56 ms at eight, with minimum
@@ -704,23 +705,31 @@ repair the separate legacy experimental index or detect byte-level cache corrupt
 Chunked speech can lose context at chunk boundaries; it does not establish an
 accuracy improvement over whole-clip transcription.
 
-Work runs out of process at utility QoS with nice(10), single-threaded CPU visual
+Work runs out of process at utility QoS with nice(10), four-thread CPU visual
 inference and limited FFmpeg threads. Previews and searches do not send scheduling
-commands or pause imports/indexing. Manual Pause and GPU-load checks remain.
+commands or pause imports/indexing. Manual Pause and active-editor detection remain.
 This is resource-conscious scheduling,
 not a hard guarantee of zero performance impact. `.background` QoS proved too
 restrictive for macOS disk I/O in the first native scan test; utility QoS resumed
 the 213 saved file checks and completed the 498-file scan.
 
-GPU transcription reads Apple IOAccelerator utilization without elevated privileges.
-Before each inference boundary it requires three consecutive seconds below 15%,
-using the maximum device/renderer/tiler reading across available devices. Missing
-telemetry never means idle; the UI reports that it is waiting. A fresh window after
-each chunk prevents Mami's previous GPU burst from being mistaken for an editor.
-CapCut can remain open. These driver counters are best-effort, not a supported
-per-process export detector; a CPU/media-engine export may show low GPU utilization.
-In-flight inference finishes its current chunk before yielding. The serial queue
-can still wait at a speech stage while GPU load stays high. Real pinned Whisper
+`prototype-20260927T064913854347Z` replaces global GPU-load gating entirely:
+the native app checks CapCut's exact bundle ID (`com.lemon.lvoverseas`) against
+the foreground application plus aggregate keyboard/mouse idle time below 60 seconds.
+Only that combination defers speech. CapCut merely running, backgrounded, or left
+idle does not block inference. Mami's own GPU usage cannot trigger this policy, and
+there is no unconditional three-second quiet delay. The five-second heartbeat
+expires after 15 seconds so stale telemetry cannot block indefinitely. In-flight
+speech finishes its current chunk; CPU visual work continues when speech defers.
+Foreground/recent input is a heuristic, not playback/export detection: long hands-off
+playback or background exports may need manual Pause. No keystroke content is read.
+
+`catalog/database/editor-activity.jsonl` records worker policy, activity transitions,
+speech deferrals and measured blocking-wait durations. Logs rotate at 1 MiB with
+one backup. Forty-four Python tests and native integration passed, including idle
+no-sleep/no-global-GPU-read, stale signal expiry, wait resumption and editor detection.
+The release is signed and running. The former 12-hour GPU wait history cannot be
+reconstructed because those old events were not persisted. Real pinned Whisper
 inference and a saved speech checkpoint completed with CapCut open in the retained
 `prototype-20260926T092711536655Z/gpu-resume-check` fixture. Finder-launched worker
 PATH now includes Homebrew so Whisper can invoke ffmpeg.

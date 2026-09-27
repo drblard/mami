@@ -40,6 +40,14 @@ import SwiftUI
     private var buffer = Data()
     private var retries = 0
     private var quitting = false
+    private var editorTimer: Timer?
+    static func activeEditing(bundleID: String?, idleSeconds: Double) -> Bool {
+        bundleID == "com.lemon.lvoverseas" && idleSeconds.isFinite && idleSeconds >= 0 && idleSeconds < 60
+    }
+    private func reportEditorActivity() {
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
+        send(["action": "editor-activity", "active": Self.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)])
+    }
     var active: Bool { running && !["Up to date", "Needs attention", "Scan needs attention"].contains(phase) }
     var label: String {
         if paused { return waiting || !active ? "Paused — progress saved" : "Pausing after current step…" }
@@ -66,7 +74,7 @@ import SwiftUI
             task.standardOutput = stdout
             task.standardError = FileHandle.standardError
             // Utility QoS avoids macOS's severe background disk throttling;
-            // the worker still uses nice(10), one CPU thread and GPU-load checks.
+            // the worker uses nice(10), bounded CPU threads and active-editor signals.
             task.qualityOfService = .utility
             buffer = Data()
             stdout.fileHandleForReading.readabilityHandler = { [weak self, weak task] handle in
@@ -81,6 +89,7 @@ import SwiftUI
                 Task { @MainActor in
                     guard let self, self.process === ended else { return }
                     self.running = false
+                    self.editorTimer?.invalidate(); self.editorTimer = nil
                     self.output?.readabilityHandler = nil
                     self.process = nil
                     self.input = nil
@@ -99,6 +108,10 @@ import SwiftUI
             input = stdin.fileHandleForWriting
             output = stdout.fileHandleForReading
             running = true
+            reportEditorActivity()
+            editorTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.reportEditorActivity() }
+            }
             error = nil
         } catch { self.error = "Could not start background indexing: \(error.localizedDescription)" }
     }
@@ -135,6 +148,7 @@ import SwiftUI
     func retry() { error = nil; if !running { retries = 0; start() }; send(["action": "retry"]) }
     func stop() {
         quitting = true
+        editorTimer?.invalidate(); editorTimer = nil
         send(["action": "stop"])
         try? input?.close()
         process?.terminate()
