@@ -21,6 +21,7 @@ import threading
 import uuid
 
 from index_queue import EXTENSIONS, Queue, Stopped
+from index_store import register_verified_import
 
 CHUNK = 4 * 1024 * 1024
 
@@ -66,6 +67,7 @@ class Importer:
         self.done = self.total = self.copied = self.duplicates = self.failed = self.skipped = 0
         self.current, self.phase = '', 'Ready to import'
         self.removed = 0
+        self.capture_times = {}
 
     @contextlib.contextmanager
     def db(self):
@@ -79,10 +81,21 @@ class Importer:
         finally:
             db.close()
 
-    def status(self, error=None, bytes_done=0, bytes_total=0):
+    def status(self, error=None, bytes_done=0, bytes_total=0, catalog_changed=False):
         self.emit(dict(phase=self.phase, current=self.current, done=self.done, total=self.total,
                        copied=self.copied, duplicates=self.duplicates, failed=self.failed, skipped=self.skipped,
-                       removed=self.removed, paused=self.paused.is_set(), bytes_done=bytes_done, bytes_total=bytes_total, error=error, ejection=self.ejection))
+                        removed=self.removed, paused=self.paused.is_set(), bytes_done=bytes_done, bytes_total=bytes_total, error=error, ejection=self.ejection,
+                        catalog_changed=catalog_changed))
+
+    def publish_catalog(self, source, target, row):
+        if self.catalog is None or target.suffix.lower() not in EXTENSIONS:
+            return
+        captured = self.capture_times.get(str(source))
+        if captured is None:
+            captured = (json.loads(row['signature'])[1] / 1e9 if self.device == 'iCloud'
+                        else datetime.strptime(row['date'], '%Y-%m-%d').timestamp())
+        if register_verified_import(self.catalog, target, row['digest'], capture_time=captured, source_device=self.device):
+            self.status(catalog_changed=True)
 
     @staticmethod
     def volume_info(path):
@@ -247,6 +260,7 @@ class Importer:
                     raise RuntimeError('Source changed during verification')
                 with self.db() as db:
                     db.execute('UPDATE files SET destination=? WHERE source=? AND signature=? AND device=?', (str(candidate), *key))
+                self.publish_catalog(source, candidate, row)
                 return 'duplicate'
         part = Path(row['part'])
         self.phase = 'Checking saved copy'
@@ -309,6 +323,7 @@ class Importer:
                 target = folder / f'{source.stem}-{digest[:12]}-{uuid.uuid4().hex[:8]}{source.suffix}'
         with self.db() as db:
             db.execute('UPDATE files SET destination=? WHERE source=? AND signature=? AND device=?', (str(target), *key))
+        self.publish_catalog(source, target, row)
         return 'copied'
 
     def run(self):
@@ -343,7 +358,8 @@ class Importer:
                         files.append(path)
                 self.status()
             self.total = len(files)
-            files.sort(key=self.priority, reverse=True)
+            self.capture_times = {str(path): self.priority(path) for path in files}
+            files.sort(key=lambda path: self.capture_times[str(path)], reverse=True)
             for source in files:
                 self.checkpoint()
                 self.current = source.name

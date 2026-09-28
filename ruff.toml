@@ -1,0 +1,6 @@
+# Static correctness checks for production Python. Experiments are audited separately.
+target-version = "py312"
+extend-exclude = ["app/scaling"]
+
+[lint]
+select = ["F"]

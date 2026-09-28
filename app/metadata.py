@@ -1,9 +1,8 @@
-"""Read capture metadata once at packaging time; never modify media."""
+"""Capture metadata extraction; accepts existing probes and never modifies media."""
 import json
-import subprocess
 from datetime import datetime
-from fractions import Fraction
 from pathlib import Path
+from sampling import frame_rate
 
 
 def gps_label(gps):
@@ -21,6 +20,48 @@ def gps_label(gps):
         return None
 
 
+def empty_metadata():
+    return {'date': 'Capture date unavailable', 'details': [], 'location': None,
+            'duration': None, 'tags': [], 'technical': [], 'sortDate': ''}
+
+
+def video_metadata(probe, timezone=None):
+    """Extract video fields from one ffprobe result, without further I/O."""
+    metadata = empty_metadata()
+    try:
+        stream = next((item for item in probe['streams'] if item.get('codec_type') == 'video'), None)
+        if stream is None:
+            raise ValueError('No video stream found')
+        width, height = stream.get('width', 0), stream.get('height', 0)
+        tags = probe.get('format', {}).get('tags', {})
+        raw_date = tags.get('creation_time') or stream.get('tags', {}).get('creation_time')
+        if raw_date:
+            capture = datetime.fromisoformat(raw_date.replace('Z', '+00:00')).astimezone(timezone)
+            metadata['date'] = capture.strftime('%d %b %Y · %H:%M')
+            metadata['sortDate'] = capture.strftime('%Y%m%d%H%M%S')
+        camera = ' '.join(tags.get('com.apple.quicktime.' + key, '').strip() for key in ('make', 'model')).strip()
+        if not camera:
+            camera = ' '.join(tags.get(key, '').strip() for key in ('make', 'model')).strip()
+        if not camera and any(name in tags.get('encoder', '') for name in ('DJI', 'OsmoPocket')):
+            camera = tags['encoder']
+        camera = camera.replace('OsmoPocket4P', 'Pocket 4P')
+        metadata['camera'] = camera
+        rate = frame_rate(stream)
+        resolution = '4K' if max(width, height) == 3840 else f'{width}×{height}'
+        metadata['duration'] = float(stream.get('duration') or probe['format']['duration'])
+        metadata['details'] = [f'{resolution} · {rate:.0f} fps' if rate else resolution]
+        if camera:
+            metadata['details'].append(camera)
+        metadata['technical'] = [tags[key] for key in ('com.dji.camera.LensType', 'com.dji.camera.ColorGammaSxS') if tags.get(key)]
+        for key in ('location', 'com.apple.quicktime.location.ISO6709'):
+            if tags.get(key):
+                metadata['location'] = tags[key]
+                break
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        metadata['error'] = str(error)
+    return metadata
+
+
 def export_metadata(inventory):
     from PIL import Image
     data = json.loads(Path(inventory).read_text())
@@ -29,11 +70,13 @@ def export_metadata(inventory):
     for record in data['files']:
         if 'error' in record:
             continue
+        if record['kind'] != 'image':
+            result[record['path']] = video_metadata(record['probe'])
+            continue
         streams = record['probe']['streams']
         stream = next(s for s in streams if s.get('codec_type') == 'video')
         width, height = stream.get('width', 0), stream.get('height', 0)
-        metadata = {'date': 'Capture date unavailable', 'details': [], 'location': None,
-                    'duration': None, 'tags': [], 'technical': [], 'sortDate': ''}
+        metadata = empty_metadata()
         try:
             if record['kind'] == 'image':
                 with Image.open(root / record['path']) as image:
@@ -54,31 +97,6 @@ def export_metadata(inventory):
                         if key in details:
                             metadata['technical'].append(f'{label} {details[key]}')
                 metadata['details'] = [f'{width * height / 1e6:.1f} MP', camera]
-            else:
-                probe = subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_entries', 'format_tags',
-                                        '-of', 'json', str(root / record['path'])], check=True, capture_output=True, text=True, timeout=30)
-                tags = json.loads(probe.stdout)['format'].get('tags', {})
-                raw_date = tags.get('creation_time') or stream.get('tags', {}).get('creation_time')
-                if raw_date:
-                    capture = datetime.fromisoformat(raw_date.replace('Z', '+00:00')).astimezone()
-                    metadata['date'] = capture.strftime('%d %b %Y · %H:%M')
-                    metadata['sortDate'] = capture.strftime('%Y%m%d%H%M%S')
-                camera = ' '.join(tags.get('com.apple.quicktime.' + key, '').strip() for key in ('make', 'model')).strip()
-                if not camera:
-                    camera = ' '.join(tags.get(key, '').strip() for key in ('make', 'model')).strip()
-                if not camera and any(name in tags.get('encoder', '') for name in ('DJI', 'OsmoPocket')):
-                    camera = tags['encoder']
-                camera = camera.replace('OsmoPocket4P', 'Pocket 4P')
-                metadata['camera'] = camera
-                rate = float(Fraction(stream.get('avg_frame_rate', '0/1')))
-                resolution = '4K' if max(width, height) == 3840 else f'{width}×{height}'
-                metadata['duration'] = float(stream.get('duration') or record['probe']['format']['duration'])
-                metadata['details'] = [f'{resolution} · {rate:.0f} fps', camera]
-                metadata['technical'] = [tags[k] for k in ('com.dji.camera.LensType', 'com.dji.camera.ColorGammaSxS') if tags.get(k)]
-                for key in ('location', 'com.apple.quicktime.location.ISO6709'):
-                    if tags.get(key):
-                        metadata['location'] = tags[key]
-                        break
             metadata['details'] = [v for v in metadata['details'] if v]
         except Exception as exc:
             metadata['error'] = str(exc)

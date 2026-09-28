@@ -33,31 +33,35 @@ enum ContentIdentity {
     @Published private(set) var values: [String: Annotation] = [:]
     @Published var error: String?
     @Published private(set) var ready = false
-    let directory: URL
+    var directory: URL { catalog.legacyAnnotationsDirectory }
     let catalog: Catalog
 
-    init(directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("mami-lab/catalog/annotations")) {
-        self.directory = directory
-        let standard = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("mami-lab/catalog/annotations")
-        self.catalog = directory == standard ? .standard : Catalog(directory: directory.appendingPathComponent("database"))
+    init(catalog: Catalog = .standard) {
+        self.catalog = catalog
+    }
+
+    convenience init(directory: URL) {
+        self.init(catalog: Catalog(directory: directory.appendingPathComponent("database"), legacyAnnotations: directory))
     }
 
     func value(for media: Media) -> Annotation { values[media.assetID] ?? Annotation() }
 
     nonisolated static func read(_ directory: URL) throws -> [String: Annotation] {
-        let standard = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("mami-lab/catalog/annotations")
-        let catalog: Catalog = directory == standard ? .standard : Catalog(directory: directory.appendingPathComponent("database"))
-        try catalog.migrateAnnotations(from: directory, identities: ContentIdentity.paths)
+        try read(catalog: Catalog(directory: directory.appendingPathComponent("database"), legacyAnnotations: directory))
+    }
+
+    nonisolated static func read(catalog: Catalog) throws -> [String: Annotation] {
+        try catalog.migrateAnnotations(from: catalog.legacyAnnotationsDirectory, identities: ContentIdentity.paths)
         return try catalog.annotations()
     }
 
     func load() async {
         guard !ready else { return }
         do {
-            let directory = directory
-            values = try await Task.detached { try Self.read(directory) }.value
+            let catalog = catalog
+            values = try await Task.detached { try Self.read(catalog: catalog) }.value
             ready = true
-            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule() }
+            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule(urgent: true) }
         } catch { self.error = "Could not load saved tags: \(error.localizedDescription)" }
     }
 
@@ -68,7 +72,7 @@ enum ContentIdentity {
             try catalog.save(value, asset: media.assetID)
             values[media.assetID] = value
             error = nil
-            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule() }
+            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule(urgent: true) }
         } catch { self.error = "Could not save metadata: \(error.localizedDescription)" }
     }
 

@@ -11,7 +11,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from index_queue import Queue, Stopped, GPUDeferred
+from index_queue import Queue, Stopped
 
 
 class Backend:
@@ -87,7 +87,7 @@ class QueueTests(unittest.TestCase):
         q.gpu_wait = busy_then_available
         q.work()
         self.assertEqual(waits, [True, False, False])
-        self.assertEqual(self.backend.frames, [.5, 1.5, 2.5, None])
+        self.assertEqual(self.backend.frames, [.5, None, 1.5, 2.5])
         self.assertEqual(self.backend.speech_calls, [0, 30])
         with q.db() as db:
             self.assertTrue(all(row['state'] == 'complete' and row['attempts'] == 0 for row in db.execute('SELECT * FROM index_jobs')))
@@ -167,7 +167,7 @@ class QueueTests(unittest.TestCase):
             asset = db.execute('SELECT asset FROM index_jobs').fetchone()[0]
         folder = self.root / '.mami-imports'
         folder.mkdir()
-        with sqlite3.connect(folder / 'journal.sqlite') as db:
+        with contextlib.closing(sqlite3.connect(folder / 'journal.sqlite')) as db, db:
             db.execute('CREATE TABLE files(digest TEXT,signature TEXT,device TEXT,destination TEXT)')
             db.execute('INSERT INTO files VALUES(?,?,?,?)', (asset.removeprefix('sha256:'), json.dumps([8, 1700000000000000000, 1, 1, 1]), 'iCloud', str(self.source)))
         q.scan()
@@ -227,7 +227,7 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(Stopped):
             q.work()
         with q.db() as db:
-            job = db.execute('SELECT state,attempts,error FROM index_jobs').fetchone()
+            job = db.execute('SELECT state,attempts,error FROM preview_jobs').fetchone()
             self.assertEqual(tuple(job), ('running', 0, None))
         self.backend.frame = original_frame
         resumed = self.queue()
@@ -258,7 +258,7 @@ class QueueTests(unittest.TestCase):
         with self.assertRaises(Stopped):
             q.work()
         self.assertEqual(self.backend.frames, [.5])
-        self.assertEqual(len(self.backend.vectors), 1)
+        self.assertEqual(len(self.backend.vectors), 0)  # AI does not run between preview frames.
         self.backend.interrupt = None
         # Simulate process restart. The running job is recovered, not discarded.
         restarted = self.queue()
@@ -289,7 +289,7 @@ q.work()
         q = self.queue()
         q.work()
         self.assertEqual(self.backend.frames, [1.5, 2.5])
-        self.assertEqual(len(self.backend.vectors), 2)
+        self.assertEqual(len(self.backend.vectors), 3)
         with q.db() as db:
             self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
             self.assertEqual(db.execute('SELECT state FROM index_jobs').fetchone()[0], 'complete')
@@ -387,7 +387,8 @@ q.work()
         q.work()
         with q.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM media').fetchone()[0], 0)
-            self.assertEqual(db.execute('SELECT state FROM index_jobs').fetchone()[0], 'error')
+            self.assertEqual(db.execute('SELECT state FROM preview_jobs').fetchone()[0], 'error')
+            self.assertEqual(db.execute('SELECT state FROM index_jobs').fetchone()[0], 'queued')
         self.assertEqual(self.backend.frames, [])
 
     def test_automatic_rescan_discovers_new_file(self):

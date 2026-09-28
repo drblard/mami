@@ -6,11 +6,11 @@ import json
 import os
 from pathlib import Path
 import signal
-import sqlite3
 import sys
 import threading
 
 from import_media import Importer, Queue, Stopped, sync_original
+from user_store import connection as user_connection
 
 
 class PhotosBatch:
@@ -79,20 +79,16 @@ class PhotosBatch:
         part = Path(row['part'])
         if part.is_file() and not part.is_symlink() and os.path.samefile(part, target):
             part.unlink()
+        # Removing the staging hard link changes destination ctime, not content.
+        # Refresh that signature without forcing a redundant full-file scan/hash.
+        imp.publish_catalog(source, target, row)
         if result == 'copied': imp.copied += 1
         else: imp.duplicates += 1
 
     @contextlib.contextmanager
     def catalog(self):
-        path = Path(self.importer.catalog)
-        with (path.parent / 'catalog.lock').open('a+b') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            with contextlib.closing(sqlite3.connect(path)) as db:
-                db.execute('PRAGMA journal_mode=PERSIST')
-                db.execute('PRAGMA synchronous=FULL')
-                db.execute('PRAGMA fullfsync=ON')
-                with db:
-                    yield db
+        with user_connection(self.importer.catalog, write=True) as db:
+            yield db
 
 
 def main():

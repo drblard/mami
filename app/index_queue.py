@@ -6,7 +6,6 @@ artifacts are retained; only the unfinished unit is retried after a crash.
 """
 import contextlib
 from datetime import datetime
-import fcntl
 import hashlib
 import json
 import os
@@ -15,9 +14,11 @@ import sqlite3
 import threading
 import time
 import uuid
+from user_store import connection as user_connection
+from model_config import PIPELINE
+from index_store import connection, ensure_schema, signature, MEDIA_EXTENSIONS
 
-PIPELINE = 'siglip2-75de2d55-whisper-a4aaeec0-1s-ro-chunk30-v1'
-EXTENSIONS = {'.mp4': 'video', '.mov': 'video', '.jpg': 'image', '.jpeg': 'image', '.png': 'image', '.heic': 'image'}
+EXTENSIONS = MEDIA_EXTENSIONS
 
 
 class Stopped(Exception):
@@ -30,8 +31,18 @@ class GPUDeferred(Exception):
     """Keep saved visual work and let CPU-only jobs pass a busy GPU."""
     pass
 
+
+class PreviewsPending(Exception):
+    """Inference waits for independently generated previews."""
+
 class Queue:
-    def __init__(self, database, root, artifacts, backend, emit=lambda event: None, gpu_wait=None):
+    def __init__(self, database, root, artifacts, backend, emit=lambda event: None, gpu_wait=None, role='all'):
+        if role not in ('all', 'index', 'preview'):
+            raise ValueError('Unknown worker role')
+        self.role = role
+        self.control_table = 'preview_control' if role == 'preview' else 'scan_control'
+        self.jobs_table = 'preview_jobs' if role == 'preview' else 'index_jobs'
+        self.processing_preview = False
         self.database, self.root, self.artifacts = map(Path, (database, root, artifacts))
         self.backend, self.emit = backend, emit
         self.gpu_wait = gpu_wait
@@ -57,42 +68,19 @@ class Queue:
 
     @contextlib.contextmanager
     def db(self):
-        with (self.database.parent / 'catalog.lock').open('a+b') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            db = sqlite3.connect(self.database, timeout=5)
-            try:
-                db.row_factory = sqlite3.Row
-                db.execute('PRAGMA journal_mode=PERSIST')
-                db.execute('PRAGMA synchronous=FULL')
-                db.execute('BEGIN IMMEDIATE')
-                with db:
-                    yield db
-            finally:
-                db.close()
-                fcntl.flock(lock, fcntl.LOCK_UN)
+        with connection(self.database) as db:
+            yield db
 
     def initialize(self):
         with self.db() as db:
-            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='index_schema'").fetchone():
-                db.execute('CREATE TABLE index_schema(version INTEGER NOT NULL)')
-                db.execute('INSERT INTO index_schema VALUES(1)')
-                db.execute('CREATE TABLE scan_control(id INTEGER PRIMARY KEY, paused INTEGER NOT NULL)')
-                db.execute('INSERT INTO scan_control VALUES(1,0)')
-                db.execute('CREATE TABLE scan_files(path TEXT PRIMARY KEY, signature TEXT NOT NULL, asset TEXT NOT NULL)')
-                db.execute('CREATE TABLE index_jobs(asset TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL, signature TEXT NOT NULL, logical TEXT NOT NULL, state TEXT NOT NULL, error TEXT, attempts INTEGER NOT NULL DEFAULT 0)')
-                db.execute('CREATE TABLE index_units(asset TEXT NOT NULL, pipeline TEXT NOT NULL, stage TEXT NOT NULL, ordinal INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(asset,pipeline,stage,ordinal))')
-                for table in ('scan_control', 'scan_files', 'index_jobs', 'index_units'):
-                    for op in ('INSERT', 'UPDATE', 'DELETE'):
-                        db.execute(f'CREATE TRIGGER {table}_{op} AFTER {op} ON {table} BEGIN UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1; END')
-                db.execute('UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1')
-            if db.execute('SELECT version FROM index_schema').fetchone()[0] != 1:
-                raise ValueError('Unsupported indexing queue version')
-            if 'capture_time' not in {r['name'] for r in db.execute('PRAGMA table_info(index_jobs)')}:
-                db.execute('ALTER TABLE index_jobs ADD COLUMN capture_time REAL')
-            if db.execute('SELECT paused FROM scan_control WHERE id=1').fetchone()[0]:
+            ensure_schema(db)
+            if db.execute(f'SELECT paused FROM {self.control_table} WHERE id=1').fetchone()[0]:
                 self.paused.set()
-            # Only jobs interrupted mid-flight change on startup.
-            db.execute("UPDATE index_jobs SET state='queued' WHERE state='running'")
+            # Each process recovers only the queue whose ownership lock it holds.
+            if self.role in ('all', 'index'):
+                db.execute("UPDATE index_jobs SET state='queued' WHERE state='running'")
+            if self.role in ('all', 'preview'):
+                db.execute("UPDATE preview_jobs SET state='queued' WHERE state='running'")
 
     def status(self, force=False, changed=False, error=None):
         now = time.monotonic()
@@ -100,7 +88,7 @@ class Queue:
             self.last_emit = now
             if force or now - self.last_queue_count >= 2:
                 with self.db() as db:
-                    counts = dict(db.execute('SELECT state,count(*) FROM index_jobs GROUP BY state').fetchall())
+                    counts = dict(db.execute(f'SELECT state,count(*) FROM {self.jobs_table} GROUP BY state').fetchall())
                 self.queue_counts = dict(remaining=sum(value for state, value in counts.items() if state != 'complete'),
                                          completed=counts.get('complete', 0), failed=counts.get('error', 0))
                 self.last_queue_count = now
@@ -119,17 +107,17 @@ class Queue:
             # Set the in-memory flag immediately; persist before acknowledging.
             self.paused.set() if paused else self.paused.clear()
             with self.db() as db:
-                db.execute('UPDATE scan_control SET paused=? WHERE id=1 AND paused != ?', (int(paused), int(paused)))
+                db.execute(f'UPDATE {self.control_table} SET paused=? WHERE id=1 AND paused != ?', (int(paused), int(paused)))
         elif action == 'busy':
             self.busy.set() if command.get('value') else self.busy.clear()
         elif action == 'gpu-busy':
             self.gpu_busy.set() if command.get('value') else self.gpu_busy.clear()
         elif action == 'retry':
             with self.db() as db:
-                db.execute("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE state='error'")
+                db.execute(f"UPDATE {self.jobs_table} SET state='queued',attempts=0,error=NULL WHERE state='error'")
         elif action == 'stop':
             self.stop.set()
-        if action in ('scan', 'retry'):
+        if action in ('scan', 'retry') and self.role != 'preview':
             self.scan_requested.set()
         self.wake.set()
         self.status(force=True)
@@ -147,7 +135,9 @@ class Queue:
             self.wake.clear()
         if self.stop.is_set():
             raise Stopped()
-        if self.active_job and ((self.scan_requested.is_set() and time.monotonic() - self.last_scan >= 15) or time.monotonic() - self.last_scan >= 60):
+        if self.active_job and not self.processing_preview and self.pending_previews():
+            raise PreviewsPending()
+        if self.active_job and not self.processing_preview and ((self.scan_requested.is_set() and time.monotonic() - self.last_scan >= 15) or time.monotonic() - self.last_scan >= 60):
             raise Reprioritize()
         if gpu and self.gpu_wait:
             self.gpu_wait(self)
@@ -157,8 +147,15 @@ class Queue:
 
     @staticmethod
     def signature(path):
-        s = path.stat()
-        return json.dumps([s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_ino, s.st_dev])
+        return signature(path)
+
+    def pending_previews(self):
+        if self.role == 'preview' or self.processing_preview:
+            return False
+        with self.db() as db:
+            if db.execute('SELECT paused FROM preview_control WHERE id=1').fetchone()[0]:
+                return False
+            return db.execute("SELECT 1 FROM preview_jobs WHERE state IN ('queued','running') OR (state='error' AND attempts<3) LIMIT 1").fetchone() is not None
 
     def fingerprint(self, path):
         signature = self.signature(path)
@@ -177,12 +174,13 @@ class Queue:
         return 'sha256:' + digest.hexdigest(), signature
 
     def scan(self):
+        self.last_scan = time.monotonic()
         self.scan_requested.clear()
         self.scan_errors = 0
         self.phase, self.done, self.total, self.current = 'Discovering files', 0, 0, ''
         self.status(force=True)
         roots = {self.root.resolve()}
-        with self.db() as db:
+        with user_connection(self.database) as db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='media_roots'").fetchone():
                 roots.update(Path(row[0]).resolve() for row in db.execute('SELECT path FROM media_roots'))
         available = {root for root in roots if root.is_dir()}
@@ -295,6 +293,7 @@ class Queue:
         if damaged:
             with self.db() as db:
                 db.executemany("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state='complete'", [(asset,) for asset in damaged])
+                db.executemany("UPDATE preview_jobs SET state='queued',stage=0,attempts=0,error=NULL WHERE asset=?", [(asset,) for asset in damaged])
 
     def unit(self, asset, stage, ordinal):
         with self.db() as db:
@@ -323,10 +322,10 @@ class Queue:
         if self.signature(Path(job['path'])) != job['signature']:
             raise RuntimeError('Original changed during indexing; rescan required')
 
-    def publish(self, job, metadata, frames):
+    def publish(self, job, metadata, frames, preview_state='ready'):
         self.valid_source(job)
         value = dict(path=job['logical'], kind=job['kind'], url=Path(job['path']).as_uri(), frames=frames,
-                     match=frames[0], metadata=metadata, assetID=job['asset'])
+                      match=frames[0], metadata=metadata, assetID=job['asset'], previewState=preview_state)
         with self.db() as db:
             existing = db.execute('SELECT asset,payload FROM media WHERE path=?', (job['path'],)).fetchone()
             if existing and existing['asset'] == job['asset'] and len(json.loads(existing['payload'])['frames']) > len(frames):
@@ -350,7 +349,7 @@ class Queue:
                 # or already-completed speech/frame checkpoints.
                 probe['metadata'] = refreshed['metadata']
                 probe['metadataVersion'] = refreshed.get('metadataVersion', 0)
-            with self.db() as db:
+            with user_connection(self.database) as db:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='photos_import_history'").fetchone():
                     if db.execute('SELECT 1 FROM photos_import_history WHERE digest=? LIMIT 1', (asset.removeprefix('sha256:'),)).fetchone():
                         if probe.get('metadata') is not None:
@@ -364,32 +363,27 @@ class Queue:
         self.valid_source(job)
         with self.db() as db:
             db.execute("UPDATE index_jobs SET state='running',error=NULL WHERE asset=?", (asset,))
+        if self.role == 'all':
+            from preview_pipeline import PreviewPipeline
+            PreviewPipeline(self).prepare(job)
         self.phase, self.current, self.done, self.total = 'Reading metadata', Path(job['path']).name, 0, 0
         self.status(force=True)
         self.checkpoint()
         probe = self.read_probe(job)
         timestamps = probe['timestamps']
         speech_times = probe['speech_times']
-        self.total = len(timestamps) * 2 + len(speech_times)
+        self.total = len(timestamps) + len(speech_times)
         self.done = 0
         frames = []
         for ordinal, timestamp in enumerate(timestamps):
             self.checkpoint()
             self.valid_source(job)
-            self.phase = 'Preparing previews'
             sample = self.unit(asset, 'frame', ordinal)
             if sample is None:
-                target = self.target(asset, '.jpg')
-                self.backend.frame(Path(job['path']), target, timestamp)
-                self.valid_source(job)
-                sample = dict(path=job['logical'], kind=job['kind'], timestamp=timestamp, frame=str(target))
-                self.store_unit(asset, 'frame', ordinal, sample)
+                with self.db() as db:
+                    db.execute("UPDATE preview_jobs SET state='queued',stage=0 WHERE asset=?", (asset,))
+                raise PreviewsPending()
             frames.append(sample)
-            self.done += 1
-            if ordinal == 0:
-                self.publish(job, probe['metadata'], frames)
-            self.status()
-            self.checkpoint()
             self.phase = 'Indexing visual content'
             embedding = self.unit(asset, 'embedding', ordinal)
             if embedding is None:
@@ -427,11 +421,24 @@ class Queue:
         self.status(force=True, changed=True)
 
     def work(self):
+        if self.role in ('all', 'preview'):
+            from preview_pipeline import PreviewPipeline
+            PreviewPipeline(self).work()
+            if self.role == 'preview':
+                return
+        if self.pending_previews():
+            self.phase = 'Waiting for previews'
+            self.waiting = True
+            self.status(force=True)
+            return
         attempted = set()
         deferred = set()
         retry_gpu_at = time.monotonic() + 30
-        self.last_scan = time.monotonic()
         while True:
+            if self.pending_previews():
+                self.phase = 'Waiting for previews'
+                self.status(force=True)
+                return
             if time.monotonic() >= retry_gpu_at:
                 attempted.difference_update(deferred)
                 retry_gpu_at = time.monotonic() + 30
@@ -439,7 +446,7 @@ class Queue:
                 self.scan()
                 self.last_scan = time.monotonic()
             with self.db() as db:
-                jobs = [dict(r) for r in db.execute("SELECT * FROM index_jobs WHERE state IN ('queued','running') OR (state='error' AND attempts<3) ORDER BY capture_time DESC, rowid DESC")]
+                jobs = [dict(r) for r in db.execute("SELECT j.* FROM index_jobs j JOIN preview_jobs p ON p.asset=j.asset WHERE p.state='complete' AND (j.state IN ('queued','running') OR (j.state='error' AND j.attempts<3)) ORDER BY j.capture_time DESC,j.rowid DESC")]
             job = next((job for job in jobs if job['asset'] not in attempted), None)
             self.allow_gpu_defer = job is not None
             if job is None:
@@ -458,6 +465,12 @@ class Queue:
             except Reprioritize:
                 self.scan_requested.set()
                 continue
+            except PreviewsPending:
+                with self.db() as db:
+                    db.execute("UPDATE index_jobs SET state='queued' WHERE asset=?", (job['asset'],))
+                self.phase = 'Waiting for previews'
+                self.status(force=True)
+                return
             except Stopped:
                 raise
             except Exception as error:
@@ -474,21 +487,25 @@ class Queue:
             attempted.add(job['asset'])
         with self.db() as db:
             errors = db.execute("SELECT count(*) FROM index_jobs WHERE state='error'").fetchone()[0]
+            blocked = db.execute("SELECT 1 FROM index_jobs j JOIN preview_jobs p ON p.asset=j.asset WHERE j.state!='complete' AND p.state!='complete' LIMIT 1").fetchone()
         errors += self.scan_errors
-        self.phase, self.current = ('Needs attention' if errors else 'Up to date'), ''
+        self.phase, self.current = ('Needs attention' if errors else 'Waiting for previews' if blocked else 'Up to date'), ''
         self.done = self.total
         self.status(force=True, error=f'{errors} files need attention. Retry will keep completed checkpoints.' if errors else None)
 
     def run(self, interval=300):
+        first = True
         while not self.stop.is_set():
             try:
                 self.checkpoint()
-                self.scan()
+                if self.role != 'preview' and (first or self.scan_requested.is_set() or time.monotonic()-self.last_scan >= interval):
+                    self.scan()
+                first = False
                 self.work()
             except Stopped:
                 return
             except Exception as error:
                 self.phase = 'Scan needs attention'
                 self.status(error=str(error))
-            self.wake.wait(interval)
+            self.wake.wait(1 if self.role == 'preview' or self.pending_previews() else interval)
             self.wake.clear()

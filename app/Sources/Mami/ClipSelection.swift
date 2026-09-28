@@ -33,7 +33,7 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
             let catalog = catalog
             let loaded = try await Task.detached(priority: .utility) { try catalog.selectedClips() }.value
             items = loaded; ready = true
-            let live = try await Task.detached(priority: .utility) { try catalog.media() }.value
+            let live = try await Task.detached(priority: .utility) { try catalog.media(forAssetIDs: loaded.map(\.assetID)) }.value
             reconnect(live)
         } catch { self.error = "Could not load selected clips: \(error.localizedDescription)" }
     }
@@ -45,14 +45,16 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
             if !FileManager.default.fileExists(atPath: value.frame), let sample = live.frames.first { value.frame = sample.frame }
             return value
         }
-        save(updated)
+        // URLs and cached frames are derived. Reconnection should not create a
+        // personal-data revision or backup unless the user edits the selection.
+        items = updated
     }
     func save(_ updated: [SelectedClip]) {
         guard ready, updated != items else { return }
         do {
             try catalog.saveSelectedClips(updated)
             items = updated; error = nil
-            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule() }
+            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule(urgent: true) }
         } catch { self.error = "Could not save selection: \(error.localizedDescription)" }
     }
     func toggle(_ media: Media, sample: Sample? = nil) {

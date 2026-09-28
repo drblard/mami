@@ -36,7 +36,10 @@ class PhotosBatchTests(unittest.TestCase):
         os.link(self.source, self.alias)
         self.catalog = self.root / 'catalog.sqlite'
         with self.db() as db:
-            db.executescript('CREATE TABLE photos_import_history(resource TEXT PRIMARY KEY,digest TEXT,size TEXT); CREATE TABLE media(path TEXT, asset TEXT);')
+            db.executescript('CREATE TABLE photos_import_history(resource TEXT PRIMARY KEY,digest TEXT,size TEXT); '
+                             'CREATE TABLE media(path TEXT PRIMARY KEY,asset TEXT,payload TEXT); '
+                             'CREATE TABLE state(id INTEGER PRIMARY KEY,identity TEXT,revision INTEGER,change_token TEXT); '
+                             'INSERT INTO state VALUES(1,"fixture",0,"initial");')
         self.importer = Importer(self.incoming, self.root / 'originals', 'iCloud', catalog=self.catalog,
                                  direct_destination=True, date_reader=lambda _: ('2026-09-26', 'fixture'))
         self.batch = PhotosBatch(self.importer)
@@ -96,7 +99,7 @@ class PhotosBatchTests(unittest.TestCase):
         outside = self.root / 'another-device.mov'
         outside.write_bytes(self.source.read_bytes())
         with self.db() as db:
-            db.execute('INSERT INTO media VALUES(?,?)', (str(outside), 'sha256:' + hashlib.sha256(outside.read_bytes()).hexdigest()))
+            db.execute('INSERT INTO media VALUES(?,?,?)', (str(outside), 'sha256:' + hashlib.sha256(outside.read_bytes()).hexdigest(), '{}'))
         self.batch.complete(self.receipt)
         self.assertTrue(self.target.exists())
         self.assertTrue(outside.exists())

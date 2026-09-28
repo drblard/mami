@@ -4,7 +4,26 @@ import SwiftUI
 /// The worker owns durable checkpoints. This object only controls it and renders
 /// progress; neither file hashing nor inference runs on the UI thread.
 @MainActor final class Indexing: ObservableObject {
-    static let shared = Indexing()
+    enum Lane: String {
+        case search = "index"
+        case previews = "preview"
+        var title: String { self == .previews ? "Previews" : "AI search" }
+    }
+    static let shared = Indexing(lane: .search)
+    static let previews = Indexing(lane: .previews)
+    let lane: Lane
+    private init(lane: Lane) { self.lane = lane }
+
+    static func startAll() {
+        previews.start()
+        shared.start()
+    }
+
+    static func publishedImport() {
+        CatalogUpdates.shared.notify()
+        previews.wakeWork()
+        shared.wakeWork()
+    }
     struct Progress: Decodable {
         struct Counts: Decodable {
             let remaining: Int
@@ -48,7 +67,7 @@ import SwiftUI
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
         send(["action": "editor-activity", "active": Self.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)])
     }
-    var active: Bool { running && !["Up to date", "Needs attention", "Scan needs attention"].contains(phase) }
+    var active: Bool { running && !["Up to date", "Needs attention", "Scan needs attention", "Previews ready", "Preview needs attention", "Waiting for previews"].contains(phase) }
     var label: String {
         if paused { return waiting || !active ? "Paused — progress saved" : "Pausing after current step…" }
         return phase
@@ -63,7 +82,7 @@ import SwiftUI
             task.arguments = [(Bundle.main.resourceURL!.appendingPathComponent("index_worker.py")).path,
                               "--database", Catalog.standard.database.path,
                               "--root", ProcessInfo.processInfo.environment["MAMI_MEDIA_ROOT"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals").path,
-                              "--artifacts", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("mami-lab/index-artifacts").path]
+                               "--artifacts", Catalog.standard.artifacts.path, "--role", lane.rawValue]
             var environment = ProcessInfo.processInfo.environment
             environment["HF_HUB_OFFLINE"] = "1"
             environment["PYTHONUNBUFFERED"] = "1"
@@ -108,9 +127,11 @@ import SwiftUI
             input = stdin.fileHandleForWriting
             output = stdout.fileHandleForReading
             running = true
-            reportEditorActivity()
-            editorTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.reportEditorActivity() }
+            if lane == .search {
+                reportEditorActivity()
+                editorTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                    Task { @MainActor in self?.reportEditorActivity() }
+                }
             }
             error = nil
         } catch { self.error = "Could not start background indexing: \(error.localizedDescription)" }
@@ -129,8 +150,12 @@ import SwiftUI
                 gpuUtilization = progress.gpu_utilization
                 if let counts = progress.queue_counts { queueCounts = counts }
                 if let message = progress.error { error = message }
-                else if phase == "Up to date" { error = nil }
-                if progress.changed { catalogGeneration += 1 }
+                else if phase == "Up to date" || phase == "Previews ready" { error = nil }
+                if progress.changed {
+                    catalogGeneration += 1
+                    CatalogUpdates.shared.notify()
+                    if lane == .previews { Self.shared.wakeWork() }
+                }
             } catch { self.error = "Could not read indexing progress: \(error.localizedDescription)" }
         }
     }
@@ -145,6 +170,7 @@ import SwiftUI
     }
     func togglePause() { send(["action": paused ? "resume" : "pause"]) }
     func scanNow() { if !running { retries = 0; start() }; send(["action": "scan"]) }
+    func wakeWork() { if !running { start() }; send(["action": "work"]) }
     func retry() { error = nil; if !running { retries = 0; start() }; send(["action": "retry"]) }
     func stop() {
         quitting = true
@@ -156,11 +182,11 @@ import SwiftUI
 }
 
 struct IndexQueueSummary: View {
-    @ObservedObject private var indexing = Indexing.shared
+    @ObservedObject var indexing = Indexing.shared
     var body: some View {
         HStack(spacing: 8) {
             if let counts = indexing.queueCounts {
-                Text("\(counts.remaining) left · \(counts.completed) indexed")
+                Text("\(indexing.lane.title): \(counts.remaining) left · \(counts.completed) \(indexing.lane == .previews ? "ready" : "indexed")")
                 if counts.failed > 0 { Text("\(counts.failed) need attention").foregroundStyle(.orange) }
             } else { Text("Counting indexing queue…") }
         }.monospacedDigit().lineLimit(1)
@@ -180,13 +206,13 @@ struct IndexingBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Label(indexing.label, systemImage: indexing.paused ? "pause.circle" : "arrow.triangle.2.circlepath")
+                Label("\(indexing.lane.title) · \(indexing.label)", systemImage: indexing.paused ? "pause.circle" : "arrow.triangle.2.circlepath")
                     .lineLimit(1)
                 if !indexing.current.isEmpty { Text(indexing.current).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary) }
                 Spacer()
                 if indexing.total > 0 && indexing.active { Text("\(indexing.done) / \(indexing.total)").monospacedDigit().foregroundStyle(.secondary) }
                 Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(!indexing.running)
-                Button("Scan now") { indexing.scanNow() }
+                if indexing.lane == .search { Button("Scan now") { indexing.scanNow() } }
             }.font(.caption).frame(height: 22)
              Group {
                  if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }

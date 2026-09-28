@@ -17,19 +17,24 @@ def inspect_snapshot(path):
         if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
             raise ValueError('Snapshot failed SQLite integrity check')
         version = db.execute('PRAGMA user_version').fetchone()[0]
-        if version != 2:
+        personal = bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='user_store_info'").fetchone())
+        if personal:
+            if version != 1 or db.execute('SELECT version FROM user_store_info').fetchone()[0] != 1:
+                raise ValueError('Unsupported personal-data schema')
+        elif version != 2:
             raise ValueError(f'Unsupported catalog schema: {version}')
         identity, revision, change_token = db.execute('SELECT identity,revision,change_token FROM state WHERE id=1').fetchone()
         counts = {table: db.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
-                  for table in ['media', 'annotations', 'annotation_history']}
-        return dict(identity=identity, revision=revision, change_token=change_token, **counts)
+                  for table in (['annotations', 'annotation_history'] if personal else ['media', 'annotations', 'annotation_history'])}
+        return dict(identity=identity, revision=revision, change_token=change_token,
+                    **({'kind': 'user-state', 'media': 0} if personal else {}), **counts)
 
 
 def restore(source, destination):
     source, destination = Path(source), Path(destination)
     summary = inspect_snapshot(source)
     destination.mkdir(parents=True, exist_ok=False)
-    target = destination / 'catalog.sqlite'
+    target = destination / ('user.sqlite' if summary.get('kind') == 'user-state' else 'catalog.sqlite')
     with source.open('rb') as original, target.open('xb') as output:
         shutil.copyfileobj(original, output)
         output.flush()

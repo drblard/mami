@@ -30,6 +30,7 @@ struct CameraConnections {
         let bytes_total: Int64
         let error: String?
         let ejection: String?
+        let catalog_changed: Bool?
     }
     @Published var source: URL?
     @Published var device = "DJI-Pocket-4P"
@@ -226,7 +227,8 @@ struct CameraConnections {
             cameraError = error
             cameraStatus = error == nil ? (progress?.ejection ?? progress?.phase ?? "Offload finished") : "Offload needs attention — reconnect and retry"
         }
-        requestScan()
+        if progress?.catalog_changed == nil { requestScan() }
+        else if !CommandLine.arguments.contains("--ui-test") { Indexing.publishedImport() }
     }
     private func requestScan() { if !CommandLine.arguments.contains("--ui-test") { Indexing.shared.scanNow() } }
     private func receive(_ data: Data) {
@@ -242,9 +244,12 @@ struct CameraConnections {
                     if let message = value.error { cameraError = message }
                 }
                 if let message = value.error { error = message }
+                if value.catalog_changed == true && !CommandLine.arguments.contains("--ui-test") {
+                    Indexing.publishedImport()
+                }
                 if value.copied > lastCopyCount {
                     lastCopyCount = value.copied
-                    requestScan()
+                    if value.catalog_changed == nil { requestScan() }
                 }
             } catch { self.error = "Could not read import progress: \(error.localizedDescription)" }
         }

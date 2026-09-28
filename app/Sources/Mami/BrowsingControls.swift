@@ -24,6 +24,7 @@ import ImageIO
 struct LibraryFooter: View {
     @ObservedObject var library: Library
     @ObservedObject private var backups = CatalogBackups.shared
+    @ObservedObject private var searchMaintenance = SearchMaintenance.shared
     var body: some View {
         VStack(spacing: 8) {
             Divider()
@@ -33,10 +34,13 @@ struct LibraryFooter: View {
                 Text("\(library.pendingMediaCount) new media").monospacedDigit().opacity(library.gridLocked ? 1 : 0)
                 Button { library.refreshGrid() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                 Spacer()
+                IndexQueueSummary(indexing: .previews)
                 IndexQueueSummary()
                 if let dates = library.queryDates { Text("Search dates: \(dates.label)").foregroundStyle(.secondary) }
                 if let error = backups.error { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange).help(error) }
+                if let error = searchMaintenance.error { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange).help(error) }
             }.font(.caption).padding(.horizontal, 14).frame(height: 24)
+            IndexingBar(indexing: .previews)
             IndexingBar()
         }.background(Color(red: 0.11, green: 0.12, blue: 0.14))
     }

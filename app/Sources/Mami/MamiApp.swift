@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import ImageIO
+import MamiCore
 
 // Explicit alias selects the property wrapper on SDKs that also export a State macro.
 typealias ViewState<Value> = SwiftUI.State<Value>
@@ -16,6 +17,7 @@ actor FrameCache {
     var retainedCount: Int { images.count }
 
     func image(_ path: String, maxPixelSize: Int = 640) async -> NSImage? {
+        guard !path.isEmpty else { return nil }
         let key = "\(maxPixelSize):\(path)"
         if let cached = images[key] {
             order.removeAll { $0 == key }; order.append(key)
@@ -65,6 +67,7 @@ func timeLabel(_ seconds: Double?) -> String {
 
 struct MediaCard: View {
     let media: Media
+    var projection: ProjectionReader? = nil
     let nearby: Bool
     @ObservedObject var annotations: Annotations
     @ObservedObject var clips: ClipSelection
@@ -78,19 +81,32 @@ struct MediaCard: View {
     @ViewState private var image: NSImage?
     @ViewState private var unavailable = false
     @ViewState private var pointerInside = false
+    @ViewState private var loadedFrames: [Sample]?
     private var annotation: Annotation { annotations.value(for: media) }
     private var subtitle: String {
         let labels = ([annotation.place].filter { !$0.isEmpty } + annotation.tags.map { "#" + $0 })
         if !labels.isEmpty { return labels.joined(separator: " · ") }
+        if media.previewState == "pending" { return media.kind == "video" ? "Playable · Preview queued" : "Imported · Preview queued" }
+        if media.previewState == "partial" { return "Playable · Building scrub previews" }
         return media.match.evidence.map { "“\($0)”" } ?? media.metadata?.subtitle ?? media.kind.capitalized
     }
     private var scrubFrames: [Sample] {
-        guard nearby, let timestamp = media.match.timestamp else { return media.frames }
-        return media.frames.filter { abs(($0.timestamp ?? 0) - timestamp) <= 8 }
+        let frames = loadedFrames ?? media.frames
+        guard nearby, let timestamp = media.match.timestamp else { return frames }
+        return frames.filter { abs(($0.timestamp ?? 0) - timestamp) <= 8 }
     }
     private var sample: Sample {
         if let hovered, scrubFrames.indices.contains(hovered) { return scrubFrames[hovered] }
         return media.match
+    }
+
+    private func scrubIndex(at fraction: CGFloat) -> Int? {
+        guard media.kind == "video", !scrubFrames.isEmpty else { return nil }
+        let times = scrubFrames.map { $0.timestamp ?? 0 }
+        let lower = nearby ? (times.first ?? 0) : 0
+        let upper = nearby ? (times.last ?? lower) : (media.metadata?.duration ?? times.last ?? lower)
+        let target = lower + Double(min(1, max(0, fraction))) * max(0, upper-lower)
+        return ScrubTimeline.nearestIndex(in: times, to: target)
     }
 
     var body: some View {
@@ -101,8 +117,8 @@ struct MediaCard: View {
                     if let image { Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity) }
                     else { Image(systemName: unavailable ? "exclamationmark.triangle" : "photo").frame(maxWidth: .infinity, maxHeight: .infinity).foregroundStyle(.secondary) }
                     Text(timeLabel(sample.timestamp)).font(.caption.monospacedDigit()).padding(5).background(.black.opacity(0.7)).padding(5)
-                    if let hovered {
-                        Rectangle().fill(Color.accentColor).frame(width: geometry.size.width * CGFloat(hovered + 1) / CGFloat(max(1, scrubFrames.count)), height: 3)
+                    if hovered != nil, let fraction = hoverFraction {
+                        Rectangle().fill(Color.accentColor).frame(width: geometry.size.width * min(1, max(0, fraction)), height: 3)
                     }
                 }
                 .overlay(alignment: .topTrailing) {
@@ -129,7 +145,7 @@ struct MediaCard: View {
                         guard media.kind == "video" else { return }
                         let fraction = point.x / max(1, geometry.size.width)
                         hoverFraction = fraction
-                        hovered = min(scrubFrames.count - 1, max(0, Int(fraction * CGFloat(scrubFrames.count))))
+                        hovered = scrubIndex(at: fraction)
                     case .ended: hovered = nil; hoverFraction = nil
                     }
                 }
@@ -151,6 +167,16 @@ struct MediaCard: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(focused ? Color.accentColor : pointerInside ? Color.accentColor.opacity(0.6) : .clear, lineWidth: 2))
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .onHover { pointerInside = $0 }
+        .task(id: "\(pointerInside):\(media.frameCount ?? media.frames.count)") {
+            guard pointerInside, media.kind == "video", let projection else { return }
+            let asset = media.assetID
+            do {
+                let frames = try await Task.detached(priority: .userInitiated) { try projection.frames(asset: asset) }.value
+                guard !Task.isCancelled else { return }
+                loadedFrames = frames
+                if let fraction = hoverFraction { hovered = scrubIndex(at: fraction) }
+            } catch { unavailable = true }
+        }
         .background(MediaDragSurface(enabled: dragEnabled, items: dragItems))
         .onTapGesture { select() }
         .task(id: sample.frame) {
@@ -160,7 +186,7 @@ struct MediaCard: View {
             let decoded = await FrameCache.shared.image(path)
             guard !Task.isCancelled else { return }
             image = decoded
-            unavailable = decoded == nil
+            unavailable = decoded == nil && !path.isEmpty
             if let position = scrubFrames.firstIndex(where: { $0.frame == path }) {
                 for neighbor in [position + 1, position - 1, position + 2, position - 2] {
                     guard !Task.isCancelled else { return }
@@ -170,10 +196,13 @@ struct MediaCard: View {
                 }
             }
         }
-        .onDisappear { image = nil; hovered = nil; pointerInside = false }
+        .onDisappear { image = nil; loadedFrames = nil; hovered = nil; pointerInside = false }
         .onChange(of: media.match.frame) { _, _ in hovered = nil }
+        .onChange(of: media.frames.count) { _, _ in
+            if let fraction = hoverFraction { hovered = scrubIndex(at: fraction) }
+        }
         .onChange(of: nearby) { _, _ in
-            if let fraction = hoverFraction { hovered = min(scrubFrames.count - 1, max(0, Int(fraction * CGFloat(scrubFrames.count)))) }
+            if let fraction = hoverFraction { hovered = scrubIndex(at: fraction) }
             else { hovered = nil }
         }
         .contextMenu {
@@ -369,7 +398,7 @@ struct LibraryView: View {
     @StateObject private var annotations = Annotations()
     private let backups = CatalogBackups.shared
     private let indexing = Indexing.shared
-    @ViewState private var catalogGeneration = 0
+    @ObservedObject private var catalogUpdates = CatalogUpdates.shared
     @ViewState private var scrollTarget: String?
     @FocusState private var searchFocused: Bool
     private var visibleItems: [Media] {
@@ -391,6 +420,18 @@ struct LibraryView: View {
         }
     }
     private var availableLabels: [String] { Set(annotations.values.values.flatMap { $0.tags + [$0.place] }.filter { !$0.isEmpty }).sorted() }
+    private func updatePagedFilters() {
+        guard library.usesProjection else { return }
+        library.browseKind = kind == "all" ? nil : kind
+        library.oldestFirst = sort == "oldest"
+        if favoritesOnly || !selectedLabels.isEmpty {
+            library.browseAssets = Set(annotations.values.compactMap { asset, value in
+                let labels = Set(value.tags + [value.place])
+                return (!favoritesOnly || value.favorite) && (selectedLabels.isEmpty || !labels.isDisjoint(with: selectedLabels)) ? asset : nil
+            })
+        } else { library.browseAssets = nil }
+        library.search()
+    }
     private var hasFilters: Bool { kind != "all" || library.format != .all || library.deviceFilter != "All devices" || library.dateEnabled || library.queryDates != nil || favoritesOnly || !selectedLabels.isEmpty }
     private func clearFilters() {
         kind = "all"; library.format = .all; library.deviceFilter = "All devices"; favoritesOnly = false; selectedLabels = []
@@ -488,7 +529,7 @@ struct LibraryView: View {
                         .focused($searchFocused)
                         .accessibilityLabel("Search your media")
                         .task(id: library.query) {
-                            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
                             guard library.ready, !Task.isCancelled else { return }
                             library.search()
                         }
@@ -515,7 +556,7 @@ struct LibraryView: View {
                 }
             }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 18)
             HStack {
-                Text("\(displayed.count) media").monospacedDigit()
+                    Text(library.usesProjection && !library.showingMatches ? "\(library.totalMediaCount) media · \(displayed.count) loaded" : "\(displayed.count) media").monospacedDigit()
                 Spacer()
             }.font(.caption).padding(.horizontal, 14).padding(.bottom, 10)
             HStack {
@@ -581,9 +622,12 @@ struct LibraryView: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14)], spacing: 14) {
                     ForEach(displayed) { media in
-                        MediaCard(media: media, nearby: (nearby && library.showingMatches) != commandHover, annotations: annotations, clips: clips,
+                        MediaCard(media: media, projection: library.projectionReader, nearby: (nearby && library.showingMatches) != commandHover, annotations: annotations, clips: clips,
                                     focused: navigation.selectedIDs.contains(media.id), select: { selectCard(media) },
-                                    dragItems: { navigation.itemsForDrag(media, in: displayed) }, dragEnabled: selection == nil && !showImport, open: { open($0, timestamp: $1) }).id(media.id)
+                                     dragItems: { navigation.itemsForDrag(media, in: displayed) }, dragEnabled: selection == nil && !showImport, open: { open($0, timestamp: $1) }).id(media.id)
+                            .onAppear {
+                                if media.id == library.items.last?.id { Task { await library.loadMore() } }
+                            }
                             .task(id: media.match.frame) {
                                 guard let position = positions[media.id] else { return }
                                 let margin = max(3, navigation.columns * 2)
@@ -624,6 +668,12 @@ struct LibraryView: View {
         }).frame(width: 0, height: 0))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in commandHover = false }
         .onChange(of: library.format) { _, _ in library.search() }
+        .onChange(of: kind) { _, _ in updatePagedFilters() }
+        .onChange(of: sort) { _, _ in updatePagedFilters() }
+        .onChange(of: favoritesOnly) { _, _ in updatePagedFilters() }
+        .onChange(of: selectedLabels) { _, _ in updatePagedFilters() }
+        .onChange(of: annotations.values) { _, _ in if favoritesOnly || !selectedLabels.isEmpty { updatePagedFilters() } }
+        .onChange(of: library.ready) { _, ready in if ready { updatePagedFilters() } }
         .background(Button("Focus search") { searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden())
         .task { await library.load() }
         .task { await annotations.load() }
@@ -636,10 +686,14 @@ struct LibraryView: View {
                 backups.schedule()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); backups.flush() }
-        .onReceive(indexing.$catalogGeneration.removeDuplicates()) { catalogGeneration = $0 }
-        .task(id: catalogGeneration) {
-            if catalogGeneration > 0 { await library.refreshCatalog(); clips.reconnect(library.catalogMedia) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); Indexing.previews.stop(); SearchMaintenance.shared.stop(); backups.flush() }
+        .task(id: catalogUpdates.generation) {
+            if catalogUpdates.generation > 0 {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                await library.refreshCatalog()
+                guard !Task.isCancelled else { return }
+                clips.reconnect(library.catalogMedia)
+            }
         }
         .overlay {
             if let item = selection {
@@ -674,6 +728,18 @@ struct MamiApp: App {
             do { try WorkerPipe.check(); exit(0) }
             catch { fputs("WORKER PIPE TEST FAILED: \(error)\n", stderr); exit(1) }
         }
+        if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--encode-text" {
+            do {
+                try NativeTextEncoder.serve(modelURL: URL(fileURLWithPath: CommandLine.arguments[2]))
+                exit(0)
+            } catch { fputs("\(error)\n", stderr); exit(1) }
+        }
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--video-previews" {
+            do {
+                try VideoPreviews.generate(source: CommandLine.arguments[2], manifest: CommandLine.arguments[3])
+                exit(0)
+            } catch { fputs("\(error)\n", stderr); exit(1) }
+        }
         if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--image-probe" || CommandLine.arguments[1] == "--image-frame" {
             do {
                 if CommandLine.arguments[1] == "--image-probe" {
@@ -686,6 +752,15 @@ struct MamiApp: App {
                 exit(0)
             } catch { fputs("\(error)\n", stderr); exit(1) }
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--persistent-search-test"), CommandLine.arguments.indices.contains(index + 1) {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            Task {
+                do { try await checkPersistentSearch(at: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) }
+                catch { print("PERSISTENT SEARCH TEST FAILED: \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--photos-memory-test"), CommandLine.arguments.indices.contains(index + 1) {
             do { try PhotosMemoryCheck.run(file: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
             catch { print("PHOTOS MEMORY FAILED: \(error)"); exit(1) }
@@ -694,7 +769,7 @@ struct MamiApp: App {
             NSApplication.shared.setActivationPolicy(.accessory)
             Task {
                 do { try await scanUITest(URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
-                catch { Indexing.shared.stop(); print("SCAN UI TEST FAILED: \(error)"); exit(1) }
+                catch { Indexing.shared.stop(); Indexing.previews.stop(); print("SCAN UI TEST FAILED: \(error)"); exit(1) }
             }
             NSApplication.shared.run()
         } else if let index = CommandLine.arguments.firstIndex(of: "--catalog-test"), CommandLine.arguments.indices.contains(index + 1) {
@@ -740,7 +815,7 @@ struct MamiApp: App {
             host.cacheDisplay(in: host.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(name), options: .withoutOverwriting)
         }
-        indexing.start()
+        Indexing.startAll()
         try await until { indexing.phase == "Checking media" || indexing.phase == "Up to date" || indexing.paused }
         if !indexing.paused { indexing.togglePause() }
         try await until { indexing.paused && indexing.waiting }
@@ -759,6 +834,7 @@ struct MamiApp: App {
         _ = try Catalog.standard.snapshotIfChanged()
         try snapshot("completed.png")
         indexing.stop()
+        Indexing.previews.stop()
         window.orderOut(nil)
         print("SCAN UI TEST PASSED: native progress, persisted pause, no writes while paused, resume and 498-file automatic scan")
     }
@@ -789,7 +865,7 @@ struct MamiApp: App {
         annotationTest.toggleFavorite(firstMedia)
         let restoredAgain = try Annotations.read(annotationTest.directory)
         guard restoredAgain[firstMedia.assetID]?.favorite == false, restoredAgain[firstMedia.assetID]?.place == "Test place",
-              try SQLDatabase(annotationTest.catalog.database, readOnly: true).scalar("SELECT count(*) FROM annotation_history") == "2" else {
+               try SQLDatabase(annotationTest.catalog.userDatabase, readOnly: true).scalar("SELECT count(*) FROM annotation_history") == "2" else {
             throw AppError.message("Annotation history was not preserved")
         }
         let selectionCatalog = Catalog(directory: directory.appendingPathComponent("selection-check"))

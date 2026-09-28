@@ -3,8 +3,10 @@ import json
 import math
 import os
 import subprocess
-import uuid
+import tempfile
 from pathlib import Path
+from model_config import (cached_model_path, configure_cache_environment, FRAME_INTERVAL_SECONDS,
+                          SPEECH_CACHE_BYTES, SPEECH_CHUNK_SECONDS, SPEECH_LANGUAGE, VISUAL_CPU_THREADS)
 
 
 class Backend:
@@ -22,6 +24,7 @@ class Backend:
     def image_helper():
         return Path(__file__).resolve().parent.parent / 'MacOS/Mami'
     def __init__(self, artifacts):
+        configure_cache_environment()
         # mlx-whisper invokes ffmpeg by name when reading saved audio. Finder-
         # launched apps do not inherit Homebrew's bin directory from a shell.
         os.environ['PATH'] = '/opt/homebrew/bin:' + os.environ.get('PATH', '/usr/bin:/bin')
@@ -35,21 +38,17 @@ class Backend:
         if kind == 'image':
             result = self.run_command([str(self.image_helper()), '--image-probe', str(source)], text=True, timeout=60)
             return dict(metadata=json.loads(result.stdout), timestamps=[None], speech_times=[], metadataVersion=self.metadata_version)
-        from lab import sample_times, last_frame_time
-        from metadata import export_metadata
+        from sampling import sample_times, last_frame_time
+        from metadata import video_metadata
         result = self.run_command(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(source)], text=True, timeout=60)
         probe = json.loads(result.stdout)
-        record = dict(path=source.name, kind=kind, probe=probe)
-        self.artifacts.mkdir(parents=True, exist_ok=True)
-        inventory = self.artifacts / (str(uuid.uuid4()) + '-metadata.json')
-        with inventory.open('x') as output:
-            json.dump(dict(root=str(source.parent), files=[record]), output)
-        metadata = export_metadata(inventory)[source.name]
+        metadata = video_metadata(probe)
         length = float(probe.get('format', {}).get('duration', 0))
-        timestamps = [None] if kind == 'image' else sorted(set(min(t, last_frame_time(record)) for t in sample_times(length, 1)))
+        end = last_frame_time(probe)
+        timestamps = sorted(set(min(t, end) for t in sample_times(length, FRAME_INTERVAL_SECONDS)))
         has_audio = any(s.get('codec_type') == 'audio' for s in probe['streams'])
         return dict(metadata=metadata, timestamps=timestamps, metadataVersion=self.metadata_version,
-                    speech_times=list(range(0, math.ceil(length), 30)) if kind == 'video' and has_audio else [])
+                    speech_times=list(range(0, math.ceil(length), SPEECH_CHUNK_SECONDS)) if has_audio else [])
 
     def frame(self, source, target, timestamp):
         if timestamp is None:
@@ -73,13 +72,36 @@ class Backend:
         with Image.open(target) as image:
             image.verify()
 
+    def frames(self, source, requests):
+        """Reuse a native video decoder for a bounded, timestamp-exact batch."""
+        if not requests:
+            return
+        if any(timestamp is None for target, timestamp in requests):
+            for target, timestamp in requests:
+                self.frame(source, target, timestamp)
+            return
+        from PIL import Image
+        with tempfile.TemporaryDirectory(prefix='preview-batch-', dir=self.artifacts) as directory:
+            manifest = Path(directory)/'requests.json'
+            manifest.write_text(json.dumps([dict(target=str(target), timestamp=timestamp) for target, timestamp in requests]))
+            try:
+                result = self.run_command([str(self.image_helper()), '--video-previews', str(source), str(manifest)], text=True, timeout=120)
+                actual = json.loads(result.stdout)['actual_times']
+                if len(actual) != len(requests) or any(abs(value-timestamp) > .11 for value, (_, timestamp) in zip(actual, requests)):
+                    raise ValueError('Native preview timestamps do not match the requested batch')
+            except (RuntimeError, subprocess.TimeoutExpired):
+                # Unusual codecs/edited end-of-stream behavior retain the existing
+                # FFmpeg decoder. Use it only for outputs the native helper did not publish.
+                for target, timestamp in requests:
+                    if not target.exists():
+                        self.frame(source, target, timestamp)
+            for target, timestamp in requests:
+                with Image.open(target) as image:
+                    image.verify()
+
     @staticmethod
     def model_path(kind):
-        from huggingface_hub import snapshot_download
-        from lab import LAB, MODELS
-        repo, revision = MODELS[kind]
-        return snapshot_download(repo, revision=revision, local_files_only=True, cache_dir=LAB / 'cache/huggingface/hub',
-                                 allow_patterns=['*.json', '*.safetensors', '*.npz', '*.bin', '*.model', '*.txt', '*.jinja'])
+        return cached_model_path(kind)
 
     def embedding(self, frame, target):
         import numpy as np
@@ -90,7 +112,7 @@ class Backend:
             if not self.torch_configured:
                 # Measured on the target M1 Max: four CPU threads improve visual
                 # inference ~1.4x while leaving cores available for the editor.
-                torch.set_num_threads(min(4, os.cpu_count() or 1))
+                torch.set_num_threads(min(VISUAL_CPU_THREADS, os.cpu_count() or 1))
                 torch.set_num_interop_threads(1)
                 self.torch_configured = True
             path = self.model_path('visual')
@@ -120,14 +142,20 @@ class Backend:
                 raise RuntimeError(f'No compatible transcription audio track in {source.name}')
             stream = max(streams, key=lambda s: s.get('disposition', {}).get('default', 0))
             self.audio_streams[key] = stream['index']
-        self.run_command(['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', key, '-map', f'0:{self.audio_streams[key]}', '-t', '30', '-vn', '-ac', '1', '-ar', '16000', str(target)], timeout=120)
+        self.run_command(['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', key, '-map', f'0:{self.audio_streams[key]}', '-t', str(SPEECH_CHUNK_SECONDS), '-vn', '-ac', '1', '-ar', '16000', str(target)], timeout=120)
 
     def speech(self, audio, start):
         import mlx_whisper
+        import mlx.core as mx
         if self.speech_model is None:
+            # MLX otherwise allows tens of GiB of idle GPU buffers on a 64 GiB Mac.
+            mx.set_cache_limit(SPEECH_CACHE_BYTES)
             self.speech_model = self.model_path('speech')
-        result = mlx_whisper.transcribe(str(audio), path_or_hf_repo=self.speech_model, language='ro', task='transcribe',
-                                       word_timestamps=True, condition_on_previous_text=False, verbose=None)
+        try:
+            result = mlx_whisper.transcribe(str(audio), path_or_hf_repo=self.speech_model, language=SPEECH_LANGUAGE, task='transcribe',
+                                           word_timestamps=True, condition_on_previous_text=False, verbose=None)
+        finally:
+            mx.clear_cache()
         segments = []
         for segment in result.get('segments', []):
             value = dict(segment)

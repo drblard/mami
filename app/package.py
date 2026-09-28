@@ -6,10 +6,14 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 import signing
+from bundle_resources import WORKER_RESOURCES
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--index', required=True)
 parser.add_argument('--speech')
+parser.add_argument('--native-encoder')
+parser.add_argument('--packed-index')
+parser.add_argument('--search-projection')
 parser.add_argument('--inventory')
 parser.add_argument('--catalog')
 parser.add_argument('--metadata', help='Reuse previously extracted capture metadata for unchanged media')
@@ -25,12 +29,19 @@ resources = contents / 'Resources'
 executable.mkdir(parents=True)
 resources.mkdir()
 shutil.copy2(root / '.build/release/Mami', executable / 'Mami')
-for name in ['search_worker.py', 'lab.py', 'index_worker.py', 'index_queue.py', 'index_backend.py', 'metadata.py', 'import_media.py', 'gpu_activity.py', 'photos_batch.py']:
+for name in WORKER_RESOURCES:
     shutil.copy2(root / name, resources / name)
 with (resources / 'configuration.json').open('x') as f:
     config = {'index': args.index}
     if args.speech:
         config['speech'] = args.speech
+    if args.native_encoder:
+        config['native_encoder'] = args.native_encoder
+    if args.packed_index:
+        if not args.native_encoder or not args.search_projection:
+            raise ValueError('Packed search requires both native encoder and search projection')
+        config['packed_index'] = args.packed_index
+        config['search_projection'] = args.search_projection
     json.dump(config, f)
 if args.inventory:
     from metadata import export_metadata

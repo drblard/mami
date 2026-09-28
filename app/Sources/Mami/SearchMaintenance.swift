@@ -1,0 +1,111 @@
+import AppKit
+import Foundation
+import MamiCore
+
+/// Owns derived-index writers independently of interactive search requests.
+@MainActor final class SearchMaintenance: ObservableObject {
+    static let shared = SearchMaintenance()
+    @Published private(set) var status = ""
+    @Published private(set) var error: String?
+    private var workers: [String: Process] = [:]
+    private var inputs: [String: FileHandle] = [:]
+    private var activityTimer: Timer?
+    private var quitting = false
+    private var failures: [String: String] = [:]
+
+    private func setFailure(_ message: String?, for worker: String) {
+        failures[worker] = message
+        error = failures.isEmpty ? nil : failures.keys.sorted().map { "\($0): \(failures[$0]!)" }.joined(separator: " · ")
+    }
+
+    func start(_ configuration: Configuration) throws {
+        guard workers.isEmpty, let projection = configuration.searchProjection, let vectors = configuration.packedIndex else { return }
+        quitting = false
+        try launch(name: "projection", script: "search_sync.py", configuration: configuration,
+                   arguments: ["--catalog", Catalog.standard.database.path, "--output", projection,
+                               "--index", configuration.index.path, "--vector-root", vectors] + (configuration.speech.map { ["--speech", $0] } ?? []))
+        // Direct immutable generations are supported for isolated checks. Only
+        // managed roots with an ownership marker may run automatic compaction.
+        if FileManager.default.fileExists(atPath: URL(fileURLWithPath: vectors).appendingPathComponent("owner.json").path) {
+            try launch(name: "vectors", script: "vector_sync.py", configuration: configuration,
+                       arguments: ["--projection", projection, "--output", vectors])
+            reportActivity()
+            activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.reportActivity() }
+            }
+        }
+    }
+
+    private func launch(name: String, script: String, configuration: Configuration, arguments: [String]) throws {
+        let process = Process(), input = Pipe(), output = Pipe()
+        guard let resources = Bundle.main.resourceURL else { throw AppError.message("Worker resources unavailable") }
+        process.executableURL = configuration.python
+        process.arguments = ["-B", resources.appendingPathComponent(script).path] + arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["OMP_NUM_THREADS"] = "4"
+        environment["OPENBLAS_NUM_THREADS"] = "4"
+        process.environment = environment
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.standardError
+        process.qualityOfService = .utility
+        try process.run()
+        workers[name] = process
+        inputs[name] = input.fileHandleForWriting
+        Task.detached { [weak self] in
+            var reader = LineReader(handle: output.fileHandleForReading, maximumLineBytes: 1024 * 1024)
+            do {
+                while process.isRunning {
+                    do {
+                        let line = try reader.readLine(timeout: .seconds(65))
+                        await self?.receive(line, from: name)
+                    } catch WorkerTransportError.timedOut { continue }
+                }
+            } catch WorkerTransportError.closed { }
+            catch { await self?.report(error, worker: name) }
+            await self?.finished(name, process: process)
+        }
+    }
+
+    private func receive(_ data: Data, from name: String) {
+        do {
+            guard let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            if let message = event["error"] as? String { setFailure(message, for: name) }
+            if event["ready"] as? Bool == true || event["stage"] as? String == "ready" { status = "Search index up to date"; setFailure(nil, for: name) }
+            if event["stage"] as? String == "building" { status = "Updating visual search in the background" }
+            if event["stage"] as? String == "deferred" { status = "Visual maintenance waits for active editing" }
+            if event["changed"] as? Bool == true { CatalogUpdates.shared.notify() }
+        } catch { setFailure("Could not read progress: \(error.localizedDescription)", for: name) }
+    }
+
+    private func report(_ failure: Error, worker: String) {
+        if !quitting { setFailure(failure.localizedDescription, for: worker) }
+    }
+
+    private func finished(_ name: String, process: Process) {
+        guard workers[name] === process else { return }
+        workers[name] = nil
+        try? inputs.removeValue(forKey: name)?.close()
+        if !quitting { setFailure("Maintenance stopped; existing search data remains usable", for: name) }
+    }
+
+    private func reportActivity() {
+        guard let input = inputs["vectors"] else { return }
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
+        let active = Indexing.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)
+        do {
+            var data = try JSONSerialization.data(withJSONObject: ["action": "editor-activity", "active": active])
+            data.append(10)
+            try WorkerPipe.write(data, to: input)
+        } catch { self.error = "Could not update search maintenance scheduling: \(error.localizedDescription)" }
+    }
+
+    func stop() {
+        quitting = true
+        activityTimer?.invalidate(); activityTimer = nil
+        for input in inputs.values { try? input.close() }
+        for process in workers.values where process.isRunning { process.terminate() }
+        inputs.removeAll()
+    }
+}

@@ -1,5 +1,67 @@
 # Mami native prototype
 
+**Active work:** [50× scaling checklist and recovery notes](SCALING.md) ·
+[live prototype measurements](scaling/RESULTS.md).
+
+## Import readiness pipeline (2026-09-28)
+
+Verified imports are registered directly in the catalog, before preview or AI
+processing. Videos can play from their saved original immediately. Separate
+preview and AI workers have independent durable queues and pause controls.
+Imported arrivals get thumbnails first, then full-range coarse scrub frames,
+then denser previews in bounded batches. Scrubbing selects by actual timestamp.
+AI consumes completed preview checkpoints and yields while previews are waiting.
+
+The signed candidate `prototype-20260928T173844873061Z` passed 14 Swift tests,
+79 Python tests, native catalog/personal-store and UI integration, and a four-clip
+real-codec pipeline check with AI paused. Short generated clips were catalogued
+by 0.294 s; preview workers produced all thumbnails in 0.345 s and scrub frames
+in 0.636 s. These fixture timings are not a large-DJI throughput guarantee.
+See [PIPELINE.md](PIPELINE.md) for acceptance progress and deployment status.
+
+This changes generated index schema to version 2. Do not run older workers against
+the migrated live catalog. Explicit full exports strip the new preview queue and
+use index schema 1 for compatible recovery; existing frame/AI checkpoints remain.
+
+## Personal-data storage and backups (migration candidate, 2026-09-28)
+
+`catalog/database/user.sqlite` is authoritative for annotations and their history,
+saved clip selection/order, media-root configuration, Photos resource/digest
+verification history, and legacy-import markers. `catalog.sqlite` holds generated
+media metadata and indexing state. Stable content identities reconnect edits when
+the generated catalog is rebuilt. Legacy personal tables in the cache are frozen
+compatibility copies; writing them from an old build is rejected after migration.
+
+Migration holds the existing catalog writer lock, uses SQLite's backup API into
+a temporary database, removes generated tables, vacuums, compares every retained
+table to the source, integrity-checks/fsyncs, then atomically publishes `user.sqlite`.
+An ownership/version marker prevents mixing libraries or silently recreating lost
+personal data from stale cache copies. A missing cache can be initialized with the
+personal store's identity.
+
+Automatic backups cover **only the personal store**, under
+`backups/catalog/user-state`. Generated indexing updates neither change its revision
+nor schedule backups. Manual changes debounce for two seconds; import-driven
+backups coalesce to at most one/minute, one backup runs at a time, and orderly Quit
+flushes pending personal changes. Retention keeps the newest 64 plus hourly points
+for 24 hours, daily points for 30 days, and monthly points for a year per identity.
+Annotation edit history is included in each backup. Originals require their own
+media backup; search vectors, transcripts and previews are regenerated as needed.
+
+`restore_catalog.py SNAPSHOT --to NEW_DIRECTORY` recognizes both historical full
+catalog snapshots and new personal snapshots. Personal restore creates `user.sqlite`
+only; opening with `MAMI_CATALOG=NEW_DIRECTORY` initializes the cache separately.
+Explicit full diagnostic exports still embed up-to-date personal tables for
+compatibility. Do not simply launch an older build against a migrated live store;
+use an explicit full export/restored directory for a compatible rollback.
+
+The old scheduler backed up the whole cache after indexing changes, accumulating
+~1.1 TB. With user approval, 9,178 redundant snapshots were removed after verifying
+all 60 retained restore/manual-state representatives. The plan, verification and
+deletion results are retained under
+`benchmarks/scaling-20260928T124400Z/backup-prune-review/`. Unknown or changed files
+are preserved by the cleanup tool. Full exports are no longer automatic.
+
 SwiftUI macOS browser backed by the existing local experiments. The application
 reads the original media, cached JPEGs, and index; all deployments are created
 under `~/mami-lab/apps` with a unique timestamp.
@@ -277,9 +339,9 @@ Mami.app/Contents/MacOS/Mami --self-test
 open Mami.app
 ```
 
-Packaging creates a new `Mami.app` and refuses to reuse an existing bundle.
-The bundle is ad-hoc signed for local development. No App Store or developer
-account is needed for this local build.
+Packaging creates a new `Mami.app`, refuses to reuse an existing bundle, and uses
+the persistent local signing identity described above. It does not fall back to
+ad-hoc signing. No App Store account is needed for this local build.
 
 `--self-test` checks media loading, frame decoding, original-video frame seeks,
 muted AVPlayer playback, and three queries through the real Swift/Python protocol.
@@ -300,33 +362,35 @@ overridden with `MAMI_INDEX`, `MAMI_SPEECH`, `MAMI_PYTHON`, and `MAMI_WORKER`.
 Python loads only the pinned cached model (`HF_HUB_OFFLINE=1`). Stdout is reserved
 for JSON-lines responses; diagnostic/model output goes to stderr.
 
-## Catalog backups and Backblaze
+## Personal-data backups and Backblaze
 
-- Live database: `~/mami-lab/catalog/database/catalog.sqlite`.
-- Versioned snapshots: **`~/mami-lab/backups/catalog/`** — include this directory
-  in Backblaze. Mami shows the latest completed snapshot time and a Show backups
-  button. A local snapshot does not indicate that Backblaze has uploaded it.
+- Authoritative personal database: `~/mami-lab/catalog/database/user.sqlite`.
+- Versioned snapshots: **`~/mami-lab/backups/catalog/user-state/`** — include this directory
+  in Backblaze. Completed JSON receipts record snapshot times; the footer reports
+  backup errors. A local snapshot does not indicate that Backblaze has uploaded it.
 - Snapshot format: standalone **`.sqlite` database files**, produced with the
   SQLite backup API, rather than SQL-text dumps or raw copies of a live file.
-  They contain media records, capture metadata, frame references, current labels,
-  annotation history and migration bookkeeping. Original media, cached frame
-  images, embeddings, transcripts and model weights remain external files.
+  They contain labels, edit history, saved selection/order, library roots and import
+  verification records. Generated media metadata, indexing checkpoints, transcripts,
+  images, embeddings and model weights are excluded. Historical full snapshots in
+  the parent directory are still supported for restoration.
 
 Database triggers maintain a revision and random change token. Only actual row
 changes advance them: opening, browsing, searching, unchanged index seeding and
 identical label saves do not create another snapshot. The token prevents a
 restored database branch from colliding with an earlier numeric revision.
-Saves schedule a snapshot after a two-second quiet period; startup and a minute
-timer retry pending revisions. Orderly app termination flushes pending work.
+Manual saves schedule a snapshot after a two-second quiet period; import-driven
+changes coalesce to one/minute. Startup and a minute timer retry pending personal
+revisions. Indexing changes do not advance this store. Orderly app termination flushes pending work.
 After an unexpected exit, the next launch retries any committed but unsnapshotted
-revision. The current snapshot is about 1.9 MB for 498 media records.
+revision.
 
 Catalog operations and snapshots share an in-process lock plus a filesystem lock.
 Completed snapshots pass `PRAGMA integrity_check` and are synchronized before a
 JSON receipt is atomically published. Interrupted outputs without a receipt are
 not treated as completed. Every successful changed revision gets a new file;
-old snapshots, journals, and staging outputs are retained. No automatic pruning
-is performed. The app reports backup errors and retries while it is running.
+managed personal snapshots follow the bounded retention policy above. Unknown or
+incomplete outputs are preserved. The app reports backup errors and retries while it is running.
 
 To restore, choose a `.sqlite` file named by a completed `.json` receipt, and use
 a **new** output directory. This verifies SQLite integrity, expected schema,
@@ -334,7 +398,7 @@ record counts and a SHA-256 byte-for-byte copy. It refuses existing destinations
 
 ```bash
 ~/mami-lab/.venv/bin/python restore_catalog.py \
-  ~/mami-lab/backups/catalog/catalog-IDENTITY-rREVISION-UUID.sqlite \
+  ~/mami-lab/backups/catalog/user-state/catalog-IDENTITY-rREVISION-UUID.sqlite \
   --to ~/mami-lab/catalog/restored-TIMESTAMP
 ```
 
@@ -745,9 +809,58 @@ inference and a saved speech checkpoint completed with CapCut open in the retain
 PATH now includes Homebrew so Whisper can invoke ffmpeg.
 
 The grid refreshes as previews become available. Committed embeddings and speech
-segments are loaded by the existing search worker on its next query. Results
+segments are loaded by the search worker in the background (polling every five
+seconds, plus refresh time), then published as an immutable search snapshot. Results
 already on screen are not automatically reranked. Existing experimental indexes
 remain the base corpus; no full reindex of those 498 assets is needed.
+
+### Search latency and memory (2026-09-28)
+
+Previously every changed catalog token caused the next query to reopen all
+incremental `.npy` files, including during ongoing indexing. The reported query
+duration excluded that reload. Search now preloads the catalog before announcing
+readiness, keeps unchanged vectors resident, and refreshes snapshots off the query
+path. Replacements and removals are detected by asset/stage/ordinal and payload;
+unrelated catalog changes do not rebuild the snapshot. Cold startup still reads
+the individual vectors once. Failed refreshes retain the previous usable snapshot
+and report their error on stderr.
+
+Visual search uses exact vector scoring and per-file maxima before selecting 60
+files. No approximate vector database is needed for the current corpus. Speech
+uses precomputed word postings, accent folding, and final-word prefix matching.
+Text embeddings have a bounded 128-query cache; the encoder warms before readiness.
+The UI debounce is 120 ms, and edits invalidate in-flight results immediately.
+
+The indexing process was measured at 22.1 GiB footprint, 21.1 GiB in Metal buffers.
+MLX's default free-buffer cache allowance on this Mac was 60.8 GiB. The indexer now
+caps that cache at 256 MiB and clears unused buffers after each speech chunk,
+including failed chunks; loaded model weights remain resident.
+Three real audio chunks through the patched backend held active Metal allocations
+at 1,543 MiB, with zero cached buffers after each call and a 2,372 MiB peak.
+
+`benchmark_search.py` measures cold readiness and pipe round-trip latency separately
+from the worker's reported query time. Run it with the deployed Python environment,
+`--worker`, `--configuration`, `--catalog`, and a new `--output` JSON path. It only
+reads the catalog. NumPy-dependent snapshot regression tests run on the Mac and
+skip explicitly in minimal Linux environments without NumPy.
+
+Measured on `ludi` with 115,950 frames, while the existing app/indexer remained
+open: the old first request took 18.94 s (its UI timer reported only 0.28 s), and
+subsequent combined requests were around 140–160 ms. The new worker's 24 combined
+requests had 49 ms median / 75 ms p95 / 79 ms maximum round-trip latency; 24 speech
+requests had 8 ms median / 12 ms p95. Cold readiness was 20.96 s, including full
+catalog preload. These are worker pipe timings, excluding the 120 ms UI debounce
+and rendering, and include repeated queries benefiting from the bounded cache.
+Results are retained in `prototype-20260928T121526402715Z/search-{before,after}.json`.
+The signed release is `prototype-20260928T121844652245Z`; its isolated `ui-check`
+passed search/filtering, speech evidence, browsing, selection, playback controls,
+and grid-lock checks. The Mac Python checks passed all 52 deployed tests, including
+exact visual ranking versus exhaustive scoring, prefix search, cached vector reuse,
+replacement/removal, and immutable previous snapshots. Queries entered during
+cold startup run when search becomes ready.
+The release is running on `ludi`; the old app and both workers exited cleanly.
+Activation retained 13,853 completed jobs and 2,872 queued jobs with no errors and
+Pause off. macOS reported 23 GiB free after releasing the old process allocations.
 
 `--scan-ui-test NEW_DIRECTORY` verifies the native controller, pause persistence,
 no scan writes while paused, resume, and the 498-file baseline scan. The successful

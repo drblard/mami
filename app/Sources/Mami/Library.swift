@@ -1,4 +1,6 @@
 import Foundation
+import Darwin
+import MamiCore
 import AppKit
 import CryptoKit
 import ImageIO
@@ -33,6 +35,7 @@ enum MediaFormat: String, CaseIterable, Identifiable, Sendable {
     }
     static func read(_ media: [Media]) -> [String: MediaFormat] {
         Dictionary(uniqueKeysWithValues: media.map { item in
+            if let cached = item.cachedFormat, let format = MediaFormat(rawValue: cached) { return (item.path, format) }
             guard let frame = item.frames.first,
                   let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: frame.frame) as CFURL, nil),
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -80,6 +83,9 @@ struct Media: Identifiable, Codable, Sendable {
     let match: Sample
     let metadata: CaptureMetadata?
     let assetID: String
+    var previewState: String? = nil
+    var frameCount: Int? = nil
+    var cachedFormat: String? = nil
     var title: String { url.lastPathComponent }
     var device: String {
         let parts = url.pathComponents
@@ -93,11 +99,14 @@ struct Media: Identifiable, Codable, Sendable {
     }
 }
 
-struct Configuration {
+struct Configuration: Sendable {
     let index: URL
     let python: URL
     let worker: URL
     let speech: String?
+    var nativeEncoder: String? = nil
+    var packedIndex: String? = nil
+    var searchProjection: String? = nil
 
     static func load() throws -> Configuration {
         let env = ProcessInfo.processInfo.environment
@@ -112,7 +121,10 @@ struct Configuration {
             index: URL(fileURLWithPath: index),
             python: URL(fileURLWithPath: env["MAMI_PYTHON"] ?? home.appendingPathComponent("mami-lab/.venv/bin/python").path),
             worker: URL(fileURLWithPath: env["MAMI_WORKER"] ?? resources.appendingPathComponent("search_worker.py").path),
-            speech: env["MAMI_SPEECH"] ?? defaults["speech"])
+            speech: env["MAMI_SPEECH"] ?? defaults["speech"],
+            nativeEncoder: env["MAMI_NATIVE_ENCODER"] ?? defaults["native_encoder"],
+            packedIndex: env["MAMI_PACKED_INDEX"] ?? defaults["packed_index"],
+            searchProjection: env["MAMI_SEARCH_PROJECTION"] ?? defaults["search_projection"])
     }
 }
 
@@ -122,17 +134,29 @@ enum AppError: LocalizedError {
 }
 
 actor SearchWorker {
+    private enum Deadlines {
+        static let startup: Duration = .seconds(60)
+        static let query: Duration = .seconds(10)
+        static let gracefulShutdown: Duration = .seconds(2)
+        static let terminationGrace: Duration = .seconds(1)
+    }
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
-    private var buffer = Data()
+    private var reader: LineReader?
+    private var configuration: Configuration?
 
     func start(_ config: Configuration) throws {
+        abortWorker()
+        configuration = config
         let task = Process()
         task.executableURL = config.python
         task.arguments = [config.worker.path, "--index", config.index.path]
         task.arguments! += ["--catalog", Catalog.standard.database.path]
         if let speech = config.speech { task.arguments! += ["--speech", speech] }
+        if let encoder = config.nativeEncoder { task.arguments! += ["--native-encoder", encoder] }
+        if let packed = config.packedIndex { task.arguments! += ["--packed-index", packed] }
+        if let projection = config.searchProjection { task.arguments! += ["--projection", projection] }
         var env = ProcessInfo.processInfo.environment
         env["HF_HUB_OFFLINE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
@@ -146,8 +170,14 @@ actor SearchWorker {
         process = task
         input = stdin.fileHandleForWriting
         output = stdout.fileHandleForReading
-        let ready = try JSONDecoder().decode(Ready.self, from: readLine())
-        guard ready.ready else { throw AppError.message("Search model could not start.") }
+        reader = LineReader(handle: stdout.fileHandleForReading)
+        do {
+            let ready = try JSONDecoder().decode(Ready.self, from: readLine(timeout: Deadlines.startup))
+            guard ready.ready else { throw AppError.message("Search model could not start.") }
+        } catch {
+            abortWorker()
+            throw error
+        }
     }
 
     private struct Ready: Decodable { let ready: Bool }
@@ -157,38 +187,68 @@ actor SearchWorker {
         let error: String?
     }
 
-    func search(_ query: String, mode: String = "both", paths: [String]? = nil) throws -> Reply {
+    func search(_ query: String, mode: String = "both", paths: [String]? = nil, scope: ProjectionReader.Scope? = nil) throws -> Reply {
         try Task.checkCancellation()
+        if process?.isRunning != true, let configuration { try start(configuration) }
         guard let input, process?.isRunning == true else { throw AppError.message("Search process is not running.") }
         var request: [String: Any] = ["query": query, "mode": mode]
         if let paths { request["paths"] = paths }
+        if let scope { request["scope"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(scope)) }
         var data = try JSONSerialization.data(withJSONObject: request)
         data.append(10)
-        try WorkerPipe.write(data, to: input)
-        let reply = try JSONDecoder().decode(Reply.self, from: readLine())
+        let reply: Reply
+        do {
+            try WorkerPipe.write(data, to: input)
+            reply = try JSONDecoder().decode(Reply.self, from: readLine(timeout: Deadlines.query))
+        } catch {
+            abortWorker()
+            throw error
+        }
         if let error = reply.error { throw AppError.message(error) }
         return reply
     }
 
-    func stop() {
+    func stop() async {
+        let ending = process
+        let endingOutput = output
         try? input?.close()
-        // EOF lets the idle worker release its model and multiprocessing handles.
-        process?.waitUntilExit()
         process = nil
+        input = nil
+        output = nil
+        reader = nil
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: Deadlines.gracefulShutdown)
+        while ending?.isRunning == true && clock.now < deadline {
+            do { try await clock.sleep(for: .milliseconds(25)) }
+            catch { break }
+        }
+        if ending?.isRunning == true {
+            ending?.terminate()
+            let terminationDeadline = clock.now.advanced(by: Deadlines.terminationGrace)
+            while ending?.isRunning == true && clock.now < terminationDeadline {
+                do { try await clock.sleep(for: .milliseconds(25)) }
+                catch { break }
+            }
+            if let ending, ending.isRunning { kill(ending.processIdentifier, SIGKILL) }
+        }
+        try? endingOutput?.close()
     }
 
-    private func readLine() throws -> Data {
-        while true {
-            if let newline = buffer.firstIndex(of: 10) {
-                let line = Data(buffer[..<newline])
-                buffer.removeSubrange(...newline)
-                return line
-            }
-            guard let part = output?.availableData, !part.isEmpty else {
-                throw AppError.message("Search process exited. See the launch log for details.")
-            }
-            buffer.append(part)
-        }
+    private func readLine(timeout: Duration) throws -> Data {
+        guard let line = try reader?.readLine(timeout: timeout) else { throw AppError.message("Search output is unavailable.") }
+        return line
+    }
+
+    private func abortWorker() {
+        try? input?.close()
+        try? output?.close()
+        // This worker only reads generated search data. A broken protocol or
+        // expired deadline must not leave a stuck inference process behind.
+        if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        process = nil
+        input = nil
+        output = nil
+        reader = nil
     }
 
     deinit {
@@ -199,7 +259,13 @@ actor SearchWorker {
 
 @MainActor final class Library: ObservableObject {
     @Published var items: [Media] = []
-    @Published var query = ""
+    @Published var query = "" {
+        didSet {
+            // Invalidate in-flight results immediately, before the typing debounce.
+            pendingSearch?.cancel()
+            generation += 1
+        }
+    }
     @Published var status = "Opening library…"
     @Published var error: String?
     @Published var ready = false
@@ -214,6 +280,12 @@ actor SearchWorker {
     @Published private(set) var queryDates: CaptureRange?
     @Published var gridLocked = false {
         didSet {
+            if projection != nil {
+                lockedSequence = gridLocked ? latestSequence : nil
+                projectedArrivals = 0
+                search()
+                return
+            }
             if gridLocked { frozenCatalog = all }
             else { frozenCatalog = nil; search() }
         }
@@ -221,27 +293,50 @@ actor SearchWorker {
     private var frozenCatalog: [Media]?
     private var browsingCatalog: [Media] { frozenCatalog ?? all }
     var pendingMediaCount: Int {
+        if projection != nil { return projectedArrivals }
         guard let frozenCatalog else { return 0 }
         let ids = Set(frozenCatalog.map(\.assetID))
         return Set(all.filter { !ids.contains($0.assetID) }.map(\.assetID)).count
     }
-    func refreshGrid() { if gridLocked { frozenCatalog = all }; search() }
+    func refreshGrid() {
+        if projection != nil, gridLocked { lockedSequence = latestSequence; projectedArrivals = 0 }
+        else if gridLocked { frozenCatalog = all }
+        search()
+    }
     var manualDates: CaptureRange? { dateEnabled ? CaptureRange(from: CaptureRange.day(dateFrom), through: CaptureRange.day(dateThrough)) : nil }
     func matchesDate(_ media: Media) -> Bool {
         (manualDates?.contains(media.metadata?.sortDate) ?? true) && (queryDates?.contains(media.metadata?.sortDate) ?? true)
     }
-    var devices: [String] { Set(all.map(\.device)).sorted() }
+    var devices: [String] { projection != nil ? projectedCameras : Set(all.map(\.device)).sorted() }
     func matchesDevice(_ media: Media) -> Bool { deviceFilter == "All devices" || media.device == deviceFilter }
     @Published private(set) var formats: [String: MediaFormat] = [:]
     func matchesFormat(_ media: Media) -> Bool { format == .all || formats[media.path, default: .unknown] == format }
     @Published var speechAvailable = false
     private var all: [Media] = []
+    private var projection: ProjectionReader?
+    private var pageCursor: ProjectionReader.Cursor?
+    private var pageScope = ProjectionReader.Scope()
+    private var pageGeneration = 0
+    private var latestSequence: Int64 = 0
+    private var lockedSequence: Int64?
+    private var projectedCameras: [String] = []
+    private var projectedEarliest: String?
+    @Published private(set) var projectedArrivals = 0
+    @Published private(set) var totalMediaCount = 0
+    @Published private(set) var loadingPage = false
+    @Published var browseKind: String? = nil
+    @Published var browseAssets: Set<String>? = nil
+    @Published var oldestFirst = false
+    var usesProjection: Bool { projection != nil }
+    var projectionReader: ProjectionReader? { projection }
+    var canLoadMore: Bool { usesProjection && !searching && !showingMatches && all.count < totalMediaCount && pageCursor != nil }
     var catalogMedia: [Media] { all }
     var earliestCaptureDate: Date? {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd"
         formatter.isLenient = false
+        if projection != nil { return projectedEarliest.flatMap { formatter.date(from: String($0.prefix(8))) } }
         return all.compactMap { media in
             media.metadata.flatMap { formatter.date(from: String($0.sortDate.prefix(8))) }
         }.min()
@@ -269,7 +364,35 @@ actor SearchWorker {
         guard all.isEmpty else { return }
         do {
             let config = try Configuration.load()
+            try await Task.detached { try Catalog.standard.prepareUserStore() }.value
             speechAvailable = config.speech != nil
+            if let path = config.searchProjection {
+                let identity = try await Task.detached { try Catalog.standard.identity() }.value
+                let reader = ProjectionReader(database: URL(fileURLWithPath: path), sourceIdentity: identity)
+                let initial = try await Task.detached { try (reader.facets(), reader.page(scope: .init())) }.value
+                projection = reader
+                if !CommandLine.arguments.contains("--ui-test") && !CommandLine.arguments.contains("--self-test") && !CommandLine.arguments.contains("--persistent-search-test") {
+                    try SearchMaintenance.shared.start(config)
+                }
+                projectedCameras = initial.0.cameras
+                projectedEarliest = initial.0.earliest
+                latestSequence = initial.0.sequence
+                totalMediaCount = initial.1.total
+                pageCursor = initial.1.cursor
+                all = initial.1.items
+                byPath = Dictionary(uniqueKeysWithValues: all.map { ($0.path, $0) })
+                formats = MediaFormat.read(all)
+                items = all
+                status = "\(totalMediaCount) files · Loading local search…"
+                try await worker.start(config)
+                ready = true
+                status = "\(totalMediaCount) files · Local search ready"
+                if !query.isEmpty { search() }
+                if !CommandLine.arguments.contains("--ui-test") && !CommandLine.arguments.contains("--self-test") && !CommandLine.arguments.contains("--persistent-search-test") {
+                    Indexing.startAll()
+                }
+                return
+            }
             let media = try await Task.detached {
                 let indexed: [Media]
                 do {
@@ -292,19 +415,47 @@ actor SearchWorker {
             byPath = Dictionary(uniqueKeysWithValues: media.map { ($0.path, $0) })
             items = media
             status = "\(media.count) files · Loading local search model…"
+            if !CommandLine.arguments.contains("--ui-test") && !CommandLine.arguments.contains("--self-test") && !CommandLine.arguments.contains("--persistent-search-test") {
+                Indexing.startAll()
+            }
             try await worker.start(config)
             ready = true
             status = "\(media.count) files · Local search ready"
-            if !CommandLine.arguments.contains("--ui-test") && !CommandLine.arguments.contains("--self-test") {
-                Indexing.shared.start()
-            }
+            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { search() }
         } catch { self.error = error.localizedDescription; status = "Could not open library" }
     }
 
     func refreshCatalog() async {
         do {
+            if let projection {
+                let sequence = lockedSequence
+                let refreshed = try await Task.detached { try (projection.facets(), sequence.map { try projection.arrivals(after: $0) } ?? 0) }.value
+                guard !Task.isCancelled else { return }
+                projectedCameras = refreshed.0.cameras
+                projectedEarliest = refreshed.0.earliest
+                latestSequence = refreshed.0.sequence
+                projectedArrivals = refreshed.1
+                if !showingMatches && !gridLocked {
+                    let scope = projectionScope()
+                    let count = max(ProjectionReader.pageSize, all.count)
+                    let version = generation
+                    let page = try await Task.detached { try projection.page(scope: scope, limit: count) }.value
+                    guard !Task.isCancelled, generation == version, !showingMatches else { return }
+                    pageGeneration += 1
+                    loadingPage = false
+                    all = page.items
+                    byPath = Dictionary(uniqueKeysWithValues: all.map { ($0.path, $0) })
+                    formats = MediaFormat.read(all)
+                    pageScope = scope; pageCursor = page.cursor
+                    totalMediaCount = page.total
+                    items = all
+                }
+                return
+            }
             let media = try await Task.detached(priority: .utility) { try Catalog.standard.media() }.value
+            guard !Task.isCancelled else { return }
             formats = await Task.detached(priority: .utility) { MediaFormat.read(media) }.value
+            guard !Task.isCancelled else { return }
             all = media
             byPath = Dictionary(uniqueKeysWithValues: media.map { ($0.path, $0) })
             if gridLocked { /* Keep the displayed snapshot until explicit refresh. */ }
@@ -316,11 +467,37 @@ actor SearchWorker {
                                  match: matched.match, metadata: original.metadata, assetID: original.assetID)
                 }
             }
-            CatalogBackups.shared.schedule()
         } catch { self.error = "Could not refresh indexed media: \(error.localizedDescription)" }
     }
 
     private var pendingSearch: Task<Void, Never>?
+    private func projectionScope() -> ProjectionReader.Scope {
+        let ranges = [manualDates, queryDates].compactMap { $0 }
+        return ProjectionReader.Scope(camera: deviceFilter == "All devices" ? nil : deviceFilter,
+                                      shape: format == .all ? nil : format.rawValue, kind: browseKind,
+                                      from: ranges.map { $0.from.replacingOccurrences(of: "-", with: "") }.max(),
+                                      through: ranges.map { $0.through.replacingOccurrences(of: "-", with: "") + "235959" }.min(),
+                                      assets: browseAssets, arrivalThrough: lockedSequence, oldestFirst: oldestFirst)
+    }
+
+    func loadMore() async {
+        guard let projection, canLoadMore, !loadingPage else { return }
+        let cursor = pageCursor, scope = pageScope, current = pageGeneration
+        loadingPage = true
+        defer { if pageGeneration == current { loadingPage = false } }
+        do {
+            let page = try await Task.detached(priority: .utility) { try projection.page(scope: scope, after: cursor) }.value
+            guard current == pageGeneration, !Task.isCancelled else { return }
+            let known = Set(all.map(\.assetID))
+            let additions = page.items.filter { !known.contains($0.assetID) }
+            all += additions
+            for media in additions { byPath[media.path] = media }
+            formats.merge(MediaFormat.read(additions)) { _, new in new }
+            pageCursor = page.cursor
+            totalMediaCount = page.total
+            items = all
+        } catch { self.error = "Could not load more media: \(error.localizedDescription)" }
+    }
     @discardableResult func search() -> Task<Void, Never>? {
         pendingSearch?.cancel()
         generation += 1
@@ -334,16 +511,51 @@ actor SearchWorker {
         } catch { self.error = error.localizedDescription; searching = false; return nil }
         queryDates = parsed.range
         let eligible = browsingCatalog.filter { matchesFormat($0) && matchesDevice($0) && matchesDate($0) }
-        let paths = format == .all && deviceFilter == "All devices" && !dateEnabled && queryDates == nil && !gridLocked ? nil : eligible.map(\.path)
+        let paths = projection != nil || (format == .all && deviceFilter == "All devices" && !dateEnabled && queryDates == nil && !gridLocked) ? nil : eligible.map(\.path)
+        let scope = projection == nil ? nil : projectionScope()
         let text = parsed.text
+        let submittedQuery = query
+        if let projection, text.isEmpty {
+            let scope = projectionScope()
+            pageGeneration += 1
+            let pageRequest = pageGeneration
+            loadingPage = true
+            searching = false
+            showingMatches = false
+            let task = Task {
+                defer { if pageGeneration == pageRequest { loadingPage = false } }
+                do {
+                    let page = try await Task.detached(priority: .userInitiated) { try projection.page(scope: scope) }.value
+                    guard generation == current, !Task.isCancelled else { return }
+                    all = page.items
+                    byPath = Dictionary(uniqueKeysWithValues: all.map { ($0.path, $0) })
+                    formats = MediaFormat.read(all)
+                    pageScope = scope
+                    pageCursor = page.cursor
+                    totalMediaCount = page.total
+                    items = all
+                    status = "\(page.total) files"
+                } catch { if generation == current { self.error = error.localizedDescription } }
+            }
+            pendingSearch = task
+            return task
+        }
         if text.isEmpty { items = eligible; searching = false; showingMatches = false; status = "\(eligible.count) files"; return nil }
+        if projection != nil { pageGeneration += 1; loadingPage = false }
         guard ready else { return nil }
         searching = true
         status = "Searching locally…"
         let task = Task {
             do {
-                let reply = try await worker.search(text, mode: searchMode, paths: paths)
-                guard generation == current else { return }
+                let reply = try await worker.search(text, mode: searchMode, paths: paths, scope: scope)
+                guard generation == current, query == submittedQuery, !Task.isCancelled else { return }
+                if let projection {
+                    let requested = (reply.hits ?? []).map(\.path)
+                    let media = try await Task.detached { try projection.media(paths: requested) }.value
+                    guard generation == current, !Task.isCancelled else { return }
+                    for item in media { byPath[item.path] = item }
+                    formats.merge(MediaFormat.read(media)) { _, new in new }
+                }
                 items = (reply.hits ?? []).compactMap { sample in
                     guard let original = byPath[sample.path] else { return nil }
                     return Media(path: original.path, kind: original.kind, url: original.url, frames: original.frames, match: sample, metadata: original.metadata, assetID: original.assetID)
@@ -355,7 +567,7 @@ actor SearchWorker {
                 showingMatches = true
                 searching = false
             } catch {
-                guard generation == current else { return }
+                guard generation == current, query == submittedQuery, !Task.isCancelled else { return }
                 self.error = error.localizedDescription
                 searching = false
                 status = "Search failed"

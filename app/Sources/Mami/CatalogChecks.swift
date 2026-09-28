@@ -1,4 +1,5 @@
 import Foundation
+import MamiCore
 
 /// Integration checks run against a fresh directory; all fixtures are retained.
 func checkCatalog(at root: URL) throws {
@@ -7,9 +8,27 @@ func checkCatalog(at root: URL) throws {
     func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
         if try !condition() { throw AppError.message(message) }
     }
+    let isolatedDirectory = root.appendingPathComponent("configured-fixture")
+    let configured = Catalog.configured(environment: ["MAMI_CATALOG": isolatedDirectory.path], home: root)
+    try require(configured.backups == isolatedDirectory.appendingPathComponent("backups"), "Catalog override leaked backups into the live library")
+    try require(configured.legacyAnnotationsDirectory == isolatedDirectory.appendingPathComponent("legacy-annotations"), "Catalog override reads live legacy annotations")
+    try require(configured.artifacts == isolatedDirectory.appendingPathComponent("index-artifacts"), "Catalog override writes live indexing artifacts")
+    let pendingPayload: [String: Any] = [
+        "path": "library:sha256:pending", "kind": "video", "url": "file:///original/pending.mp4",
+        "frames": [], "match": ["path": "library:sha256:pending", "kind": "video", "timestamp": 0, "frame": ""],
+        "metadata": NSNull(), "assetID": "sha256:pending", "previewState": "pending"
+    ]
+    let pendingMedia = try JSONDecoder().decode(Media.self, from: JSONSerialization.data(withJSONObject: pendingPayload))
+    try require(pendingMedia.frames.isEmpty && pendingMedia.previewState == "pending" && pendingMedia.url.isFileURL,
+                "Imported playable media requires preview frames")
     let frame = Sample(path: "example.mp4", kind: "video", timestamp: 0, frame: "/cache/example.jpg", score: nil, evidence: nil)
     let item = Media(path: "example.mp4", kind: "video", url: URL(fileURLWithPath: "/original/example.mp4"), frames: [frame], match: frame, metadata: nil, assetID: "sha256:example")
     try catalog.synchronize([item])
+    let cacheFixture = try SQLDatabase(catalog.database)
+    try cacheFixture.execute("CREATE TABLE future_generated_cache(payload TEXT)")
+    try cacheFixture.execute("INSERT INTO future_generated_cache VALUES('regenerable')")
+    try require(catalog.media(forAssetIDs: []).isEmpty, "Empty selection unexpectedly loaded media")
+    try require(catalog.media(forAssetIDs: [item.assetID, item.assetID, "missing"]).map(\.path) == [item.path], "Scoped media lookup did not deduplicate or filter assets")
     let original = try catalog.snapshotIfChanged()
     let before = try FileManager.default.contentsOfDirectory(atPath: catalog.backups.path).sorted()
     let originalURL = catalog.backups.appendingPathComponent(original.file)
@@ -79,10 +98,52 @@ func checkCatalog(at root: URL) throws {
     try catalog.synchronize([relocated])
     try require(catalog.media().count == 1, "Relocation duplicated a catalog entry")
     try require(catalog.media().first?.url == relocated.url, "Relocation did not update the original URL")
+    try require(catalog.media(forAssetIDs: [item.assetID]).first?.url == relocated.url, "Scoped selection lookup lost relocation")
     try require(catalog.annotations()[item.assetID]?.place == label.place, "Relocation lost labels")
     let relocatedSnapshot = try catalog.snapshotIfChanged()
     try catalog.synchronize([relocated])
     try require(catalog.snapshotIfChanged().file == relocatedSnapshot.file, "Repeated relocation created an unnecessary backup")
+    let personal = try catalog.userSnapshotIfChanged()
+    let personalURL = catalog.userBackups.appendingPathComponent(personal.file)
+    let personalDB = try SQLDatabase(personalURL, readOnly: true)
+    try require(personalDB.scalar("SELECT count(*) FROM sqlite_master WHERE name IN ('media','index_units','index_jobs','scan_files','future_generated_cache')") == "0", "Personal backup contains generated data")
+    try catalog.synchronize([item])
+    try require(catalog.userSnapshotIfChanged().file == personal.file, "Metadata/index changes triggered a personal backup")
+    let personalRestore = Catalog(directory: root.appendingPathComponent("personal-restored"))
+    try FileManager.default.createDirectory(at: personalRestore.directory, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: personalURL, to: personalRestore.userDatabase)
+    try require(personalRestore.annotations()[item.assetID]?.place == label.place, "Personal-only restore lost edits")
+    try require(personalRestore.media().isEmpty, "Personal-only restore unexpectedly contained cached media")
+    try personalRestore.synchronize([item])
+    try require(personalRestore.annotations()[item.assetID]?.place == label.place, "Rebuilt media did not reconnect personal data")
+    let missingPersonal = Catalog(directory: root.appendingPathComponent("missing-personal"))
+    try FileManager.default.createDirectory(at: missingPersonal.directory, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: catalog.database, to: missingPersonal.database)
+    failed = false
+    do { _ = try missingPersonal.annotations() } catch { failed = true }
+    try require(failed, "Missing personal DB silently regenerated stale edits")
+    try FileManager.default.createDirectory(at: personalRestore.userBackups, withIntermediateDirectories: true)
+    let unrecognized = Catalog.Snapshot(identity: personal.identity, revision: "unknown", changeToken: "unknown", file: "catalog-unrecognized.sqlite", created: .distantPast)
+    try Data("unrecognized retained file".utf8).write(to: personalRestore.userBackups.appendingPathComponent(unrecognized.file), options: .withoutOverwriting)
+    try JSONEncoder().encode(unrecognized).write(to: personalRestore.userBackups.appendingPathComponent("unrecognized.json"), options: .withoutOverwriting)
+    let policy = BackupRetentionPolicy.standard
+    let excessSnapshotsToExercisePruning = 16
+    let generatedSnapshotCount = policy.recentSnapshotCount + excessSnapshotsToExercisePruning
+    let fixedRetentionStart = ISO8601DateFormatter().date(from: "2026-09-28T12:15:00Z")!
+    var generatedSnapshots: [Catalog.Snapshot] = []
+    for i in 0..<generatedSnapshotCount {
+        try personalRestore.save(Annotation(favorite: true, tags: ["retention-\(i)"], place: "kept"), asset: item.assetID)
+        // All fixture timestamps are distinct and inside one UTC bucket,
+        // regardless of the real clock or the configured recent-count limit.
+        let timestamp = fixedRetentionStart.addingTimeInterval(Double(i) / Double(generatedSnapshotCount))
+        generatedSnapshots.append(try personalRestore.userSnapshotIfChanged(now: timestamp))
+    }
+    let retained = try FileManager.default.contentsOfDirectory(at: personalRestore.userBackups, includingPropertiesForKeys: nil).filter { $0.pathExtension == "sqlite" }
+    let expectedFiles = Set(generatedSnapshots.suffix(policy.recentSnapshotCount).map(\.file)).union([unrecognized.file])
+    try require(Set(retained.map(\.lastPathComponent)) == expectedFiles, "Personal backup retention kept the wrong snapshots")
+    try require(FileManager.default.fileExists(atPath: personalRestore.userBackups.appendingPathComponent(unrecognized.file).path), "Retention removed an unrecognized backup")
+    try checkProjection(at: root)
+    print("USER STORE TEST PASSED: verified migration, generated-data exclusion, index-change suppression, personal-only restore, content-ID reconnect, missing-store detection and bounded retention")
     print("CATALOG TEST PASSED: no-change skips, no-op saves, legacy migration, rollback, restore, backup failure/retry and retained history")
     print("CATALOG TEST OUTPUT: \(root.path)")
 }
