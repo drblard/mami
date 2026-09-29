@@ -69,6 +69,26 @@ before anything is scheduled.
    media with our son, combined with the existing date/kind/device filters.
 4. Preview: face boxes with names; click a face to name or correct it.
 
+### Correcting wrong matches
+
+Automatic groups will contain mistakes; correcting them must be quick and permanent.
+
+- **Remove faces:** select one or many faces in a group (click, ⌘/⇧-click, or drag
+  a selection box) and choose *Not this person*. They return to unnamed faces.
+- **Move faces:** *Move to…* an existing person or *New person* from a selection.
+  This splits a mixed group, e.g. two siblings, in one step.
+- **Split suggestions:** a group can be re-divided at a stricter similarity, showing
+  its sub-groups side by side so a mixed group can be separated at once.
+- **Merge:** combine two groups or people that are the same person.
+- **Undo:** every naming, removal, move and merge can be undone; changes use the
+  existing personal edit history.
+- **Corrections are permanent:** a rejection is stored as "this face is not this
+  person" in `user.sqlite`. Re-clustering, new imports and full index rebuilds
+  must respect confirmations and rejections; a rejected face is never suggested
+  for that person again, and a confirmed face never moves automatically.
+- Suggestions are ordered least-confident first on request, so likely mistakes
+  can be reviewed before they spread to other matches.
+
 ### Pipeline priority
 
 Face indexing is a separate durable queue after previews, consistent with
@@ -82,7 +102,9 @@ yields to CapCut activity like the AI lane. Progress appears as its own lane.
       clustering quality; compare preview-frame vs full-resolution coverage.
 - [ ] Generated face schema and queue; worker stage with cancellation/EOF/restart tests.
 - [ ] Personal people/assignment tables, migration, backup/restore tests.
-- [ ] Clustering/matching with exact threshold tests on fixtures.
+- [ ] Clustering/matching with exact threshold tests on fixtures, including
+      confirmed/rejected constraints surviving re-clustering and a full rebuild.
+- [ ] Correction actions: remove, move, new person from selection, split, merge, undo.
 - [ ] Native People view, naming/confirmation, preview face boxes and People filter.
 - [ ] Native build/tests on `ludi`, isolated fixture run, then signed release.
 - [ ] Live backfill of the current library, with progress and measured duration.
