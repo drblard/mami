@@ -11,12 +11,16 @@ Final audit: `~/mami-lab/catalog/release-audit-20260929-final/` on `ludi`.
 
 ## Follow-up requests — 2026-09-29 (open)
 
-Candidate `prototype-20260929T185222406970Z` (signed, **not installed**): 21 Swift /
+**Installed 2026-09-29** at the user's request: `prototype-20260929T185222406970Z`
+(signed; binary SHA-256 prefix `29888a96a3ea0bde` matches the tested candidate).
+Previous app retained at `~/Applications/.Mami-install-b11a90e27c2a47e89b0d7377c1872f9d.app`;
+receipt `Personal/installation-20260929T185222.json`. Quit normally with no workers
+running (Mac locked, idle 44 min); relaunched with workers resuming.
+Validation: 21 Swift /
 156 Python tests pass on the Mac; full native UI test passes on a fresh copy of the
 clean 498-item fixture (`~/Library/Caches/MamiMigration/ui-fixes-20260929b/`).
 A first attempt reused `ui-latest-catalog`, which retains the previous run's
 synthetic grid-arrival row, and correctly failed the relocation check.
-Live build unchanged.
 
 - [x] Drag grid media onto Selected clips (in-app drags only; appends without duplicates).
   - [ ] Physical drag onto the panel on the Mac (not automatable in the locked session).
@@ -25,8 +29,8 @@ Live build unchanged.
 - [x] Progress lanes compacted to one row each (footer ~70 pt, previously ~160 pt).
 - [x] Idle progress lanes collapse after `ProgressVisibility.idleHideDelay` (10 s);
       active, paused and errored lanes stay visible for their controls.
-- [ ] Install the signed candidate after the user confirms the app may be restarted.
-- [ ] Face detection, people tagging and a people filter: design pending user decisions.
+- [x] Install the signed candidate (user approved an immediate install).
+- [ ] Face detection, people tagging and a people filter: plan in [FACES.md](FACES.md).
 
 ## Verified foundations
 

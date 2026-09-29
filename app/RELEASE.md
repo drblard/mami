@@ -1,6 +1,8 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Active build: `prototype-20260929T134121462682Z`.
+Status: **deployed and verified**. Active build: `prototype-20260929T185222406970Z`
+(UI follow-ups; see [REMAINING.md](REMAINING.md)). Previous: `prototype-20260929T134121462682Z`,
+retained at `~/Applications/.Mami-install-b11a90e27c2a47e89b0d7377c1872f9d.app`. No data migration.
 
 ## Current installation — 2026-09-29 production-layout migration
 
