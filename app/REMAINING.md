@@ -9,6 +9,25 @@ Code review: [CODE_REVIEW.md](CODE_REVIEW.md). Queue contract: [PIPELINE.md](PIP
 `~/Applications/Mami.app`. Production revision: `0d43d1f`.
 Final audit: `~/mami-lab/catalog/release-audit-20260929-final/` on `ludi`.
 
+## Follow-up requests — 2026-09-29 (open)
+
+Candidate `prototype-20260929T185222406970Z` (signed, **not installed**): 21 Swift /
+156 Python tests pass on the Mac; full native UI test passes on a fresh copy of the
+clean 498-item fixture (`~/Library/Caches/MamiMigration/ui-fixes-20260929b/`).
+A first attempt reused `ui-latest-catalog`, which retains the previous run's
+synthetic grid-arrival row, and correctly failed the relocation check.
+Live build unchanged.
+
+- [x] Drag grid media onto Selected clips (in-app drags only; appends without duplicates).
+  - [ ] Physical drag onto the panel on the Mac (not automatable in the locked session).
+- [x] Second plain click on the only selected card deselects it; double-click and
+      keyboard focus keep the selection (`GridClickSelection` unit + native UI checks).
+- [x] Progress lanes compacted to one row each (footer ~70 pt, previously ~160 pt).
+- [x] Idle progress lanes collapse after `ProgressVisibility.idleHideDelay` (10 s);
+      active, paused and errored lanes stay visible for their controls.
+- [ ] Install the signed candidate after the user confirms the app may be restarted.
+- [ ] Face detection, people tagging and a people filter: design pending user decisions.
+
 ## Verified foundations
 
 - [x] Separate authoritative personal data and personal-only backups; verify migration/restore.

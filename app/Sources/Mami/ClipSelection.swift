@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
     let assetID: String
@@ -68,7 +69,13 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
         guard !media.isEmpty else { return }
         let ids = Set(media.map(\.assetID))
         if media.allSatisfy({ contains($0) }) { save(items.filter { !ids.contains($0.assetID) }) }
-        else { save(items + media.filter { !contains($0) }.map { SelectedClip($0) }) }
+        else { add(media) }
+    }
+    /// Appends media not already selected, keeping existing order and samples.
+    func add(_ media: [Media]) {
+        var seen = Set(items.map(\.assetID))
+        let added = media.filter { seen.insert($0.assetID).inserted }.map { SelectedClip($0) }
+        if !added.isEmpty { save(items + added) }
     }
     func clear() { save([]) }
     func move(_ id: String, by offset: Int) {
@@ -151,11 +158,32 @@ struct SelectedClipRow: View {
     }
 }
 
+/// Accepts only media dragged from this app's grid; external file drops are
+/// imports, not selections, and are left to other destinations.
+struct SelectionDrop: DropDelegate {
+    let dragged: () -> [Media]
+    let add: ([Media]) -> Void
+    @Binding var targeted: Bool
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.fileURL]) && !dragged().isEmpty }
+    func dropEntered(info: DropInfo) { targeted = true }
+    func dropExited(info: DropInfo) { targeted = false }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
+    func performDrop(info: DropInfo) -> Bool {
+        targeted = false
+        let media = dragged()
+        guard !media.isEmpty else { return false }
+        add(media)
+        return true
+    }
+}
+
 struct SelectionIsland: View {
     @ObservedObject var clips: ClipSelection
     var projection: ProjectionReader? = nil
+    var dragged: () -> [Media] = { [] }
     let open: (SelectedClip) -> Void
     let collapse: () -> Void
+    @ViewState private var dropTargeted = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -167,7 +195,7 @@ struct SelectionIsland: View {
             Text("Gather footage here, then drag it into your edit.").font(.caption).foregroundStyle(.secondary)
             if clips.items.isEmpty {
                 Spacer()
-                Label("Use + on a thumbnail", systemImage: "plus.circle").foregroundStyle(.secondary)
+                Label("Use + or drag media here", systemImage: "plus.circle").foregroundStyle(.secondary)
                 Text("Your selection stays here as you search and filter.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
             } else {
@@ -196,7 +224,8 @@ struct SelectionIsland: View {
             }
         }.padding(14).frame(width: 260)
             .background(Color(red: 0.14, green: 0.15, blue: 0.17), in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(dropTargeted ? Color.accentColor : .white.opacity(0.08), lineWidth: dropTargeted ? 2 : 1))
+            .onDrop(of: [.fileURL], delegate: SelectionDrop(dragged: dragged, add: clips.add, targeted: $dropTargeted))
             .padding(12)
     }
 }

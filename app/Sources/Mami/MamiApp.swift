@@ -507,7 +507,12 @@ struct LibraryView: View {
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
     private func selectCard(_ media: Media) {
-        navigation.select(media, extending: NSEvent.modifierFlags.contains(.command))
+        // The second click of a double-click opens the preview; it must not deselect.
+        // clickCount is only defined for mouse events.
+        if let event = NSApp.currentEvent, [NSEvent.EventType.leftMouseDown, .leftMouseUp].contains(event.type), event.clickCount > 1 {
+            navigation.select(media, extending: false)
+        }
+        else { navigation.click(media, extending: NSEvent.modifierFlags.contains(.command)) }
         searchFocused = false
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
@@ -711,7 +716,7 @@ struct LibraryView: View {
                 }
             }
             if showClips {
-                SelectionIsland(clips: clips, projection: library.projectionReader, open: { clip in
+                SelectionIsland(clips: clips, projection: library.projectionReader, dragged: { MediaDragRouter.shared.draggedMedia }, open: { clip in
                     let media = library.catalogMedia.first { $0.assetID == clip.assetID } ?? clip.media
                     open(media, timestamp: clip.timestamp)
                 }, collapse: { showClips = false })
@@ -1171,6 +1176,17 @@ struct MamiApp: App {
         navigation.select(picks[0], extending: false)
         navigation.select(picks[0], extending: true)
         guard navigation.selectedIDs.isEmpty, navigation.focused == nil else { throw AppError.message("Deselecting final item left a selection") }
+        navigation.click(picks[0], extending: false)
+        navigation.click(picks[0], extending: false)
+        guard navigation.selectedIDs.isEmpty, navigation.focused == nil else { throw AppError.message("Second click did not deselect") }
+        navigation.select(picks[0], extending: false)
+        navigation.select(picks[0], extending: false)
+        guard navigation.selectedIDs == [picks[0].id] else { throw AppError.message("Keyboard focus toggled the selection") }
+        clips.add([picks[0], picks[1]])
+        clips.add([picks[1], picks[2], picks[2]])
+        guard clips.items.map(\.assetID) == picks.map(\.assetID) else { throw AppError.message("Dropped media were duplicated or reordered") }
+        clips.clear()
+        print("CLICK second click deselects; keyboard focus does not; dropped clips append without duplicates")
         print("MULTISELECT additive toggle, selection-only left/right preview, ignored up/down and bulk B shortcut passed")
         guard navigation.itemsForDrag(picks[0], in: picks).map(\.id) == [picks[0].id] else { throw AppError.message("Unselected drag did not select item") }
         navigation.select(picks[2], extending: true)

@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import ImageIO
+import MamiCore
 
 @MainActor final class BrowserSelection: ObservableObject {
     @Published var columns = 1
@@ -16,6 +17,14 @@ import ImageIO
         if extending {
             if !selectedIDs.insert(media.id).inserted { selectedIDs.remove(media.id) }
         } else { selectedIDs = [media.id] }
+        updateFocus(media)
+    }
+    /// Pointer clicks toggle a sole selection off; keyboard focus uses `select`.
+    func click(_ media: Media, extending: Bool) {
+        selectedIDs = GridClickSelection.click(media.id, selected: selectedIDs, extending: extending)
+        updateFocus(media)
+    }
+    private func updateFocus(_ media: Media) {
         if selectedIDs.contains(media.id) { focused = media }
         else if focused?.id == media.id || selectedIDs.isEmpty { focused = nil }
     }
@@ -26,8 +35,8 @@ struct LibraryFooter: View {
     @ObservedObject private var backups = CatalogBackups.shared
     @ObservedObject private var searchMaintenance = SearchMaintenance.shared
     var body: some View {
-        VStack(spacing: 8) {
-            Divider()
+        VStack(spacing: 0) {
+            Divider().padding(.bottom, 4)
             HStack(spacing: 12) {
                 Toggle("Lock grid", isOn: $library.gridLocked).toggleStyle(.checkbox).disabled(!library.ready)
                     .help("Hold this view while media is indexed. Refresh brings in new arrivals.")
@@ -42,7 +51,7 @@ struct LibraryFooter: View {
             }.font(.caption).padding(.horizontal, 14).frame(height: 24)
             IndexingBar(indexing: .previews)
             IndexingBar()
-        }.background(Color(red: 0.11, green: 0.12, blue: 0.14))
+        }.padding(.bottom, 4).background(Color(red: 0.11, green: 0.12, blue: 0.14))
     }
 }
 
@@ -55,6 +64,7 @@ struct MediaDragSurface: NSViewRepresentable {
     final class DragView: NSView, NSDraggingSource {
         var items: () -> [Media] = { [] }
         var enabled = true
+        fileprivate weak var router: MediaDragRouter?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override init(frame: NSRect) {
             super.init(frame: frame)
@@ -62,6 +72,9 @@ struct MediaDragSurface: NSViewRepresentable {
         }
         required init?(coder: NSCoder) { fatalError() }
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+        func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+            router?.draggingEnded()
+        }
     }
 }
 
@@ -87,12 +100,17 @@ struct MediaDragSurface: NSViewRepresentable {
                 item.setDraggingFrame(NSRect(x: point.x + CGFloat(index % 5) * 3, y: point.y, width: 40, height: 40), contents: NSWorkspace.shared.icon(forFile: media.url.path))
                 return item
             }
+            self.draggedMedia = media
             view.beginDraggingSession(with: items, event: event, source: view)
             return nil
         }
     }
     deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
-    func register(_ view: MediaDragSurface.DragView) { views.add(view) }
+    /// Media in the current in-app drag session. In-window drop targets use it
+    /// instead of mapping file URLs back to catalog items.
+    private(set) var draggedMedia: [Media] = []
+    func draggingEnded() { draggedMedia = [] }
+    func register(_ view: MediaDragSurface.DragView) { views.add(view); view.router = self }
     private func reset() { owner = nil; origin = nil; provider = nil }
     func mouseDown(_ event: NSEvent) {
         reset()

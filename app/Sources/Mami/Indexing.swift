@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MamiCore
 
 /// The worker owns durable checkpoints. This object only controls it and renders
 /// progress; neither file hashing nor inference runs on the UI thread.
@@ -267,6 +268,16 @@ struct IndexQueueSummary: View {
 
 struct IndexingBar: View {
     @ObservedObject var indexing = Indexing.shared
+    @ViewState private var shown = true
+    private struct ProgressKey: Hashable {
+        let phase: String, current: String, done: Int, total: Int
+        let running: Bool, paused: Bool, error: String?
+    }
+    private var progressKey: ProgressKey {
+        ProgressKey(phase: indexing.phase, current: indexing.current, done: indexing.done, total: indexing.total,
+                    running: indexing.running, paused: indexing.paused, error: indexing.error)
+    }
+    private var needsAttention: Bool { indexing.paused || indexing.error != nil }
     private var detail: String {
         if let error = indexing.error { return error }
         if indexing.phase.contains("GPU"), let usage = indexing.gpuUtilization {
@@ -275,33 +286,37 @@ struct IndexingBar: View {
         return ""
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Label("\(indexing.lane.title) · \(indexing.label)", systemImage: indexing.paused ? "pause.circle" : "arrow.triangle.2.circlepath")
-                    .lineLimit(1)
-                if !indexing.current.isEmpty { Text(indexing.current).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary) }
-                Spacer()
-                if indexing.total > 0 && indexing.active { Text("\(indexing.done) / \(indexing.total)").monospacedDigit().foregroundStyle(.secondary) }
-                Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(indexing.queueCounts == nil)
-                if indexing.lane == .search { Button("Scan now") { indexing.scanNow() } }
-            }.font(.caption).frame(height: 22)
-             Group {
-                 if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }
-                 else { ProgressView().progressViewStyle(.linear) }
-             }.frame(height: 4).opacity(indexing.active ? 1 : 0)
-             // Keep one message slot allocated in every state. Error messages
-             // take precedence over GPU details instead of adding another row.
-             HStack {
-                 Text(detail.isEmpty ? " " : detail)
-                     .foregroundStyle(indexing.error == nil ? Color.secondary : Color.orange)
-                     .lineLimit(1).truncationMode(.tail).help(detail)
-                 Spacer(minLength: 0)
-                 Button("Retry") { indexing.retry() }
-                     .controlSize(.mini)
-                     .opacity(indexing.error == nil ? 0 : 1)
-                     .disabled(indexing.error == nil)
-                     .accessibilityHidden(indexing.error == nil)
-             }.font(.caption2).frame(height: 18)
-        }.padding(.horizontal, 14).padding(.bottom, 6)
+        // One row per lane: status, then the current file or a message, then controls.
+        HStack(spacing: 8) {
+            Label("\(indexing.lane.title) · \(indexing.label)", systemImage: indexing.paused ? "pause.circle" : "arrow.triangle.2.circlepath")
+                .lineLimit(1).layoutPriority(1)
+            if !detail.isEmpty {
+                Text(detail).foregroundStyle(indexing.error == nil ? Color.secondary : Color.orange)
+                    .lineLimit(1).truncationMode(.tail).help(detail)
+            } else if !indexing.current.isEmpty {
+                Text(indexing.current).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if indexing.total > 0 && indexing.active { Text("\(indexing.done) / \(indexing.total)").monospacedDigit().foregroundStyle(.secondary) }
+            Group {
+                if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }
+                else { ProgressView().progressViewStyle(.linear) }
+            }.frame(width: 120).opacity(indexing.active ? 1 : 0)
+            if indexing.error != nil { Button("Retry") { indexing.retry() } }
+            Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(indexing.queueCounts == nil)
+            if indexing.lane == .search { Button("Scan now") { indexing.scanNow() } }
+        }
+        .font(.caption).controlSize(.small).padding(.horizontal, 14)
+        // Collapse rather than remove the row so this view keeps observing progress.
+        .frame(height: shown ? 26 : 0).clipped()
+        .opacity(shown ? 1 : 0).allowsHitTesting(shown).accessibilityHidden(!shown)
+        .animation(.easeInOut(duration: 0.25), value: shown)
+        .task(id: progressKey) {
+            shown = true
+            guard !indexing.active, !needsAttention else { return }
+            do { try await Task.sleep(for: ProgressVisibility.idleHideDelay) } catch { return }
+            shown = ProgressVisibility.isVisible(active: indexing.active, needsAttention: needsAttention,
+                                                 sinceLastProgress: ProgressVisibility.idleHideDelay)
+        }
     }
 }
