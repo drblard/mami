@@ -788,7 +788,7 @@ struct MamiApp: App {
 @main enum EntryPoint {
     @MainActor static func main() {
         if CommandLine.arguments.contains("--worker-pipe-test") {
-            do { try WorkerPipe.check(); exit(0) }
+            do { try WorkerPipe.check(); try SearchMaintenance.checkShutdown(); exit(0) }
             catch { fputs("WORKER PIPE TEST FAILED: \(error)\n", stderr); exit(1) }
         }
         if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--encode-text" {

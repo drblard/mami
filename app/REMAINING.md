@@ -4,8 +4,9 @@ Updated: 2026-09-29. Checkboxes mean verified outcomes, not merely implemented c
 Detailed measurements/history: [SCALING.md](SCALING.md).
 Code review: [CODE_REVIEW.md](CODE_REVIEW.md). Queue contract: [PIPELINE.md](PIPELINE.md).
 
-**Current constraint:** Mac builds, tests, benchmarks and deployment are paused
-while the user's wife works. Linux development/tests can continue.
+**Current work:** Mac validation resumed after the user confirmed editing is done;
+foreground is `loginwindow`, idle over 11 minutes. Fresh candidate
+`prototype-20260929T065032418935Z` is building/testing against isolated fixtures.
 **Live app:** `prototype-20260928T180349767667Z` (fast previews).
 **Baseline checkpoint:** `9f00bbe`; subsequent commits continue this tracker.
 New search/atlas features are candidates.
@@ -30,7 +31,8 @@ New search/atlas features are candidates.
         JSON/shapes, size bounds, controllable startup deadline, exact restart budget.
   - [x] Isolated process-group cleanup, including an encoder child retaining a pipe.
   - [x] Combined queries keep transcript results after visual recovery is exhausted.
-  - [ ] Repeat native/UI behavior with these fixes on the Mac.
+  - [x] Repeat native/UI behavior with these fixes on the Mac: combined visual failure
+        preserves 60 transcript hits, and speech-only recovery passes.
 - [ ] Complete atlas backfill review: queue priority, cancellation, publication
       interruption, retries, restart and retained/orphan generation handling.
   - [x] Yield before publication for stop, active editor or newly pending previews.
@@ -38,29 +40,40 @@ New search/atlas features are candidates.
   - [x] Worker EOF exits; exactly three failed attempts persist; repaired frames retry.
   - [x] Frame inserts/updates/deletes invalidate stale completion/error/retirement state.
   - [x] Retirement requires exact manifest/source/projection crop and timestamp parity.
-  - [ ] Bounded cleanup policy for retained/orphan atlas directories (currently retained).
-- [ ] Validate v6 counts/filtering/page boundaries and locked-grid arrivals natively.
-- [ ] Repeat actual process lifecycle checks with the latest schema and split workers.
-- [ ] Validate rapid typing/cancellation, visual failure with speech available,
+  - [x] Registered generations retain current + one superseded pack; stale projection
+        references pin old packs, and altered/unknown files are retained for review.
+        Publication-orphan cleanup/retry tests pass locally; Mac suite is running.
+- [x] Validate v6 counts/filtering/page boundaries and locked-grid arrivals natively.
+- [x] Repeat actual process lifecycle checks with the latest schema and split workers.
+- [x] Validate rapid typing/cancellation, visual failure with speech available,
       off-page results and preview refresh in the native UI.
-  - [ ] Verify the new per-query native metadata-cache bound; regression assertion added.
+  - [x] Verify the new per-query native metadata-cache bound.
 
 ## 2. Close performance and quality gates
 
-- [ ] Measure native v6 first-page/text readiness (goal <1 s).
-- [ ] Measure genuinely cold startup/search (goal <5 s); label cache conditions.
+- [x] Measure native v6 first-page/text readiness (goal <1 s): 76 ms at 50×.
+- [x] Measure cold startup after an authorized macOS disk-buffer purge (not reboot):
+      process launch → text 1.30 s; → visual 3.19 s, including diagnostic preflight.
 - [ ] Run full-path 50× latency and exact-search distinct-file recall together,
       including camera/date/shape/kind/favorite filters and narrow scopes.
-- [ ] Verify typing-to-render latency with debounce, rather than backend time alone.
-- [ ] Resolve memory gate: measured search footprint is ~3 GiB, above the original
-      provisional ~2 GiB; reduce or explicitly justify the revised budget.
-- [ ] Measure sustained cache/overlay/compaction growth and generation-swap peaks.
+      First 144-query pass: all/camera/shape/kind/favorite-style scopes had 100%
+      recall; day minimum was 83.3%. Increased filtered reranking; repeat pending.
+- [x] Verify typing-to-layout through SwiftUI debounce/latest-query cancellation:
+      ~209 ms at 50×; 107 ms on the offline single-clip fixture (warm caches).
+- [x] Resolve memory gate: [RELEASE.md](RELEASE.md) documents the format's memory floor
+      and the revised 3.5 GiB steady / 7 GiB transient budget on the 64 GiB Mac.
+- [x] Measure sustained search cache growth and generation-swap peaks: 4,096 queries,
+      35 ms median / 41 ms p95, ~3 GiB steady and 5.57 GiB visual-process peak.
+      Kernel counters replace intrusive vmmap sampling; earlier timing tails retained.
+- [x] Finish overlay/deletion boundary checks: tombstones are bounded, empty
+      replacement generations work, and pending maintenance is checked every 5 s.
 - [ ] Validate import/indexing/editing contention in an agreed idle test window;
       do not benchmark against her active editing session.
 
 ## 3. Finish SSD preview acceptance
 
-- [ ] Verify first/middle/last packed scrub frames in the latest native offline run.
+- [x] Verify first/middle/last packed scrub frames in the latest native offline run:
+      82 cached frames, unavailable original, three native samples decoded.
 - [ ] Run representative backfill/recovery and measure final storage/cache bounds.
 - [ ] Confirm preview availability while AI is paused and across new imports/restarts.
 - [ ] Verify rollback compatibility after packed frames replace raw cached JPEGs.
@@ -76,8 +89,11 @@ New search/atlas features are candidates.
 
 ## Next loop
 
-Latest local suite: **136 tests: 133 passed, 3 Mac/MLX skips**; Ruff passes.
-Native additions await compilation/validation on the Mac; they are not counted as passed.
+Latest candidate: `prototype-20260929T081741386944Z`: **14 Swift / 142 Python tests
+pass on the Mac**, plus native catalog, worker shutdown, scoped browsing, offline
+scrub, visual-failure and latest-query checks. Latest 50× typing-to-layout: 196 ms.
+Live app has not yet been switched; contention, representative backfill and fallback
+validation are next.
 
 Work through local correctness/recovery first, test each fix, and push checkpoints.
 Then resume the Mac-gated checks when it is available. Keep failed gates and deferred

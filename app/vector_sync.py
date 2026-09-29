@@ -20,6 +20,7 @@ from vector_overlay import MAX_OVERLAY_ROWS
 COMPACTION_INTERVAL_SECONDS = 12 * 60 * 60
 MAX_PENDING_ASSETS = 512
 RETAINED_GENERATIONS = 3
+MAINTENANCE_POLL_SECONDS = 5
 
 
 def resolve_generation(directory):
@@ -128,7 +129,7 @@ def main(args):
             except Exception as error:
                 print(json.dumps(dict(error=str(error))),flush=True)
                 if args.once:raise
-            stop.wait(60)
+            stop.wait(MAINTENANCE_POLL_SECONDS)
 
 
 if __name__=='__main__':

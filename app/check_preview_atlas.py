@@ -18,7 +18,7 @@ def main(args):
     from search_store import SearchStore,install_change_log
     database=args.output/'catalog.sqlite'
     with contextlib.closing(sqlite3.connect(args.catalog.resolve().as_uri()+'?mode=ro',uri=True,timeout=10)) as source:
-        row=source.execute("SELECT j.asset,j.path,count(*) FROM index_jobs j JOIN index_units u ON u.asset=j.asset WHERE j.kind='video' AND j.state='complete' AND u.stage='frame' AND u.pipeline=? GROUP BY j.asset HAVING count(*) BETWEEN 30 AND 120 ORDER BY j.capture_time DESC LIMIT 1",(PIPELINE,)).fetchone()
+        row=source.execute("SELECT j.asset,j.path,count(*) FROM index_jobs j JOIN index_units u ON u.asset=j.asset WHERE j.kind='video' AND j.state='complete' AND u.stage='frame' AND u.pipeline=? AND j.path LIKE ? GROUP BY j.asset HAVING count(*) BETWEEN 2 AND 120 ORDER BY j.capture_time DESC,j.asset LIMIT 1 OFFSET ?",(PIPELINE,args.path_pattern,args.offset)).fetchone()
         if row is None:raise ValueError('No completed real-video fixture found')
         asset,original_path,_=row
         with contextlib.closing(sqlite3.connect(database)) as target:source.backup(target)
@@ -73,4 +73,6 @@ if __name__=='__main__':
     parser.add_argument('--bundle',type=Path,required=True)
     parser.add_argument('--catalog',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--path-pattern',default='%',help='Restrict read-only source selection, e.g. %DJI%')
+    parser.add_argument('--offset',type=int,default=0)
     main(parser.parse_args())

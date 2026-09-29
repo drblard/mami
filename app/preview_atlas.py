@@ -8,6 +8,7 @@ import uuid
 
 from index_store import connection,ensure_schema,signature
 from model_config import PIPELINE
+from preview_retention import register_generation
 
 CELL_PIXELS = 256
 SHEET_COLUMNS = 8
@@ -93,6 +94,7 @@ def pack_asset(database, asset, artifacts, checkpoint=lambda: None):
         try:os.fsync(descriptor)
         finally:os.close(descriptor)
         checkpoint()
+        register_generation(database,asset,final,staging)
         with connection(database) as db:
             current = db.execute("SELECT ordinal,payload FROM index_units WHERE asset=? AND pipeline=? AND stage='frame' ORDER BY ordinal", (asset,PIPELINE)).fetchall()
             state = db.execute('SELECT state FROM index_jobs WHERE asset=?', (asset,)).fetchone()

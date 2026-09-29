@@ -30,7 +30,7 @@ validated native batch preview decoding).
 - [x] Replace the loose integration count with an exact expected set of files.
 - [x] Add focused Swift unit tests for recency, each retention tier, cutoffs,
   equal timestamps, other identities and clock rollback.
-- [ ] Run the unit/integration tests on the Mac.
+- [x] Run the unit/integration tests on the Mac.
   - [x] All 14 Swift unit tests pass on the Mac.
   - [x] Refreshed native catalog, personal-store and UI integration checks pass.
 
@@ -65,7 +65,7 @@ validated native batch preview decoding).
   helpers from `feasibility/lab.py`, which also changes environment variables on import.
 - [x] Move production pins/cache settings and sampling helpers into production modules.
 - [x] Keep pipeline identity tied to the selected model revisions.
-- [x] Verify sampling/pipeline compatibility in Python tests; real-model Mac check pending.
+- [x] Verify sampling/pipeline compatibility in Python tests and real-model Mac checks.
 
 ### R6 — speech tests mostly exercise a superseded implementation
 
@@ -99,6 +99,22 @@ validated native batch preview decoding).
   every `fatalError`, force unwrap or `try?` mechanically.
 
 ## Activity log
+
+- Resumed Mac validation: candidates `065032418935Z` and `065824172337Z` passed
+  native v6 scoped counts, equal-date/oldest-first pages, grid-lock cutoff and the
+  per-query metadata bound. Latest `070426288464Z` passes 14 Swift / 140 Python
+  tests after fixing a wall-clock-dependent historical-pruning test (fixed UTC
+  fixture time and exact retained sets). No signed bundle was patched.
+- Full 144-query 50× reference checks initially exposed a distinct-video failure:
+  one video's frames exhausted the reranking budget, returning 50 instead of 60
+  videos. Exact scoring for small scopes now gives 100% file recall across all
+  six tested scopes, overall p95 71.9 ms. This is warm-cache synthetic capacity
+  evidence; cold cache and real-library comparison are separate checks.
+- Registered atlas-generation cleanup is implemented/tested: current plus one
+  superseded generation retained; projection references pin old sheets; exact
+  file/digest verification preserves unknown or modified content. Completed
+  publication orphans can be reclaimed; unregistered/incomplete scratch remains
+  explicitly outside automatic deletion.
 
 - Latest 2026-09-29 local loop: bounded visual request writes (previously only
   reads were bounded), startup deadlines, strict reply framing and terminal restart

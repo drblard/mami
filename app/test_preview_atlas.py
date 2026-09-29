@@ -18,6 +18,7 @@ from index_store import connection,ensure_schema
 from model_config import PIPELINE
 from preview_atlas import ensure_pack_schema,pack_asset,retire_raw_frames
 from preview_cache_worker import check_backfill_priority
+from preview_retention import prune_generations
 from search_store import SearchStore,install_change_log
 
 
@@ -91,6 +92,15 @@ class PreviewAtlasTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         with connection(self.database) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM preview_packs').fetchone()[0],0)
+
+    def test_retryable_preview_error_takes_priority_over_backfill(self):
+        stop,busy=threading.Event(),threading.Event()
+        with connection(self.database) as db:
+            db.execute("UPDATE preview_jobs SET state='error',attempts=1")
+        with self.assertRaisesRegex(InterruptedError,'pending previews'):
+            check_backfill_priority(self.database,stop,busy)
+        with connection(self.database) as db:db.execute('UPDATE preview_jobs SET attempts=3')
+        check_backfill_priority(self.database,stop,busy)
 
     def test_worker_retry_limit_and_repaired_frame_restart(self):
         with connection(self.database) as db:db.execute("UPDATE preview_jobs SET state='complete'")
@@ -226,6 +236,61 @@ class PreviewAtlasTests(unittest.TestCase):
                     self.assertTrue(all(Path(frame['frame']).exists() for frame in self.frames))
             with store.db:store.db.execute('UPDATE frames SET crop=?,timestamp=? WHERE ordinal=0',original)
             self.assertEqual(retire_raw_frames(self.database,self.asset,artifacts,self.root/'search.sqlite'),3)
+
+    def repack_fixture(self,artifacts):
+        with connection(self.database) as db:
+            for ordinal,sample in enumerate(self.frames):
+                db.execute("UPDATE index_units SET payload=? WHERE stage='frame' AND ordinal=?",(json.dumps(sample),ordinal))
+            media=json.loads(db.execute('SELECT payload FROM media').fetchone()[0])
+            media.update(frames=self.frames,match=self.frames[0])
+            db.execute('UPDATE media SET payload=?',(json.dumps(media),))
+        manifest=pack_asset(self.database,self.asset,artifacts)
+        return Path(manifest['frames'][0]['sample']['frame']).parent
+
+    def test_generation_cleanup_pins_projection_current_and_one_fallback(self):
+        artifacts=self.root/'artifacts'
+        install_change_log(self.database)
+        first=self.repack_fixture(artifacts)
+        with SearchStore(self.root/'search.sqlite') as store:
+            while store.refresh(self.database):pass
+            second=self.repack_fixture(artifacts)
+            current=self.repack_fixture(artifacts)
+            unknown=artifacts/'packed-previews'/'user-notes';unknown.mkdir()
+            (unknown/'keep.txt').write_text('unfamiliar work')
+            self.assertEqual(prune_generations(self.database,artifacts,self.root/'search.sqlite'),0)
+            while store.refresh(self.database):pass
+            self.assertEqual(prune_generations(self.database,artifacts,self.root/'search.sqlite'),1)
+            self.assertFalse(first.exists())
+            self.assertTrue(second.exists());self.assertTrue(current.exists())
+            self.assertTrue((unknown/'keep.txt').exists())
+            self.assertEqual(prune_generations(self.database,artifacts,self.root/'search.sqlite'),0)
+
+    def test_generation_cleanup_preserves_modified_registered_directory(self):
+        artifacts=self.root/'artifacts'
+        install_change_log(self.database)
+        first=self.repack_fixture(artifacts)
+        self.repack_fixture(artifacts);self.repack_fixture(artifacts)
+        (first/'user-note.txt').write_text('preserve me')
+        with SearchStore(self.root/'search.sqlite') as store:
+            while store.refresh(self.database):pass
+            self.assertEqual(prune_generations(self.database,artifacts,self.root/'search.sqlite'),0)
+        self.assertEqual((first/'user-note.txt').read_text(),'preserve me')
+        with connection(self.database) as db:
+            self.assertEqual(db.execute('SELECT review FROM preview_generations WHERE directory=?',(str(first),)).fetchone()[0],
+                             'Changed or unfamiliar files retained')
+
+    def test_generation_cleanup_recovers_registered_publication_orphans(self):
+        artifacts=self.root/'artifacts'
+        install_change_log(self.database)
+        with connection(self.database) as db:
+            db.execute("CREATE TRIGGER fail_pack BEFORE UPDATE ON index_units WHEN NEW.stage='frame' BEGIN SELECT RAISE(ABORT,'injected failure'); END")
+        for _ in range(3):
+            with self.assertRaises(sqlite3.IntegrityError):pack_asset(self.database,self.asset,artifacts)
+        with SearchStore(self.root/'search.sqlite') as store:
+            while store.refresh(self.database):pass
+            self.assertEqual(prune_generations(self.database,artifacts,self.root/'search.sqlite'),2)
+        self.assertEqual(len(list((artifacts/'packed-previews').iterdir())),1)
+        self.assertTrue(all(Path(frame['frame']).exists() for frame in self.frames))
 
 
 if __name__=='__main__':unittest.main()

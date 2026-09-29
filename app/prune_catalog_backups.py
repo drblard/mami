@@ -79,7 +79,8 @@ def retained_names(snapshots, now):
     return keep
 
 
-def plan(directory, catalog=None):
+def plan(directory, catalog=None, now=None):
+    now = time.time() if now is None else now
     snapshots, unknown = [], []
     for receipt in sorted(directory.glob('*.json')):
         try:
@@ -108,13 +109,13 @@ def plan(directory, catalog=None):
                                   ancillary={p.name: signature(p) for p in ancillary}, **state))
         except Exception as error:
             unknown.append(dict(receipt=receipt.name, reason=str(error)))
-    keep = retained_names(snapshots, time.time())
+    keep = retained_names(snapshots, now)
     if catalog:
         # The live catalog is a normal read transaction, never immutable.
         with contextlib.closing(sqlite3.connect(catalog.resolve().as_uri()+'?mode=ro', uri=True, timeout=10)) as db:
             current = db.execute('SELECT identity,revision,change_token FROM state WHERE id=1').fetchone()
         keep.update(row['name'] for row in snapshots if (row['identity'],row['revision'],row['token']) == (current[0],str(current[1]),current[2]))
-    return dict(directory=str(directory.resolve()), created=time.time(), snapshots=snapshots,
+    return dict(directory=str(directory.resolve()), created=now, snapshots=snapshots,
                 keep=sorted(keep), remove=[row['name'] for row in snapshots if row['name'] not in keep], unknown=unknown,
                 policy='Newest 3 + original baseline per identity; latest representative of EVERY distinct manual-data state; 24 hourly / 30 daily / 12 monthly windows.')
 

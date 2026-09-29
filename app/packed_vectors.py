@@ -22,9 +22,9 @@ FORMAT_VERSION = 4
 QUANTIZATION_BITS = 4
 QUANTIZATION_GROUP_SIZE = 64
 VECTOR_CACHE_BYTES = 64 * 1024 * 1024
-RERANK_CANDIDATES = 1024
+RERANK_CANDIDATES = 4096
 FILTERED_RERANK_CANDIDATES = 4096
-NARROW_SCOPE_ROWS = 50000
+EXACT_SCOPE_ROWS = 32768
 READ_THREADS = 8
 BUILD_BATCH_ROWS = 4096
 ROW_CACHE_KIB = 32 * 1024
@@ -39,8 +39,6 @@ def build(projection, destination, owner=None, checkpoint=lambda: None):
     with contextlib.closing(sqlite3.connect(Path(projection).resolve().as_uri()+'?mode=ro',uri=True)) as source:
         source.execute('BEGIN')
         count = source.execute('SELECT count(*) FROM embeddings').fetchone()[0]
-        if count == 0:
-            raise ValueError('No visual embeddings are ready')
         source_checkpoint = source.execute('SELECT identity,sequence,epoch,anchor FROM checkpoint WHERE id=1 AND ready=1').fetchone()
         if source_checkpoint is None:
             raise ValueError('Search projection is not ready')
@@ -52,7 +50,7 @@ def build(projection, destination, owner=None, checkpoint=lambda: None):
         biases = np.empty_like(scales)
         with contextlib.closing(sqlite3.connect(destination/'rows.sqlite')) as rows:
             rows.executescript('CREATE TABLE files(id INTEGER PRIMARY KEY,asset TEXT UNIQUE,path TEXT,kind TEXT,camera TEXT,captured TEXT,shape TEXT,arrival INTEGER);'
-                              'CREATE INDEX file_camera ON files(camera); CREATE INDEX file_date ON files(captured);'
+                              'CREATE INDEX file_camera ON files(camera); CREATE INDEX file_date ON files(captured); CREATE INDEX file_path ON files(path);'
                               'CREATE TABLE vectors(id INTEGER PRIMARY KEY,file_id INTEGER,ordinal INTEGER,frame TEXT,timestamp REAL,crop TEXT);')
             file_ids = {}
             columns={row[1] for row in source.execute('PRAGMA table_info(files)')}
@@ -140,8 +138,16 @@ class PackedIndex:
         if from_date is not None:clauses.append('captured>=?');params.append(from_date)
         if through_date is not None:clauses.append("captured<=? AND captured!=''");params.append(through_date)
         if arrival_through is not None:clauses.append('arrival<=?');params.append(arrival_through)
-        sql='SELECT id,path,asset FROM files'+(' WHERE '+' AND '.join(clauses) if clauses else '')
-        ids=[row['id'] for row in self.rows.execute(sql,params) if (paths is None or row['path'] in paths) and (assets is None or row['asset'] in assets)]
+        with self.rows:
+            for column,values in [('path',paths),('asset',assets)]:
+                if values is None:continue
+                table='scope_'+column
+                self.rows.execute(f'CREATE TEMP TABLE IF NOT EXISTS {table}(value TEXT PRIMARY KEY)')
+                self.rows.execute(f'DELETE FROM {table}')
+                self.rows.executemany(f'INSERT INTO {table} VALUES(?)',((value,) for value in values))
+                clauses.append(f'{column} IN (SELECT value FROM {table})')
+            sql='SELECT id FROM files'+(' WHERE '+' AND '.join(clauses) if clauses else '')
+            ids=[row['id'] for row in self.rows.execute(sql,params)]
         return self.np.isin(self.file_ids,ids)
 
     def search(self,query,*,camera=None,from_date=None,through_date=None,paths=None,kind=None,shape=None,
@@ -152,22 +158,30 @@ class PackedIndex:
         vector=np.asarray(query,dtype=np.float32)
         if vector.shape!=(DIMENSIONS,) or not np.isfinite(vector).all():
             raise ValueError('Invalid query embedding')
-        output=mx.quantized_matmul(mx.array(vector[None,:]),self.weights['weight'],self.weights['scales'],self.weights['biases'],
-                                   transpose=True,group_size=QUANTIZATION_GROUP_SIZE,bits=QUANTIZATION_BITS)
-        mx.eval(output)
-        scores=np.array(output).ravel()
-        if exclude_assets:
-            excluded = [row[0] for asset in exclude_assets for row in self.rows.execute('SELECT id FROM files WHERE asset=?',(asset,))]
-            scores[np.isin(self.file_ids,excluded)]=-np.inf
+        if not len(self.full):return []
         scoped=any(value is not None for value in (camera,from_date,through_date,paths,kind,shape,assets,arrival_through))
+        mask=None
         if scoped:
             mask=self.scope_mask(camera,from_date,through_date,None if paths is None else frozenset(paths),kind,shape,
                                  None if assets is None else frozenset(assets),arrival_through)
-            scores[~mask]=-np.inf
-        candidate_count = (FILTERED_RERANK_CANDIDATES
-                           if scoped and np.count_nonzero(np.isfinite(scores)) <= NARROW_SCOPE_ROWS
-                           else RERANK_CANDIDATES)
-        candidates=top_indices(scores,candidate_count)
+        if exclude_assets:
+            excluded = [row[0] for asset in exclude_assets for row in self.rows.execute('SELECT id FROM files WHERE asset=?',(asset,))]
+            retained=~np.isin(self.file_ids,excluded)
+            mask=retained if mask is None else mask & retained
+        # Filter cardinality alone is not a quality guarantee: a day can exceed
+        # the old narrow-scope threshold while still losing boundary videos.
+        candidate_count = FILTERED_RERANK_CANDIDATES if scoped else RERANK_CANDIDATES
+        if scoped and np.count_nonzero(mask)<=EXACT_SCOPE_ROWS:
+            # Frame-only cutoffs can be consumed by many frames of one video.
+            # Score small scopes exactly to preserve distinct-video recall.
+            candidates=np.flatnonzero(mask)
+        else:
+            output=mx.quantized_matmul(mx.array(vector[None,:]),self.weights['weight'],self.weights['scales'],self.weights['biases'],
+                                       transpose=True,group_size=QUANTIZATION_GROUP_SIZE,bits=QUANTIZATION_BITS)
+            mx.eval(output)
+            scores=np.array(output).ravel()
+            if mask is not None:scores[~mask]=-np.inf
+            candidates=top_indices(scores,candidate_count)
         candidates.sort()
         if not len(candidates):return []
         chunks=np.array_split(candidates,min(READ_THREADS,len(candidates)))

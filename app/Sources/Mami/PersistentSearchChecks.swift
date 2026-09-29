@@ -14,8 +14,61 @@ import SwiftUI
     let started = clock.now
     await library.load()
     guard library.ready else { throw AppError.message(library.error ?? "Library did not become ready") }
+    print("MAMI_READINESS:text")
+    fflush(stdout)
     let readyDuration = started.duration(to: clock.now).components
     let readySeconds = Double(readyDuration.seconds) + Double(readyDuration.attoseconds)/1e18
+    if ProcessInfo.processInfo.environment["MAMI_CHECK_LEGACY_FALLBACK"] == "1" {
+        guard !library.usesProjection,
+              let media = library.items.first(where: { $0.frames.contains { $0.crop != nil } }),
+              !FileManager.default.isReadableFile(atPath: media.url.path) else {
+            throw AppError.message("Legacy fallback fixture must contain an offline original with packed frames")
+        }
+        for ordinal in Set([0, media.frames.count/2, media.frames.count-1]) {
+            let sample = media.frames[ordinal]
+            guard await FrameCache.shared.image(sample, assetID: media.assetID, projection: nil) != nil else {
+                throw AppError.message("Legacy fallback could not decode its packed scrub frame")
+            }
+            let stale = Sample(path: media.path, kind: media.kind, timestamp: sample.timestamp,
+                               frame: directory.appendingPathComponent("retired-\(ordinal).jpg").path, score: nil, evidence: nil)
+            guard await FrameCache.shared.image(stale, assetID: media.assetID, projection: nil) != nil else {
+                throw AppError.message("Legacy fallback could not reconnect a retired cache reference")
+            }
+        }
+        let reply = try await library.worker.search("a video", mode: "visual", paths: [media.path])
+        guard let hit = reply.hits?.first, hit.crop != nil,
+              await FrameCache.shared.image(hit, assetID: media.assetID, projection: nil) != nil else {
+            throw AppError.message("Legacy search lost its packed preview metadata")
+        }
+        await library.worker.stop()
+        let report: [String: Any] = ["status": "passed", "frames": media.frames.count,
+                                   "checks": ["legacy search", "offline packed scrubbing", "retired-reference recovery"]]
+        let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: directory.appendingPathComponent("result.json"), options: .withoutOverwriting)
+        print(String(decoding: data, as: UTF8.self))
+        return
+    }
+    if ProcessInfo.processInfo.environment["MAMI_CHECK_VISUAL_FAILURE"] == "1" {
+        library.query = "dunare"
+        await library.search()?.value
+        guard library.showingMatches, !library.items.isEmpty, !library.searching,
+              library.error != nil, library.status.contains("Visual search unavailable") else {
+            throw AppError.message("Combined search lost speech results after visual initialization failed")
+        }
+        let paths = Set(library.items.map(\.path))
+        library.mode = "speech"
+        await library.search()?.value
+        guard library.error == nil, Set(library.items.map(\.path)) == paths else {
+            throw AppError.message("Speech-only search did not recover after visual failure")
+        }
+        await library.worker.stop()
+        let report: [String: Any] = ["status": "passed", "speech_hits": paths.count,
+                                   "checks": ["combined visual-failure fallback", "speech-only recovery"]]
+        let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: directory.appendingPathComponent("result.json"), options: .withoutOverwriting)
+        print(String(decoding: data, as: UTF8.self))
+        return
+    }
     let loadedCount = library.items.count
     var scrubChecks: [String: Any] = [:]
     if let projection = library.projectionReader,
@@ -54,12 +107,15 @@ import SwiftUI
         library.deviceFilter = "All devices"
     }
     var results: [[String: Any]] = []
+    var firstQueryPaths: Set<String> = []
     let browsePaths = Set(library.items.map(\.path))
     library.query = "a photo"
     await library.search()?.value
     guard library.error == nil, !library.searching else { throw AppError.message(library.error ?? "Visual warmup failed") }
     let visualWarmup = started.duration(to: clock.now).components
     let visualReadyBySeconds = Double(visualWarmup.seconds)+Double(visualWarmup.attoseconds)/1e18
+    print("MAMI_READINESS:visual")
+    fflush(stdout)
     for query in ["milking goats", "bringing food to goats", "dunare"] {
         let before = clock.now
         library.query = query
@@ -72,6 +128,7 @@ import SwiftUI
             throw AppError.message("Search metadata cache retained results from an older query")
         }
         let elapsed = before.duration(to: clock.now).components
+        if firstQueryPaths.isEmpty { firstQueryPaths = Set(library.items.map(\.path)) }
         results.append(["query": query, "seconds": Double(elapsed.seconds)+Double(elapsed.attoseconds)/1e18,
                         "hits": library.items.count, "status": library.status])
     }
@@ -89,10 +146,31 @@ import SwiftUI
     guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw AppError.message("Cannot capture paged grid") }
     host.cacheDisplay(in: host.bounds, to: bitmap)
     try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("paged-grid.png"), options: .withoutOverwriting)
+    // Drive the actual SwiftUI query binding and debounce; superseded prefixes
+    // must never replace the final query's visible results.
+    for prefix in ["m", "mi"] {
+        library.query = prefix
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    let typingStarted = clock.now
+    library.query = "milking goats"
+    let typingDeadline = clock.now.advanced(by: .seconds(10))
+    while !library.showingMatches || library.searching {
+        guard clock.now < typingDeadline else { throw AppError.message("SwiftUI debounced search did not complete") }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    guard library.error == nil, Set(library.items.map(\.path)) == firstQueryPaths else {
+        throw AppError.message(library.error ?? "Superseded query replaced the latest visible results")
+    }
+    host.layoutSubtreeIfNeeded()
+    host.displayIfNeeded()
+    let typingDuration = typingStarted.duration(to: clock.now).components
+    let typingSeconds = Double(typingDuration.seconds)+Double(typingDuration.attoseconds)/1e18
     window.orderOut(nil)
     await library.worker.stop()
     let report: [String: Any] = ["ready_seconds": readySeconds, "visual_ready_by_seconds": visualReadyBySeconds,
                                "loaded_items": loadedCount, "queries": results, "scrub_checks": scrubChecks,
+                               "query_binding_to_layout_seconds": typingSeconds,
                                "scope": "Native Library load and search, isolated catalog, warm OS cache possible; not a reboot measurement."]
     let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
     try data.write(to: directory.appendingPathComponent("result.json"), options: .withoutOverwriting)

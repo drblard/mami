@@ -163,6 +163,7 @@ actor SearchWorker {
         abortWorker()
         configuration = config
         let task = Process()
+        task.qualityOfService = .userInitiated
         task.executableURL = config.python
         task.arguments = [config.worker.path, "--index", config.index.path]
         task.arguments! += ["--catalog", Catalog.standard.database.path]

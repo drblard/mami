@@ -3,9 +3,11 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
-import time
+from datetime import datetime, timezone
 import unittest
 from prune_catalog_backups import plan, apply
+
+FIXTURE_NOW = datetime(2026,9,29,12,30,tzinfo=timezone.utc).timestamp()
 
 
 def snapshot(root, revision, age, label='one', identity='fixture'):
@@ -19,7 +21,7 @@ def snapshot(root, revision, age, label='one', identity='fixture'):
     db.close()
     receipt=dict(file=name,identity=identity,revision=str(revision),changeToken=str(revision))
     (root/f'{identity}-{revision}.json').write_text(json.dumps(receipt))
-    stamp=time.time()-age
+    stamp=FIXTURE_NOW-age
     os.utime(root/name,(stamp,stamp))
     return name
 
@@ -32,18 +34,16 @@ class RetentionTests(unittest.TestCase):
             edit=snapshot(root,2,3990,label='unique edit')
             redundant=snapshot(root,3,3980)
             for i in range(4,10):snapshot(root,i,3970-i)
-            value=plan(root)
-            self.assertIn(baseline,value['keep'])
-            self.assertIn(edit,value['keep'])
-            self.assertIn(redundant,value['remove'])
-            self.assertTrue(all(f'catalog-fixture-r{i}.sqlite' in value['keep'] for i in (7,8,9)))
+            value=plan(root,now=FIXTURE_NOW)
+            self.assertEqual(set(value['keep']),{baseline,edit,*(f'catalog-fixture-r{i}.sqlite' for i in (7,8,9))})
+            self.assertEqual(set(value['remove']),{redundant,*(f'catalog-fixture-r{i}.sqlite' for i in (4,5,6))})
 
     def test_changed_or_unknown_files_are_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             for i in range(1,10):snapshot(root,i,4000-i)
             (root/'unknown.sqlite').write_bytes(b'not a completed snapshot')
-            value=plan(root)
+            value=plan(root,now=FIXTURE_NOW)
             changed=root/value['remove'][0]
             with changed.open('ab') as f:f.write(b'changed after planning')
             output=root/'audit';output.mkdir()
@@ -57,7 +57,7 @@ class RetentionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             for i in range(1,10):snapshot(root,i,4000-i)
-            value=plan(root)
+            value=plan(root,now=FIXTURE_NOW)
             (root/value['keep'][0]).write_bytes(b'broken')
             output=root/'audit';output.mkdir()
             with self.assertRaises(ValueError):apply(value,output)

@@ -6,10 +6,46 @@ Last updated: 2026-09-29. Status: **Persistent-search integration and remaining 
 
 ## Current checkpoint (read this before the historical log)
 
-**Mac work paused:** user reports his wife is actively working on the computer.
-No agent build/benchmark processes remained in the process check; only the live
-Mami app and its normal workers were present. Continue Linux-side work. Recheck
-activity/permission before resuming Mac tests or deployment changes.
+Latest resumed checks: candidate `prototype-20260929T065032418935Z` passes 14 Swift
+and 136 Python tests, native v6 projection/cache checks, 50× readiness **76 ms**
+(visual results by **1.67 s**, warm caches possible). Current-process lifecycle
+passes: insert **0.484 s**, 38 queries during compaction, max **4.65 ms**, personal
+database unchanged. The full 144-query exact-reference comparison exposed **83.3%
+minimum day-filter recall**; other scopes recovered 100%. Filtered reranking is
+being corrected/retested in `prototype-20260929T065824172337Z`. Do not release
+until that gate passes. Unprivileged sudo cannot run cache purge; cold-cache
+validation still needs a supported eviction/authorization path.
+
+Current acceptance evidence (`prototype-20260929T072510946480Z`, not activated):
+- 14 Swift / 140 Python tests pass. Native offline/visual-failure/catalog/worker-pipe
+  suite passes; 82 packed frames decode with the original unavailable. Combined
+  visual failure retains 60 speech hits. Latest-query binding-to-layout is ~209 ms
+  at 50×, ~107 ms for the offline fixture.
+- After exact small-scope scoring, 144 full-path 50× requests recover 100% of exact
+  top files across six scopes (p95 ~72 ms). Real 17,254-file acceptance initially
+  missed one file with 1,024 candidates; 4,096 candidates now recover 100% across
+  the same six scopes, p95 ~33 ms.
+- 4,096-query generation-swap run using kernel resource counters: median 35.4 ms,
+  p95 40.6 ms, max 180 ms; steady footprint ~3 GiB, visual-process lifetime peak
+  5.57 GiB. Earlier vmmap-monitored latency tails were intrusive-observer evidence,
+  not accepted latency results. See `resources-kernel/result.json` in the 50× run.
+- SSH authorization could not display the purge prompt. User approved launching it
+  through Terminal; disk-cache purge succeeded. First cold harness completed in
+  5.25 s including post-readiness work, with Library/text 113 ms and visual results
+  by 1.90 s internally. Direct process-launch milestones are being measured next.
+
+Latest candidate `prototype-20260929T081741386944Z` passes **14 Swift / 142 Python**
+tests and the native release suite. New coverage includes bounded tombstones,
+empty vector generations, retryable-preview priority and forced maintenance-writer
+shutdown. Native 50× typing-to-layout is **196 ms**; offline packed-scrub and
+visual-failure fallback pass. The completed authorized disk-cache purge run records
+**1.30 s launch-to-text / 3.19 s launch-to-visual readiness** (diagnostic preflight
+included; not a reboot). Results: `native-50x-20260929/cold-native-final/result.json`.
+
+**Mac work resumed:** user confirmed editing is finished. Foreground/idle check
+shows `loginwindow`, idle over 11 minutes. Fresh immutable candidate
+`prototype-20260929T065032418935Z` is running build/tests and native v6 validation
+against the isolated 50× fixture. Live deployment remains unchanged.
 
 - Pushed milestones include `5dfd46c` (production/refactor), `e77d4f5` (experiments),
   `6e943d7` (search lifecycle) and `3919865` (packed previews / native 50× browsing).

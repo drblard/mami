@@ -16,7 +16,7 @@ import time
 import uuid
 from user_store import connection as user_connection
 from model_config import PIPELINE
-from index_store import connection, ensure_schema, signature, MEDIA_EXTENSIONS
+from index_store import connection, ensure_schema, signature, MEDIA_EXTENSIONS, MAX_JOB_ATTEMPTS, PENDING_PREVIEW_PREDICATE
 
 EXTENSIONS = MEDIA_EXTENSIONS
 
@@ -155,7 +155,7 @@ class Queue:
         with self.db() as db:
             if db.execute('SELECT paused FROM preview_control WHERE id=1').fetchone()[0]:
                 return False
-            return db.execute("SELECT 1 FROM preview_jobs WHERE state IN ('queued','running') OR (state='error' AND attempts<3) LIMIT 1").fetchone() is not None
+            return db.execute('SELECT 1 FROM preview_jobs WHERE '+PENDING_PREVIEW_PREDICATE+' LIMIT 1').fetchone() is not None
 
     def fingerprint(self, path):
         signature = self.signature(path)
@@ -449,7 +449,7 @@ class Queue:
                 self.scan()
                 self.last_scan = time.monotonic()
             with self.db() as db:
-                jobs = [dict(r) for r in db.execute("SELECT j.* FROM index_jobs j JOIN preview_jobs p ON p.asset=j.asset WHERE p.state='complete' AND (j.state IN ('queued','running') OR (j.state='error' AND j.attempts<3)) ORDER BY j.capture_time DESC,j.rowid DESC")]
+                jobs = [dict(r) for r in db.execute("SELECT j.* FROM index_jobs j JOIN preview_jobs p ON p.asset=j.asset WHERE p.state='complete' AND (j.state IN ('queued','running') OR (j.state='error' AND j.attempts<?)) ORDER BY j.capture_time DESC,j.rowid DESC",(MAX_JOB_ATTEMPTS,))]
             job = next((job for job in jobs if job['asset'] not in attempted), None)
             self.allow_gpu_defer = job is not None
             if job is None:

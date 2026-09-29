@@ -3,6 +3,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 try:
     import numpy as np
@@ -56,6 +57,16 @@ class PackedVectorTests(unittest.TestCase):
             self.assertTrue(all(int(hit['asset'].split('-')[1])>=15 for hit in hits))
         self.assertEqual(self.index.search(self.vectors[0],paths=[]),[])
         self.assertEqual([hit['asset'] for hit in self.index.search(self.vectors[0],paths=['asset-029'])],['asset-029'])
+        self.assertEqual(self.index.search(self.vectors[0],paths=['asset-029'],assets=['asset-001']),[])
+        self.assertEqual([hit['asset'] for hit in self.index.search(self.vectors[0],assets=['asset-029'])],['asset-029'])
+        self.assertEqual(self.index.search(self.vectors[0],camera='A',assets=['asset-029']),[])
+
+    def test_small_scope_is_exact_even_when_frame_budget_would_hide_videos(self):
+        query=self.vectors[0]
+        scores=(self.vectors@query).reshape(30,3).max(axis=1)
+        expected=[f'asset-{i:03d}' for i in (15+np.argsort(-scores[15:]))[:5]]
+        with patch('packed_vectors.FILTERED_RERANK_CANDIDATES',1):
+            self.assertEqual([hit['asset'] for hit in self.index.search(query,camera='B',limit=5)],expected)
 
     def test_incomplete_generation_and_overwrite_are_rejected(self):
         with self.assertRaises(FileExistsError):
@@ -63,6 +74,18 @@ class PackedVectorTests(unittest.TestCase):
         incomplete=self.root/'incomplete';incomplete.mkdir()
         with self.assertRaises(FileNotFoundError):
             PackedIndex(incomplete)
+
+    def test_empty_generation_can_replace_a_deleted_library(self):
+        with contextlib.closing(sqlite3.connect(self.projection)) as db,db:
+            db.execute('DELETE FROM embeddings')
+            db.execute('DELETE FROM files')
+        destination=self.root/'empty'
+        build(self.projection,destination)
+        empty=PackedIndex(destination)
+        try:
+            self.assertEqual(empty.manifest['rows'],0)
+            self.assertEqual(empty.search(self.vectors[0]),[])
+        finally:empty.close()
 
 
 if __name__=='__main__':unittest.main()

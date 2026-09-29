@@ -8,9 +8,10 @@ import signal
 import sys
 import threading
 
-from index_store import connection
+from index_store import connection,PENDING_PREVIEW_PREDICATE
 from model_config import PIPELINE
 from preview_atlas import ATLAS_VERSION,ensure_pack_schema,pack_asset,retire_raw_frames
+from preview_retention import prune_generations
 
 MAX_PACK_ATTEMPTS = 3
 CACHE_POLL_SECONDS = 30
@@ -21,7 +22,7 @@ def check_backfill_priority(database, stop, busy):
     if stop.is_set():raise InterruptedError('Preview packing stopped')
     if busy.is_set():raise InterruptedError('Preview packing yields to active editing')
     with connection(database) as db:
-        if db.execute("SELECT 1 FROM preview_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone():
+        if db.execute('SELECT 1 FROM preview_jobs WHERE '+PENDING_PREVIEW_PREDICATE+' LIMIT 1').fetchone():
             raise InterruptedError('Preview packing yields to pending previews')
 
 
@@ -46,8 +47,11 @@ def main(args):
             asset=None
             try:
                 checkpoint()
+                if args.projection:
+                    pruned=prune_generations(args.database,args.artifacts,args.projection,checkpoint=checkpoint)
+                    if pruned:print(json.dumps(dict(stage='ready',retired_generations=pruned)),flush=True)
                 with connection(args.database) as db:
-                    preview_pending=bool(db.execute("SELECT 1 FROM preview_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone())
+                    preview_pending=bool(db.execute('SELECT 1 FROM preview_jobs WHERE '+PENDING_PREVIEW_PREDICATE+' LIMIT 1').fetchone())
                     if preview_pending:
                         asset=None
                     else:

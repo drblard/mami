@@ -293,8 +293,9 @@ def run(args):
                             spoken.append(dict(path=hit['path'], kind=hit['kind'], timestamp=hit['timestamp'],
                                                frame=hit['frame'] or '', crop=hit.get('crop'), evidence=hit['evidence'], score=1.0))
                     hits = visual if mode == 'visual' else spoken if mode == 'speech' else combine_hits(visual, spoken)
+                    indexed_samples=getattr(visual_runtime, 'samples', None)
                     reply = dict(hits=hits, visual_pending=pending, elapsed=time.monotonic()-started,
-                                 indexed_samples=getattr(visual_runtime, 'samples', None) or manifest['rows'])
+                                 indexed_samples=manifest['rows'] if indexed_samples is None else indexed_samples)
                     if visual_error is not None:
                         reply['visual_error'] = visual_error
                 except Exception as error:

@@ -4,6 +4,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 try:
     import numpy as np
@@ -55,6 +56,13 @@ class VectorOverlayTests(unittest.TestCase):
                 overlay.refresh()
                 self.assertEqual(overlay.search(query),[])
                 self.assertIn('a',overlay.snapshot.assets)
+                previous=overlay.snapshot
+                with store.db:
+                    store.db.executemany('INSERT INTO vector_events(asset) VALUES(?)',[('deleted-b',),('deleted-c',)])
+                with patch('vector_overlay.MAX_OVERLAY_ASSETS',2):
+                    with self.assertRaisesRegex(RuntimeError,'compaction'):overlay.refresh()
+                self.assertIs(overlay.snapshot,previous)
+                self.assertEqual(set(overlay.snapshot.assets),{'a'})
 
 
 if __name__=='__main__':unittest.main()

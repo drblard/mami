@@ -3,7 +3,7 @@ import json
 import contextlib
 from pathlib import Path
 import time
-from index_store import THUMBNAIL_STAGE, COARSE_STAGE, DENSE_STAGE, COMPLETE_STAGE
+from index_store import THUMBNAIL_STAGE, COARSE_STAGE, DENSE_STAGE, COMPLETE_STAGE, PENDING_PREVIEW_PREDICATE
 from model_config import PIPELINE
 
 COARSE_PREVIEW_SAMPLES = 12
@@ -109,7 +109,7 @@ class PreviewPipeline:
             if worker.role == 'all' and worker.scan_requested.is_set() and time.monotonic()-worker.last_scan >= 15:
                 worker.scan()
             with worker.db() as db:
-                with contextlib.closing(db.execute("SELECT asset FROM preview_jobs WHERE state IN ('queued','running') OR (state='error' AND attempts<3) ORDER BY priority DESC,stage,last_served,capture_time DESC,asset")) as candidates:
+                with contextlib.closing(db.execute('SELECT asset FROM preview_jobs WHERE '+PENDING_PREVIEW_PREDICATE+' ORDER BY priority DESC,stage,last_served,capture_time DESC,asset')) as candidates:
                     asset = next((row['asset'] for row in candidates if row['asset'] not in failed), None)
                 row = db.execute('SELECT * FROM index_jobs WHERE asset=?', (asset,)).fetchone() if asset else None
                 job = dict(row) if row else None

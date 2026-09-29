@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 
 MAX_OVERLAY_ROWS = 32768
+MAX_OVERLAY_ASSETS = 4096
 MAX_EVENT_BATCH = 4096
 
 
@@ -37,6 +38,8 @@ class VectorOverlay:
             updated = dict(previous.assets)
             mapped = {}
             for asset in {row['asset'] for row in events}:
+                if asset not in updated and len(updated)>=MAX_OVERLAY_ASSETS:
+                    raise RuntimeError('Vector delta requires background compaction')
                 metadata = db.execute('SELECT path,kind,camera,captured,shape,arrival FROM files WHERE asset=?',(asset,)).fetchone()
                 entries=[]
                 if metadata is not None:

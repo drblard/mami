@@ -126,6 +126,7 @@ class ReadinessTests(unittest.TestCase):
                 return [dict(path='clip', kind='video', timestamp=1, frame='cached', evidence='capre')]
         manifest = dict(source_identity='fixture', epoch='epoch', rows=1)
         class Visual:
+            samples=0
             def __init__(self,*args):pass
             def search(self,*args):
                 if fail_visual:raise RuntimeError('Visual initialization failed')
@@ -139,6 +140,7 @@ class ReadinessTests(unittest.TestCase):
             self.assertFalse(replies[0]['visual_ready'])
             self.assertEqual(replies[1]['hits'][0]['path'], 'clip')
             self.assertNotIn('error',replies[1])
+            self.assertEqual(replies[1]['indexed_samples'],0)
             if mode=='both':
                 self.assertEqual(replies[1]['visual_error'],'Visual initialization failed')
                 self.assertFalse(replies[1]['visual_pending'])

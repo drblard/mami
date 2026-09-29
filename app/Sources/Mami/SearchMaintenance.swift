@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import MamiCore
+import Darwin
 
 /// Owns derived-index writers independently of interactive search requests.
 @MainActor final class SearchMaintenance: ObservableObject {
@@ -12,6 +13,7 @@ import MamiCore
     private var activityTimer: Timer?
     private var quitting = false
     private var failures: [String: String] = [:]
+    private static let shutdownGrace: Duration = .seconds(2)
 
     private func setFailure(_ message: String?, for worker: String) {
         failures[worker] = message
@@ -110,7 +112,38 @@ import MamiCore
         quitting = true
         activityTimer?.invalidate(); activityTimer = nil
         for input in inputs.values { try? input.close() }
-        for process in workers.values where process.isRunning { process.terminate() }
         inputs.removeAll()
+        let deadline = ContinuousClock.now.advanced(by: Self.shutdownGrace)
+        while workers.values.contains(where: \.isRunning), ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        for process in workers.values where process.isRunning {
+            // A wedged writer must not retain its lock after the app quits.
+            // These maintenance workers own no original-media deletion flow.
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        }
+        workers.removeAll()
+    }
+
+    static func checkShutdown() throws {
+        let owner = SearchMaintenance()
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = try Configuration.load().python
+        process.arguments = ["-u", "-c", "import signal,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready'); sys.stdin.read(); time.sleep(30)"]
+        process.standardInput = input; process.standardOutput = output
+        try process.run()
+        defer { if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) } }
+        var reader = LineReader(handle: output.fileHandleForReading)
+        guard try reader.readLine(timeout: .seconds(2)) == Data("ready".utf8) else {
+            throw AppError.message("Maintenance shutdown fixture did not start")
+        }
+        owner.workers["fixture"] = process
+        owner.inputs["fixture"] = input.fileHandleForWriting
+        owner.stop()
+        process.waitUntilExit()
+        guard process.terminationReason == .uncaughtSignal, process.terminationStatus == SIGKILL, owner.workers.isEmpty else {
+            throw AppError.message("Unresponsive maintenance writer survived shutdown")
+        }
+        print("MAINTENANCE SHUTDOWN TEST PASSED: unresponsive owned writer reaped")
     }
 }

@@ -14,6 +14,10 @@ DENSE_STAGE = 2
 COMPLETE_STAGE = 3
 
 
+MAX_JOB_ATTEMPTS = 3
+PENDING_PREVIEW_PREDICATE = f"state IN ('queued','running') OR (state='error' AND attempts<{MAX_JOB_ATTEMPTS})"
+
+
 def signature(path):
     stat = Path(path).stat()
     return json.dumps([stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino, stat.st_dev])
@@ -56,7 +60,7 @@ def ensure_schema(db):
     db.execute('INSERT INTO preview_control VALUES(1,0,0)')
     db.execute("CREATE TABLE preview_jobs(asset TEXT PRIMARY KEY,stage INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'queued',error TEXT,attempts INTEGER NOT NULL DEFAULT 0,priority INTEGER NOT NULL DEFAULT 0,last_served INTEGER NOT NULL DEFAULT 0,capture_time REAL)")
     db.execute("INSERT INTO preview_jobs(asset,stage,state,capture_time) SELECT asset,CASE WHEN state='complete' THEN ? ELSE ? END,CASE WHEN state='complete' THEN 'complete' ELSE 'queued' END,capture_time FROM index_jobs", (COMPLETE_STAGE, THUMBNAIL_STAGE))
-    db.execute("CREATE INDEX preview_schedule ON preview_jobs(priority DESC,stage,last_served,capture_time DESC,asset) WHERE state IN ('queued','running') OR (state='error' AND attempts<3)")
+    db.execute('CREATE INDEX preview_schedule ON preview_jobs(priority DESC,stage,last_served,capture_time DESC,asset) WHERE '+PENDING_PREVIEW_PREDICATE)
     for table in ('preview_control', 'preview_jobs'):
         track_changes(db, table)
     db.execute("CREATE TRIGGER index_jobs_preview AFTER INSERT ON index_jobs BEGIN INSERT OR IGNORE INTO preview_jobs(asset,state,capture_time) VALUES(NEW.asset,'queued',NEW.capture_time); END")
