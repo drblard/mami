@@ -1,4 +1,6 @@
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -27,6 +29,17 @@ class FakeExtractor:
         vector = np.zeros(512, np.float32); vector[len(self.calls) % 512] = 1
         return [dict(timestamp=None, box=(0.1, 0.1, 0.3, 0.4), score=0.9, eye_distance=40, frontalness=0.9, sharpness=1,
                      norm=20, track=0, representative=True, reliable=True, embedding=vector)]
+
+
+class ProtocolIsolationTests(unittest.TestCase):
+    def test_native_writes_to_stdout_descriptor_do_not_reach_the_protocol(self):
+        script = ("import os, face_worker; protocol = face_worker.isolate_protocol(); "
+                  "os.write(1, b'E5RT native noise\\n'); print('python noise'); protocol.write('{\"phase\": \"ok\"}\\n')")
+        result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parent, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, '{"phase": "ok"}\n')
+        self.assertIn('E5RT native noise', result.stderr)
+        self.assertIn('python noise', result.stderr)
 
 
 @unittest.skipIf(np is None, 'NumPy face checks run where the worker runtime is installed')

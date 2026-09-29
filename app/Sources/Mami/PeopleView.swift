@@ -219,6 +219,12 @@ struct PeopleView: View {
             }
         }
         .frame(minWidth: 960, minHeight: 640)
+        // Native control bezels sample their backdrop; paint the same opaque
+        // background as the library window instead of relying on the sheet's.
+        .background(Color(red: 0.08, green: 0.09, blue: 0.11))
+        // A sheet is its own presentation; match the main window's dark appearance.
+        .preferredColorScheme(.dark)
+        .environment(\.locale, Locale(identifier: "en_US"))
         .task { await model.reload() }
         .onChange(of: indexing.catalogGeneration) { _, _ in Task { await model.reload() } }
     }

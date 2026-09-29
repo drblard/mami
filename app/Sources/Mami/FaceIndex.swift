@@ -40,10 +40,14 @@ enum FaceIndex {
         modelFiles.allSatisfy { FileManager.default.fileExists(atPath: modelDirectory.appendingPathComponent($0).path) }
     }
 
+    // SQLDatabase binds text; comparisons against computed values need an explicit CAST.
     private static func open(_ catalog: Catalog) throws -> SQLDatabase? {
         let url = catalog.facesDatabase
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let db = try SQLDatabase(url, readOnly: true)
+        // WAL readers need the -shm file, which SQLite removes when the worker
+        // closes cleanly; a read-only handle cannot recreate it. Open without
+        // create permission and only ever query.
+        let db = try SQLDatabase(url, readOnly: false, createIfMissing: false)
         guard try db.hasTable("face_assignments") else { return nil }
         return db
     }
@@ -92,7 +96,7 @@ enum FaceIndex {
         guard let db = try open(catalog) else { return [] }
         return try db.rows("""
             SELECT g.grp, count(*) AS size, (SELECT crop FROM faces WHERE id=g.grp) FROM face_groups g
-            GROUP BY g.grp HAVING size >= ? ORDER BY size DESC, g.grp LIMIT ?
+            GROUP BY g.grp HAVING size >= CAST(? AS INTEGER) ORDER BY size DESC, g.grp LIMIT ?
             """, [String(minimumGroupSize), String(groupLimit)]).compactMap { row in
             guard let id = Int64(row[0]), let count = Int(row[1]) else { return nil }
             return FaceGroup(id: id, count: count, cover: row[2])

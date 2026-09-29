@@ -12,6 +12,7 @@ import SwiftUI
         if try !condition() { throw AppError.message("PEOPLE WORKFLOW: " + message) }
     }
     let catalog = Catalog.standard
+    try require(try catalog.people().isEmpty, "fixture must start without people; rebuild it after a failed run")
     let model = PeopleLibrary(catalog: catalog)
     await model.reload()
     try require(model.error == nil, model.error ?? "")
@@ -45,11 +46,12 @@ import SwiftUI
     try require(!model.groups.contains { $0.id == group.id && $0.count == group.count }, "named group is still offered unchanged")
     model.show(.person(person.id))
     try await Task.sleep(for: .milliseconds(500))
-    let host = NSHostingView(rootView: PeopleView(model: model, close: {}).preferredColorScheme(.dark))
+    let host = NSHostingView(rootView: PeopleView(model: model, close: {}))
     host.appearance = NSAppearance(named: .darkAqua)
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720), styleMask: [.titled], backing: .buffered, defer: false)
     window.contentView = host
-    window.orderFrontRegardless()
+    window.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
     try await Task.sleep(for: .seconds(1))
     host.layoutSubtreeIfNeeded()
     if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {

@@ -244,6 +244,18 @@ class FaceQueue:
             self.wake.clear()
 
 
+def isolate_protocol():
+    """Private line-buffered protocol stream; descriptor 1 then points at stderr.
+
+    Native libraries (CoreML) write diagnostics directly to file descriptor 1,
+    which would corrupt the JSON-lines protocol read by the app.
+    """
+    sys.stdout.flush()
+    protocol = os.fdopen(os.dup(1), 'w', buffering=1)
+    os.dup2(2, 1)
+    return protocol
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--catalog', required=True)
@@ -254,7 +266,7 @@ def main():
     parser.add_argument('--cpu', action='store_true', help='Disable CoreML acceleration')
     args = parser.parse_args()
     os.nice(10)
-    protocol = sys.stdout
+    protocol = isolate_protocol()
     lock = threading.Lock()
     def emit(event):
         with lock:
