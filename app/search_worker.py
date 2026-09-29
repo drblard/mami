@@ -134,6 +134,7 @@ def main():
     parser.add_argument('--packed-index', help='Opt-in immutable packed base generation')
     parser.add_argument('--projection', help='Ready persistent SQLite search projection')
     parser.add_argument('--native-executable', help='Explicit helper path for isolated validation')
+    parser.add_argument('--visual-service', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.packed_index:
         from packed_search_worker import run

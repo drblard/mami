@@ -13,7 +13,7 @@ archive = io.BytesIO()
 with tarfile.open(fileobj=archive, mode='w') as tar:
     deployment_files = ['Package.swift', 'Sources', 'Tests', 'benchmark_search.py', 'package.py',
                         'bundle_resources.py', 'signing.py', 'build_catalog.py', 'restore_catalog.py',
-                        'relocate_catalog.py', 'prune_catalog_backups.py', 'check_media_pipeline.py', 'check_preview_atlas.py', 'check_persistent_lifecycle.py', 'verify.py', 'build_search_store.py', 'prepare_text_encoder.py']
+                        'relocate_catalog.py', 'prune_catalog_backups.py', 'check_media_pipeline.py', 'check_preview_atlas.py', 'check_persistent_lifecycle.py', 'check_search_resources.py', 'verify.py', 'build_search_store.py', 'prepare_text_encoder.py']
     deployment_files += list(WORKER_RESOURCES)
     if (root / 'Package.resolved').exists():
         deployment_files.append('Package.resolved')

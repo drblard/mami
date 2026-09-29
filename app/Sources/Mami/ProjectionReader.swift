@@ -3,7 +3,7 @@ import SQLite3
 
 /// Read-only paged access to generated search data; no original-media I/O.
 struct ProjectionReader: Sendable {
-    static let schemaVersion = "5"
+    static let schemaVersion = "6"
     static let pageSize = 100
     let database: URL
     var sourceIdentity: String? = nil
@@ -70,7 +70,7 @@ struct ProjectionReader: Sendable {
         let db = try open()
         try db.execute("BEGIN")
         let (base, values) = try predicate(scope, db: db)
-        let total = Int(try db.scalar("SELECT count(*) FROM files WHERE \(base)", values)) ?? 0
+        let total = try count(scope, db: db, predicate: base, bindings: values)
         var whereClause = base, bindings = values
         if let after {
             if after.captured.isEmpty {
@@ -87,6 +87,30 @@ struct ProjectionReader: Sendable {
         let rows = try db.rows("SELECT asset,captured,summary FROM files WHERE \(whereClause) ORDER BY \(order) LIMIT ?", bindings + [String(limit)])
         let items = try rows.map { try JSONDecoder().decode(Media.self, from: Data($0[2].utf8)) }
         return Page(items: items, cursor: rows.last.map { Cursor(captured: $0[1], asset: $0[0]) }, total: total)
+    }
+
+    private func count(_ scope: Scope, db: SQLDatabase, predicate: String, bindings: [String]) throws -> Int {
+        let wholeDays = (scope.from == nil || scope.from?.count == 8) &&
+            (scope.through == nil || (scope.through?.count == 14 && scope.through?.hasSuffix("235959") == true))
+        if scope.assets != nil || !wholeDays {
+            return Int(try db.scalar("SELECT count(*) FROM files WHERE \(predicate)", bindings)) ?? 0
+        }
+        var clauses: [String] = [], values: [String] = []
+        for (column, value) in [("camera",scope.camera),("shape",scope.shape),("kind",scope.kind)] {
+            if let value { clauses.append("\(column)=?"); values.append(value) }
+        }
+        if let from = scope.from { clauses.append("day>=?"); values.append(String(from.prefix(8))) }
+        if let through = scope.through { clauses.append("day<=? AND day!=''"); values.append(String(through.prefix(8))) }
+        let table = scope.shape == nil && scope.kind == nil && scope.from == nil && scope.through == nil ? "camera_counts" : "browse_counts"
+        let query = "SELECT coalesce(sum(count),0) FROM \(table)" + (clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND "))
+        var total = Int(try db.scalar(query, values)) ?? 0
+        if let cutoff = scope.arrivalThrough {
+            var arrivals = scope
+            arrivals.arrivalThrough = nil
+            let (condition, arguments) = try self.predicate(arrivals, db: db)
+            total -= Int(try db.scalar("SELECT count(*) FROM files WHERE arrival>? AND \(condition)", [String(cutoff)] + arguments)) ?? 0
+        }
+        return total
     }
 
     func media(paths: [String]) throws -> [Media] {
@@ -125,9 +149,9 @@ struct ProjectionReader: Sendable {
 
     func facets() throws -> Facets {
         let db = try open()
-        return Facets(cameras: try db.rows("SELECT DISTINCT camera FROM files ORDER BY camera").map { $0[0] },
-                      earliest: try db.rows("SELECT min(captured) FROM files WHERE captured!=''").first?.first,
-                      total: Int(try db.scalar("SELECT count(*) FROM files")) ?? 0,
+        return Facets(cameras: try db.rows("SELECT camera FROM camera_counts ORDER BY camera").map { $0[0] },
+                      earliest: try db.rows("SELECT captured FROM files WHERE captured>'' ORDER BY captured LIMIT 1").first?.first,
+                      total: Int(try db.scalar("SELECT coalesce(sum(count),0) FROM camera_counts")) ?? 0,
                       sequence: Int64(try db.scalar("SELECT coalesce(max(sequence),0) FROM vector_events")) ?? 0)
     }
 

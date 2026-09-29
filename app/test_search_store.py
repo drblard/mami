@@ -46,6 +46,43 @@ class SearchStoreTests(unittest.TestCase):
                 return
         self.fail('Projection did not drain')
 
+    def test_failed_schema_creation_rolls_back_and_can_retry(self):
+        path=self.root/'failed-create.sqlite'
+        create=SearchStore._create_facets
+        def interrupted(store):
+            create(store)
+            raise RuntimeError('injected schema interruption')
+        with patch.object(SearchStore,'_create_facets',interrupted):
+            with self.assertRaisesRegex(RuntimeError,'injected schema interruption'):
+                SearchStore(path)
+        with contextlib.closing(sqlite3.connect(path)) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[])
+        with SearchStore(path) as recovered:
+            self.assertEqual(recovered.db.execute('PRAGMA user_version').fetchone()[0],6)
+
+    def test_failed_facet_migration_preserves_v5_and_retries(self):
+        self.add('a');self.drain()
+        with self.store.db:
+            for name in ('file_camera_insert','file_camera_delete','file_camera_update'):
+                self.store.db.execute('DROP TRIGGER '+name)
+            self.store.db.execute('DROP TABLE camera_counts')
+            self.store.db.execute('DROP TABLE browse_counts')
+            self.store.db.execute('PRAGMA user_version=5')
+        create=SearchStore._create_facets
+        def interrupted(store):
+            create(store)
+            raise RuntimeError('injected migration interruption')
+        with patch.object(SearchStore,'_create_facets',interrupted):
+            with self.assertRaisesRegex(RuntimeError,'injected migration interruption'):
+                SearchStore(self.root/'search.sqlite')
+        self.assertEqual(self.store.db.execute('PRAGMA user_version').fetchone()[0],5)
+        self.assertIsNone(self.store.db.execute("SELECT name FROM sqlite_master WHERE name='camera_counts'").fetchone())
+        self.assertEqual(len(self.store.speech('dun')),1)
+        with SearchStore(self.root/'search.sqlite') as recovered:
+            self.assertEqual(recovered.db.execute('SELECT count FROM camera_counts').fetchone()[0],1)
+            self.assertEqual(recovered.db.execute('SELECT sum(count) FROM browse_counts').fetchone()[0],1)
+
     def test_offline_sources_are_searchable_and_pages_exclude_frame_arrays(self):
         self.add('a'); self.add('b', date='20250928120000')
         self.drain()
@@ -211,6 +248,32 @@ class SearchStoreTests(unittest.TestCase):
         for order in ("captured DESC,asset","(captured=''),captured,asset"):
             plan=self.store.db.execute('EXPLAIN QUERY PLAN SELECT asset,captured,summary FROM files ORDER BY '+order+' LIMIT 100').fetchall()
             self.assertFalse(any('TEMP B-TREE' in row[3] for row in plan),plan)
+
+    def test_materialized_facets_follow_replacement_and_deletion(self):
+        self.add('a');media=self.add('b');self.drain()
+        self.assertEqual([tuple(row) for row in self.store.db.execute('SELECT * FROM camera_counts')],[('DJI',2)])
+        media['metadata']['camera']='Other'
+        with self.db() as db:db.execute('UPDATE media SET payload=? WHERE asset=?',(json.dumps(media),'b'))
+        self.drain()
+        self.assertEqual([tuple(row) for row in self.store.db.execute('SELECT * FROM camera_counts ORDER BY camera')],[('DJI',1),('Other',1)])
+        with self.db() as db:db.execute('DELETE FROM media WHERE asset=?',('a',))
+        self.drain()
+        self.assertEqual([tuple(row) for row in self.store.db.execute('SELECT * FROM camera_counts')],[('Other',1)])
+        self.assertEqual(self.store.db.execute('SELECT sum(count) FROM browse_counts').fetchone()[0],1)
+
+    def test_version_five_projection_upgrades_without_rebuilding_source_records(self):
+        self.add('a');self.drain()
+        with self.store.db:
+            for name in ('file_camera_insert','file_camera_delete','file_camera_update'):
+                self.store.db.execute('DROP TRIGGER '+name)
+            self.store.db.execute('DROP TABLE camera_counts')
+            self.store.db.execute('DROP TABLE browse_counts')
+            self.store.db.execute('PRAGMA user_version=5')
+        with SearchStore(self.root/'search.sqlite') as upgraded:
+            self.assertEqual(upgraded.db.execute('PRAGMA user_version').fetchone()[0],6)
+            self.assertEqual(upgraded.db.execute('SELECT count FROM camera_counts').fetchone()[0],1)
+            self.assertEqual(upgraded.page()['items'][0]['path'],'a')
+            self.assertEqual(len(upgraded.speech('dun')),1)
 
 
 if __name__ == '__main__':

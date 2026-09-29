@@ -198,6 +198,7 @@ actor SearchWorker {
         let hits: [Sample]?
         let elapsed: Double?
         let error: String?
+        let visual_pending: Bool?
     }
 
     func search(_ query: String, mode: String = "both", paths: [String]? = nil, scope: ProjectionReader.Scope? = nil) throws -> Reply {
@@ -569,25 +570,40 @@ actor SearchWorker {
         status = "Searching locally…"
         let task = Task {
             do {
-                let reply = try await worker.search(text, mode: searchMode, paths: paths, scope: scope)
-                guard generation == current, query == submittedQuery, !Task.isCancelled else { return }
-                if let projection {
-                    let requested = (reply.hits ?? []).map(\.path)
-                    let media = try await Task.detached { try projection.media(paths: requested) }.value
-                    guard generation == current, !Task.isCancelled else { return }
-                    for item in media { byPath[item.path] = item }
-                    formats.merge(MediaFormat.read(media)) { _, new in new }
+                let visualDeadline = ContinuousClock.now.advanced(by: SearchTiming.visualWarmupTimeout)
+                while true {
+                    let reply = try await worker.search(text, mode: searchMode, paths: paths, scope: scope)
+                    guard generation == current, query == submittedQuery, !Task.isCancelled else { return }
+                    if let projection {
+                        let requested = (reply.hits ?? []).map(\.path)
+                        let media = try await Task.detached { try projection.media(paths: requested) }.value
+                        guard generation == current, !Task.isCancelled else { return }
+                        for item in media { byPath[item.path] = item }
+                        formats.merge(MediaFormat.read(media)) { _, new in new }
+                    }
+                    items = (reply.hits ?? []).compactMap { sample in
+                        guard let original = byPath[sample.path] else { return nil }
+                        return Media(path: original.path, kind: original.kind, url: original.url, frames: original.frames,
+                                     match: sample, metadata: original.metadata, assetID: original.assetID,
+                                     previewState: original.previewState, frameCount: original.frameCount, cachedFormat: original.cachedFormat)
+                    }
+                    showingMatches = true
+                    if reply.visual_pending == true {
+                        status = "\(items.count) transcript matches · Warming visual search…"
+                        guard ContinuousClock.now < visualDeadline else {
+                            throw AppError.message("Visual search did not become ready within thirty seconds. Speech search remains available.")
+                        }
+                        try await Task.sleep(for: SearchTiming.visualWarmupPoll)
+                        try Task.checkCancellation()
+                        continue
+                    }
+                    let label = searchMode == "speech" ? "transcript matches · Automatic Romanian transcription"
+                        : searchMode == "both" ? "combined matches · Visual similarity + Romanian speech"
+                        : "nearest matches · Matches may be approximate"
+                    status = "\(items.count) \(label) · \(String(format: "%.2f", reply.elapsed ?? 0))s"
+                    searching = false
+                    break
                 }
-                items = (reply.hits ?? []).compactMap { sample in
-                    guard let original = byPath[sample.path] else { return nil }
-                    return Media(path: original.path, kind: original.kind, url: original.url, frames: original.frames, match: sample, metadata: original.metadata, assetID: original.assetID)
-                }
-                let label = searchMode == "speech" ? "transcript matches · Automatic Romanian transcription"
-                    : searchMode == "both" ? "combined matches · Visual similarity + Romanian speech"
-                    : "nearest matches · Matches may be approximate"
-                status = "\(items.count) \(label) · \(String(format: "%.2f", reply.elapsed ?? 0))s"
-                showingMatches = true
-                searching = false
             } catch {
                 guard generation == current, query == submittedQuery, !Task.isCancelled else { return }
                 self.error = error.localizedDescription

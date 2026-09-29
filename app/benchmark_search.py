@@ -43,6 +43,14 @@ def main():
                         process.stdin.write((json.dumps(dict(query=query, mode=mode)) + '\n').encode())
                         process.stdin.flush()
                         result = read()
+                        deadline = time.monotonic() + 30
+                        while result.get('visual_pending'):
+                            if time.monotonic() > deadline:
+                                raise TimeoutError('Visual warmup did not complete')
+                            time.sleep(.05)
+                            process.stdin.write((json.dumps(dict(query=query, mode=mode)) + '\n').encode())
+                            process.stdin.flush()
+                            result = read()
                         row = dict(round=round_number, mode=mode, query=query,
                                    wall_ms=round((time.monotonic() - started) * 1000, 2),
                                    worker_ms=round(result['elapsed'] * 1000, 2),

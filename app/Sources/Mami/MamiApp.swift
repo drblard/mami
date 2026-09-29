@@ -592,7 +592,7 @@ struct LibraryView: View {
                         .focused($searchFocused)
                         .accessibilityLabel("Search your media")
                         .task(id: library.query) {
-                            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+                            do { try await Task.sleep(for: SearchTiming.typingDebounce) } catch { return }
                             guard library.ready, !Task.isCancelled else { return }
                             library.search()
                         }

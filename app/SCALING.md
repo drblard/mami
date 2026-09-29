@@ -4,12 +4,19 @@ Last updated: 2026-09-29. Status: **Persistent-search integration and remaining 
 
 ## Current checkpoint (read this before the historical log)
 
-- Pushed commits: `5dfd46c` (production/refactor checkpoint), `e77d4f5` (experiments).
+**Mac work paused:** user reports his wife is actively working on the computer.
+No agent build/benchmark processes remained in the process check; only the live
+Mami app and its normal workers were present. Continue Linux-side work. Recheck
+activity/permission before resuming Mac tests or deployment changes.
+
+- Pushed milestones include `5dfd46c` (production/refactor), `e77d4f5` (experiments),
+  `6e943d7` (search lifecycle) and `3919865` (packed previews / native 50× browsing).
   SSH signing briefly failed; GitHub push succeeded using existing `gh` HTTPS
   credentials without changing the remote. SSH to `ludi` is working again.
 - Live app: `prototype-20260928T180349767667Z`, with verified fast native previews.
-- New search candidate: `prototype-20260928T195607155287Z`; 14 Swift / 103 Python
-  tests, native projection/catalog/personal-data checks and signing pass.
+- Latest built search candidate: `prototype-20260929T060819943554Z`; 14 Swift /
+  117 Python tests and native schema-v5 50× checks pass. Current source is v6;
+  its Mac build and native integration are pending the activity pause.
 - Active isolated run: `~/mami-lab/benchmarks/persistent-native-20260929/`.
   Projection + managed vectors built. Native Library ready in **1.399 s**, loading
   100 summaries; three combined queries **19–21 ms** (warm OS cache possible).
@@ -20,6 +27,31 @@ Last updated: 2026-09-29. Status: **Persistent-search integration and remaining 
   50× full-path and resource checks, packed SSD previews/offline tests, final
   review and deployment. Do not read historical "in progress" entries as the
   current deployment state.
+
+### Latest local checkpoint before Mac pause
+
+- Search coordination now serves SQLite text independently of visual initialization
+  in a separate process; bounded visual restart recovery is covered by tests.
+- 50× process test: text ready 46 ms, visuals 0.918 s; 256 varied queries median
+  35.6 ms / p95 58.0 ms, maximum 185 ms. Combined measured private footprint rose
+  from ~2.83 GiB to ~2.95 GiB during bounded cache warmup; no long-duration leak
+  claim is inferred from this short run. Native app overhead was investigated next.
+- Apple SQLite camera enumeration took 2.5 s despite Python's faster plan. Added
+  transactionally maintained camera/day/shape/kind counts and projection v5→v6
+  migration. Staged runtime and both test fixtures were upgraded successfully;
+  50× migration took 11 s once. Native v6 validation is pending and must wait.
+- Current local checks: 121 Python tests, 118 passed and 3 Mac/MLX skips.
+  Latest v6/independent-readiness changes are not deployed to the live app.
+- Failure-injection checks cover interrupted new-schema creation and v5→v6
+  migration: rollback preserves the old version/data, and reopening retries
+  successfully. Failed initialization explicitly closes the SQLite connection.
+- Resume validation using a fresh signed candidate after the Mac is available.
+  Recheck native facet counts, progressive readiness, process lifecycle and offline
+  scrub decoding. Keep cold-cache, memory-budget and contention acceptance open.
+  Prepared live-derived data is at `catalog/search-runtime-20260929/`; it has not
+  been activated. Migration changes only rebuildable projection state. Older v5
+  candidates cannot read v6: retain their matching fixture or rebuild a separate
+  compatible projection for rollback; do not restore personal data for this change.
 
 ### 2026-09-29 — packed preview and UI validation checkpoint
 

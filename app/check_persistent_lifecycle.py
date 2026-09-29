@@ -40,8 +40,13 @@ def main(args):
             if 'error' in reply:raise RuntimeError(reply['error'])
             return reply
         def query(process,text='milking goats',**options):
-            process.stdin.write(json.dumps(dict(query=text,mode='visual',**options))+'\n');process.stdin.flush()
-            return read(process)
+            deadline=time.monotonic()+30
+            while True:
+                process.stdin.write(json.dumps(dict(query=text,mode='visual',**options))+'\n');process.stdin.flush()
+                reply=read(process)
+                if not reply.get('visual_pending'):return reply
+                if time.monotonic()>deadline:raise TimeoutError('Visual search warmup deadline')
+                time.sleep(.05)
         def until(process,predicate,**options):
             deadline=time.monotonic()+20
             while time.monotonic()<deadline:

@@ -100,6 +100,18 @@ validated native batch preview decoding).
 
 ## Activity log
 
+- 2026-09-29 local checkpoint: Mac work paused while the user's wife works.
+  Independent text/visual processes now have bounded reply framing, query deadlines
+  and at most two visual restarts. Local tests exercise pending initialization,
+  text availability, protocol continuity and recovery after a child exits.
+  Projection v6 maintains browsing facets in the same transaction as file changes.
+  Failure-injection tests verify new-schema rollback, v5 migration rollback,
+  preserved transcript results and successful retry; failed initialization closes
+  its connection. Linux suite: 121 tests, 118 passed / 3 MLX skips.
+  Native v6 validation and latest lifecycle integration remain pending. Live build
+  remains `prototype-20260928T180349767667Z`; no acceptance gate is closed by these
+  local checks.
+
 - 2026-09-28: user asked for best practices throughout and a broader simplification
   pass. Repository guidance added in `AGENTS.md`. Retention extraction started;
   no review build deployed yet. Live data remains in the already verified split store.

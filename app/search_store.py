@@ -18,7 +18,7 @@ from index_store import connection as catalog_transaction
 from model_config import PIPELINE
 from search_logic import words
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 READ_BATCH_SIZE = 256
 QUERY_CACHE_KIB = 64 * 1024
 
@@ -93,6 +93,13 @@ class SearchStore:
         if not read_only:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path.resolve().as_uri()+'?mode=ro',uri=True) if read_only else sqlite3.connect(self.path)
+        try:
+            self._initialize(read_only)
+        except BaseException:
+            self.db.close()
+            raise
+
+    def _initialize(self, read_only):
         self.db.row_factory = sqlite3.Row
         self.db.execute(f'PRAGMA cache_size=-{QUERY_CACHE_KIB}')
         if not read_only:
@@ -100,6 +107,14 @@ class SearchStore:
             self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('PRAGMA foreign_keys=ON')
         version = self.db.execute('PRAGMA user_version').fetchone()[0]
+        if version == 5 and not read_only:
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                self._create_facets()
+                self.db.execute('INSERT INTO camera_counts SELECT camera,count(*) FROM files GROUP BY camera')
+                self.db.execute('INSERT INTO browse_counts SELECT camera,shape,kind,substr(captured,1,8),count(*) FROM files GROUP BY camera,shape,kind,substr(captured,1,8)')
+                self.db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+            version = SCHEMA_VERSION
         if read_only and version != SCHEMA_VERSION:
             self.close()
             raise ValueError('Search projection is not initialized')
@@ -128,9 +143,35 @@ class SearchStore:
                 CREATE VIRTUAL TABLE speech_fts USING fts5(text,scope,content=speech,content_rowid=id,tokenize='unicode61 remove_diacritics 2',prefix='1 2 3 4');
                 CREATE TRIGGER speech_insert AFTER INSERT ON speech BEGIN INSERT INTO speech_fts(rowid,text,scope) VALUES(NEW.id,NEW.text,NEW.scope); END;
                 CREATE TRIGGER speech_delete AFTER DELETE ON speech BEGIN INSERT INTO speech_fts(speech_fts,rowid,text,scope) VALUES('delete',OLD.id,OLD.text,OLD.scope); END;
-                PRAGMA user_version=5;
-                COMMIT;
             ''')
+            with self.db:
+                self._create_facets()
+                self.db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+
+    def _create_facets(self):
+        self.db.execute('CREATE TABLE camera_counts(camera TEXT PRIMARY KEY,count INTEGER NOT NULL)')
+        self.db.execute('CREATE TABLE browse_counts(camera TEXT NOT NULL,shape TEXT NOT NULL,kind TEXT NOT NULL,day TEXT NOT NULL,count INTEGER NOT NULL,PRIMARY KEY(camera,shape,kind,day))')
+        self.db.execute('''CREATE TRIGGER file_camera_insert AFTER INSERT ON files BEGIN
+            INSERT INTO camera_counts VALUES(NEW.camera,1) ON CONFLICT(camera) DO UPDATE SET count=count+1;
+            INSERT INTO browse_counts VALUES(NEW.camera,NEW.shape,NEW.kind,substr(NEW.captured,1,8),1)
+                ON CONFLICT(camera,shape,kind,day) DO UPDATE SET count=count+1;
+        END''')
+        self.db.execute('''CREATE TRIGGER file_camera_delete AFTER DELETE ON files BEGIN
+            UPDATE camera_counts SET count=count-1 WHERE camera=OLD.camera;
+            DELETE FROM camera_counts WHERE camera=OLD.camera AND count=0;
+            UPDATE browse_counts SET count=count-1 WHERE camera=OLD.camera AND shape=OLD.shape AND kind=OLD.kind AND day=substr(OLD.captured,1,8);
+            DELETE FROM browse_counts WHERE camera=OLD.camera AND shape=OLD.shape AND kind=OLD.kind AND day=substr(OLD.captured,1,8) AND count=0;
+        END''')
+        self.db.execute('''CREATE TRIGGER file_camera_update AFTER UPDATE OF camera,shape,kind,captured ON files
+            WHEN NEW.camera!=OLD.camera OR NEW.shape!=OLD.shape OR NEW.kind!=OLD.kind OR NEW.captured!=OLD.captured BEGIN
+            UPDATE camera_counts SET count=count-1 WHERE camera=OLD.camera;
+            DELETE FROM camera_counts WHERE camera=OLD.camera AND count=0;
+            INSERT INTO camera_counts VALUES(NEW.camera,1) ON CONFLICT(camera) DO UPDATE SET count=count+1;
+            UPDATE browse_counts SET count=count-1 WHERE camera=OLD.camera AND shape=OLD.shape AND kind=OLD.kind AND day=substr(OLD.captured,1,8);
+            DELETE FROM browse_counts WHERE camera=OLD.camera AND shape=OLD.shape AND kind=OLD.kind AND day=substr(OLD.captured,1,8) AND count=0;
+            INSERT INTO browse_counts VALUES(NEW.camera,NEW.shape,NEW.kind,substr(NEW.captured,1,8),1)
+                ON CONFLICT(camera,shape,kind,day) DO UPDATE SET count=count+1;
+        END''')
 
     def close(self):
         self.db.close()

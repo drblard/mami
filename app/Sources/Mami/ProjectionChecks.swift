@@ -18,6 +18,10 @@ func checkProjection(at root: URL) throws {
         try db.execute("INSERT INTO files VALUES(?,?,?,?,?,?,?,?)", [asset, asset, ordinal == 250 ? "" : "20260928120000", ordinal % 2 == 0 ? "A" : "B", "vertical", "video", String(ordinal), String(decoding: try encoder.encode(media), as: UTF8.self)])
     }
     try db.execute("INSERT INTO frames VALUES('asset-001',0,'/offline/frame.jpg',0.5,'[0,0,100,200]')")
+    try db.execute("CREATE TABLE camera_counts(camera TEXT PRIMARY KEY,count INTEGER NOT NULL)")
+    try db.execute("INSERT INTO camera_counts SELECT camera,count(*) FROM files GROUP BY camera")
+    try db.execute("CREATE TABLE browse_counts(camera TEXT,shape TEXT,kind TEXT,day TEXT,count INTEGER)")
+    try db.execute("INSERT INTO browse_counts SELECT camera,shape,kind,substr(captured,1,8),count(*) FROM files GROUP BY camera,shape,kind,substr(captured,1,8)")
     let reader = ProjectionReader(database: path)
     func require(_ condition: Bool, _ message: String) throws {
         if !condition { throw AppError.message(message) }

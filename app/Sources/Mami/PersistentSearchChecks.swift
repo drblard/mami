@@ -54,6 +54,11 @@ import SwiftUI
         library.deviceFilter = "All devices"
     }
     var results: [[String: Any]] = []
+    library.query = "a photo"
+    await library.search()?.value
+    guard library.error == nil, !library.searching else { throw AppError.message(library.error ?? "Visual warmup failed") }
+    let visualWarmup = started.duration(to: clock.now).components
+    let visualReadyBySeconds = Double(visualWarmup.seconds)+Double(visualWarmup.attoseconds)/1e18
     for query in ["milking goats", "bringing food to goats", "dunare"] {
         let before = clock.now
         library.query = query
@@ -82,7 +87,8 @@ import SwiftUI
     try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("paged-grid.png"), options: .withoutOverwriting)
     window.orderOut(nil)
     await library.worker.stop()
-    let report: [String: Any] = ["ready_seconds": readySeconds, "loaded_items": loadedCount, "queries": results, "scrub_checks": scrubChecks,
+    let report: [String: Any] = ["ready_seconds": readySeconds, "visual_ready_by_seconds": visualReadyBySeconds,
+                               "loaded_items": loadedCount, "queries": results, "scrub_checks": scrubChecks,
                                "scope": "Native Library load and search, isolated catalog, warm OS cache possible; not a reboot measurement."]
     let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
     try data.write(to: directory.appendingPathComponent("result.json"), options: .withoutOverwriting)
