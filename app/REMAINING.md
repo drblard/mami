@@ -4,12 +4,10 @@ Updated: 2026-09-29. Checkboxes mean verified outcomes, not merely implemented c
 Detailed measurements/history: [SCALING.md](SCALING.md).
 Code review: [CODE_REVIEW.md](CODE_REVIEW.md). Queue contract: [PIPELINE.md](PIPELINE.md).
 
-**Current work:** acceptance passed and the persistent-search release is live.
-Final maintenance-queue patch `prototype-20260929T090709977496Z` passes 143 Mac
-Python tests and signing; its activation is next.
-**Live app:** `prototype-20260929T081741386944Z` (until patch activation is recorded).
-**Baseline checkpoint:** `9f00bbe`; subsequent commits continue this tracker.
-New search/atlas features are candidates.
+**Status: complete and deployed.**
+**Live app:** `prototype-20260929T090709977496Z`, launched through
+`~/Applications/Mami.app`. Production revision: `0d43d1f`.
+Final audit: `~/mami-lab/catalog/release-audit-20260929-final/` on `ludi`.
 
 ## Verified foundations
 
@@ -42,7 +40,7 @@ New search/atlas features are candidates.
   - [x] Retirement requires exact manifest/source/projection crop and timestamp parity.
   - [x] Registered generations retain current + one superseded pack; stale projection
         references pin old packs, and altered/unknown files are retained for review.
-        Publication-orphan cleanup/retry tests pass locally; Mac suite is running.
+        Publication-orphan cleanup/retry tests pass locally and on the Mac.
 - [x] Validate v6 counts/filtering/page boundaries and locked-grid arrivals natively.
 - [x] Repeat actual process lifecycle checks with the latest schema and split workers.
 - [x] Validate rapid typing/cancellation, visual failure with speech available,
@@ -60,7 +58,7 @@ New search/atlas features are candidates.
       Earlier day-filter failure is retained in the evidence log; exact small-scope
       scoring fixed it. Real-library comparison also reached 100% recall (~33 ms p95).
 - [x] Verify typing-to-layout through SwiftUI debounce/latest-query cancellation:
-      ~209 ms at 50×; 107 ms on the offline single-clip fixture (warm caches).
+      latest 196 ms at 50×; 113 ms on the offline single-clip fixture (warm caches).
 - [x] Resolve memory gate: [RELEASE.md](RELEASE.md) documents the format's memory floor
       and the revised 3.5 GiB steady / 7 GiB transient budget on the 64 GiB Mac.
 - [x] Measure sustained search cache growth and generation-swap peaks: 4,096 queries,
@@ -93,17 +91,19 @@ New search/atlas features are candidates.
 - [x] Record migration/rollback steps and retained builds in [RELEASE.md](RELEASE.md).
 - [x] Activate only after acceptance; verify live workers, matched catalog/projection
       and all personal tables (16,906 Photos verification rows, selection and roots).
-- [ ] Record the deployed revision and close this tracker with evidence.
+- [x] Record the deployed revision and close this tracker with evidence.
 
-## Next loop
+## Final live checks
 
 Live backfill completed **4,467 packs** with no pending pack/retirement work in the
-verified migration snapshot. The final patch materializes pending/obsolete queues
+live library, and **zero maintenance errors**. The final patch materializes pending/obsolete queues
 so maintenance does not repeatedly scan all completed assets/generations. Schema
 migration took 29 ms on the snapshot; indexed query plans and worker idle exit pass.
 The unchanged native executable was reused only after exact Swift-source checksums
 matched the fully tested build (14 Swift tests); the patch passes 143 Mac Python tests.
 
-Work through local correctness/recovery first, test each fix, and push checkpoints.
-Then resume the Mac-gated checks when it is available. Keep failed gates and deferred
-items unchecked; warm-cache results do not close cold-start acceptance.
+Live combined searches returned 60 hits in **21–24 ms**, with sixteen returned
+preview images/crops checked. All personal-table digests stayed identical through
+both activations, including 16,906 Photos verification records, selection and roots.
+The stable application link is registered with Launch Services; the signed crop-aware
+fallback is retained. See [RELEASE.md](RELEASE.md) for recovery and measurement scope.

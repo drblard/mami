@@ -1,8 +1,21 @@
 # Import, preview and search readiness
 
-Status: **implementation in progress**. Requested after the four-video DJI offload.
+Status: **completed and deployed**. Current release:
+`prototype-20260929T090709977496Z`, through `~/Applications/Mami.app` on `ludi`.
 
-**Live milestone:** `prototype-20260928T180349767667Z` is running with native
+Final controlled test with CapCut present, video decoding and 50× search: six real
+DJI clips catalogued by 1.45 s; first thumbnails ~1 s after publication; full-range
+scrub coverage 2.7–3.8 s. AI stayed paused until previews finished, then actual
+indexing/transcription completed (131 embeddings / 8 speech chunks). Source
+signatures stayed unchanged. This is SSD-to-SSD and controlled load, not USB speed
+or automated edits to the user's CapCut projects. Evidence and rollback:
+[REMAINING.md](REMAINING.md), [RELEASE.md](RELEASE.md).
+
+The live atlas backfill completed 4,467 packs with no pending/error work. Atlas
+maintenance uses durable indexed pending/obsolete queues and yields to initial
+preview work, including retryable preview errors. Historical checkpoints follow.
+
+**Earlier live milestone:** `prototype-20260928T180349767667Z` shipped native
 batched previews (activation confirmed). The prior queue-separation activation
 confirmed generated schema v2 and separate preview/index/search processes. At
 activation 15,684 preview jobs were complete, 1,060 pending/running; 15,682 AI jobs
@@ -32,10 +45,10 @@ queue state stays in `catalog.sqlite`, not personal backups.
 - [x] Publish coarse/fine scrub progress; add timestamp-based native scrub selection.
 - [x] Yield AI work while preview work is pending; reuse existing checkpoints.
 - [x] Implement separate preview/AI progress and readiness in the native app (Mac checks pending).
-- [ ] Test four arrivals appearing before any AI work, preview-before-AI ordering,
+- [x] Test arrivals appearing before AI work, preview-before-AI ordering,
       restart/retry, source mutation, and no premature source cleanup.
   - [x] Python queue/import/recovery tests pass on Linux and the Mac.
-- [ ] Measure actual import-to-catalog and import-to-preview timings on the Mac.
+- [x] Measure actual import-to-catalog and import-to-preview timings on the Mac.
   - [x] Four short real-codec fixture clips: all catalogued by 0.294 s;
     all thumbnails 0.345 s and complete scrub previews 0.636 s after workers start,
     with AI paused and zero inference units. Sources retained. Larger DJI timing pending.

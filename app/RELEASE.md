@@ -1,8 +1,8 @@
 # Persistent search / packed previews — release and recovery
 
-Status: acceptance in progress. Follow [REMAINING.md](REMAINING.md) for live gates.
-The active application is still `prototype-20260928T180349767667Z` until activation
-is explicitly recorded below. All paths below are on `ludi`, under `~/mami-lab`.
+Status: **deployed and verified**. Completed gates: [REMAINING.md](REMAINING.md).
+Active application: `prototype-20260929T090709977496Z` (revision `0d43d1f`).
+All paths below are on `ludi`, under `~/mami-lab` unless stated otherwise.
 
 ## Data and compatibility
 
@@ -20,6 +20,9 @@ is explicitly recorded below. All paths below are on `ludi`, under `~/mami-lab`.
   Projection references pin older generations until sync catches up. Changed or
   unknown files and unregistered incomplete scratch are retained for review, not
   silently treated as disposable content.
+- Preview-maintenance queue schema **2** materializes pending packing/retirement
+  work and indexed obsolete generations. Its transactional migration runs before
+  activation; existing completed packs are not rescanned on every maintenance tick.
 
 ## Release procedure
 
@@ -67,8 +70,8 @@ The initial ~2 GiB search target was provisional. At 5,830,750 × 768 dimensions
 This format cannot meet a 2 GiB total budget while preserving the accepted quality.
 The revised acceptance budget is **3.5 GiB steady search-service footprint**, with
 **7 GiB transient allowance during an idle-time generation swap**, on the 64 GiB
-target Mac. Sustained measurements and editor-contention checks must verify those
-limits before this decision is accepted. The completed 4,096-query kernel-counter
+target Mac. This decision is accepted on the completed sustained and controlled
+contention checks. The 4,096-query kernel-counter
 run measured ~3 GiB steady and a 5.57 GiB visual-process lifetime peak during swap,
 with p95 40.6 ms. The controlled CapCut/decode/import/inference check also passes.
 UI and background inference are measured
@@ -78,6 +81,24 @@ separately; macOS shared file-cache residency is not the same as private footpri
 
 - [x] Performance, quality, recovery, offline and contention gates have evidence.
 - [x] Crop-aware fallback validated.
-- [ ] Personal-state audit/backup verified.
-- [ ] Active bundle and stable link recorded.
-- [ ] Live import/search/preview/signature checks pass.
+- [x] Personal-state audit/backup verified.
+- [x] Active bundle and stable link recorded.
+- [x] Live search/preview/signature and isolated real-import checks pass.
+
+Active link: `/Users/ludi/Applications/Mami.app` →
+`/Users/ludi/mami-lab/apps/prototype-20260929T090709977496Z/Mami.app`.
+Audit and verified personal safety backup: `catalog/release-audit-20260929-final/`.
+All six personal-table digests were unchanged; catalog/projection both contain
+17,257 distinct assets. Live search returned 60 results in 21–24 ms; 4,467 packs
+completed with zero pending packing, retirement or error records.
+
+A checksum-recorded archive of 130 measurement/audit reports is retained on Linux
+at `/home/steevel/mami-lab/benchmarks/release-20260929/` (15.4 MB). It excludes
+personal databases, originals and generated vector/catalog data; personal safety
+backups remain in the audited Mac release directories.
+
+Measurements distinguish disk-cache purge from reboot, synthetic 50× capacity
+from the real library, and controlled CapCut/decode/import/inference load from
+editing the user's projects. Cold launch-to-visual readiness was 3.19 s; first
+cold queries have higher latency than steady-state p95. Originals remain authoritative
+for full-resolution playback; disconnected-original checks cover browsing/search/scrub.

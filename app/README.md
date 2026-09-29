@@ -1,7 +1,15 @@
 # Mami native prototype
 
-**Active work:** [50× scaling checklist and recovery notes](SCALING.md) ·
-[live prototype measurements](scaling/RESULTS.md).
+**Current release:** `prototype-20260929T090709977496Z`, available at
+`~/Applications/Mami.app` on `ludi`.
+[Completed checklist](REMAINING.md) · [Release/rollback](RELEASE.md) ·
+[Scaling evidence](SCALING.md) · [Experiment history](scaling/RESULTS.md).
+
+The release uses paged browsing, independently ready text/visual search, persistent
+indexes and compact SSD storyboards. Verified at 5.83M vectors: cold-cache visual
+readiness 3.19 s, 100% exact-file recall across the tested scopes, and sustained
+search p95 41 ms. Personal data and originals are preserved. Detailed scope and
+retained fallback paths are in the release notes; older checkpoints follow below.
 
 ## Import readiness pipeline (2026-09-28)
 

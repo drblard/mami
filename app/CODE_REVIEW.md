@@ -1,11 +1,11 @@
 # Production code review — live checklist
 
-Started 2026-09-28 at the user's request. **In progress.**
+Started 2026-09-28 at the user's request. **Completed and deployed 2026-09-29.**
 Scope: production Swift/Python, packaging and tests (~8.3k lines before this pass).
 Scaling experiments remain isolated in `app/scaling/`; their results are not a
 substitute for production correctness. Current live build:
-`prototype-20260928T180349767667Z` (review fixes, separate preview/AI queues and
-validated native batch preview decoding).
+`prototype-20260929T090709977496Z` (paged persistent search, separate queues,
+validated native previews and indexed atlas maintenance).
 
 ## Review approach
 
@@ -16,7 +16,7 @@ validated native batch preview decoding).
 - [x] Review search/indexing boundaries and resource use.
 - [x] Review UI state and avoid unnecessary full-catalog work.
 - [x] Verify fixes with focused tests and native integration checks.
-- [ ] Record remaining issues and the final deployed revision.
+- [x] Record measurement limitations, recovery and final deployed revision in RELEASE.md.
 
 ## Findings and work
 
@@ -99,6 +99,14 @@ validated native batch preview decoding).
   every `fatalError`, force unwrap or `try?` mechanically.
 
 ## Activity log
+
+- Final release `prototype-20260929T090709977496Z`, revision `0d43d1f`, is active
+  through `~/Applications/Mami.app`. Its unchanged Swift executable matches the
+  14-test native build; all 143 Python tests pass on the Mac. Final live audit and
+  signed verification pass. All personal digests remain unchanged; 4,467 packs
+  are complete with zero pending/error work. A real live query-plan check found
+  a cleanup scan; indexed obsolete/pending queues now eliminate completed-library
+  rescans, with migration/query-plan/retry tests and a real-catalog migration check.
 
 - Final candidate `prototype-20260929T081741386944Z`: 14 Swift / 142 Python tests,
   complete native catalog/personal-store/UI checks, rapid-query/cache bounds,

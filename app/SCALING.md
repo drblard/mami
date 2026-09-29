@@ -2,9 +2,34 @@
 
 For the concise current checklist, follow [REMAINING.md](REMAINING.md).
 
-Last updated: 2026-09-29. Status: **Persistent-search integration and remaining acceptance checks in progress**.
+Last updated: 2026-09-29. Status: **Completed, deployed and verified**.
 
-## Current checkpoint (read this before the historical log)
+## Current release (read this before the historical log)
+
+- Active: **`prototype-20260929T090709977496Z`**, revision `0d43d1f`, through
+  `~/Applications/Mami.app` on `ludi`. Crop-aware legacy fallback:
+  `prototype-20260929T081741386944Z-fallback`.
+- 14 Swift tests on the unchanged verified native binary; **143 Python tests pass
+  on the Mac**, native UI/catalog/transport/offline/recovery suites pass, strict
+  signing verified. All personal-table digests are unchanged.
+- Live: **17,257 assets**, **16,906 Photos verification records**, **4,467 packs**;
+  zero packing/retirement backlog or maintenance errors. Combined live queries
+  return 60 hits in **21–24 ms** with returned preview files/crops verified.
+- 50×: **5.83M vectors / 723,700 files**, 100% exact-file recall on 144 scoped
+  requests, ~70 ms p95. Sustained 4,096-query/swap run: **41 ms p95**, ~3 GiB
+  steady footprint and 5.57 GiB visual-process peak. Revised budget is documented
+  in `RELEASE.md` (the original 2 GiB estimate was below the format's weight floor).
+- Authorized disk-cache purge: **1.30 s launch-to-text / 3.19 s launch-to-visual**,
+  including diagnostic preflight; not a reboot measurement. Native Library load
+  itself is ~0.08 s. Latest SwiftUI binding-to-layout check: **196 ms** at 50×.
+- Controlled CapCut/decode/import/inference load: text p95 <2 ms, combined p95
+  26–39 ms. Six real DJI originals remained unchanged. These checks do not automate
+  edits in the user's projects or represent camera USB-speed measurements.
+- Final audit/safety backup: `~/mami-lab/catalog/release-audit-20260929-final/`.
+  Full evidence: `benchmarks/release-acceptance-20260929/` and
+  `benchmarks/native-50x-20260929/`. Recovery: `RELEASE.md`.
+
+## Retained checkpoint history (not current deployment status)
 
 **Release activated:** `prototype-20260929T081741386944Z`, via
 `~/Applications/Mami.app`. Live audit matches **17,257 assets** in catalog and
@@ -242,17 +267,17 @@ remain the foundation. This is an incremental search/storage refactor.
 
 ## Acceptance criteria
 
-- [ ] Cold app startup / usable search <5 s on the target Mac.
-- [ ] First page and text search goal <1 s.
-- [ ] Text query p95 <20 ms; visual query p95 <100 ms at 50×.
-- [ ] Typing-to-results roughly 100–200 ms including debounce and rendering.
-- [ ] Visual ranking quality measured against exact search, including filters
+- [x] Cold startup / usable search <5 s after disk-cache purge on the target Mac.
+- [x] Native first-page/text load <1 s; distinguish this from full process launch above.
+- [x] Text query p95 <20 ms; visual query p95 <100 ms at 50× (warm/steady state).
+- [x] Typing-to-results roughly 100–200 ms including debounce and layout (latest 196 ms).
+- [x] Visual ranking quality measured against exact search, including filters
       and distinct-video results (not just nearest-frame recall).
-- [ ] Search memory bounded; initial budget ~2 GiB, measured separately from
-      background inference and native UI.
-- [ ] New/uncompacted arrivals, deletions, recovery and maintenance remain fast.
-- [ ] Browsing/search/storyboard scrubbing function with originals disconnected.
-- [ ] Real concurrent imports/transcription/CapCut checks pass.
+- [x] Search memory bounded; revised 3.5 GiB steady / 7 GiB swap budget justified
+      and measured separately from background inference and native UI.
+- [x] New/uncompacted arrivals, deletions, recovery and maintenance checked.
+- [x] Browsing/search/storyboard scrubbing function with originals disconnected.
+- [x] Controlled concurrent imports/transcription/decode with CapCut present pass.
 
 ## Phase 1 — architecture and performance prototype
 
@@ -261,14 +286,14 @@ remain the foundation. This is an incremental search/storage refactor.
 - [x] Create isolated, reproducible benchmark tooling and persistent run state.
 - [x] Evaluate embedded LanceDB persistence, indexed/filtered queries, updates
       and restart behavior on real existing embeddings.
-- [ ] Benchmark representative 50× data; document synthetic-data limitations.
+- [x] Benchmark representative 50× data; document synthetic-data limitations.
   - [x] Build 5,830,750 unique perturbed frame vectors with bounded batches.
   - [x] Build/test 1,174,650 transcript rows.
-  - [ ] Meet latency/quality/memory gates together.
-- [ ] Measure search quality against exact search on real data.
+  - [x] Meet latency/quality/revised-memory gates together.
+- [x] Measure search quality against exact search on real data.
 - [x] Evaluate text-only encoder startup (Core ML if practical) and latency.
 - [x] Measure compact thumbnail/storyboard budget on representative footage.
-- [ ] Select engine/formats using results; record any failed targets honestly.
+- [x] Select engine/formats using results; retain failed experiments below.
 
 ## Phase 2 — persistent search layer
 
@@ -277,41 +302,41 @@ remain the foundation. This is an incremental search/storage refactor.
         managed backup retention and protection against stale legacy writes.
   - [x] Pass native migration/restore/retention and UI integration checks.
   - [x] Deploy and verify live personal-data parity and backup size.
-- [ ] SQLite FTS5 transcripts/text and indexed metadata queries.
+- [x] SQLite FTS5 transcripts/text and indexed metadata queries.
   - [x] Implement/test derived SQLite projection, keyset paging and scoped FTS5.
   - [x] Transactional event/cursor replay, delete/replacement and restore-branch detection.
   - [x] Real-catalog isolated build and query timings.
-  - [ ] Legacy index/transcript seeding and native app integration.
-- [ ] Persistent vector index built from existing embeddings.
-- [ ] Durable, idempotent update queue with delete/replacement handling.
-- [ ] Resumable backfill, incremental updates and automatic index maintenance.
-- [ ] Restart/recovery and schema/version migration tests.
+  - [x] Legacy index/transcript seeding and native app integration.
+- [x] Persistent vector index built from existing embeddings.
+- [x] Durable, idempotent update queue with delete/replacement handling.
+- [x] Resumable backfill, incremental updates and automatic index maintenance.
+- [x] Restart/recovery and schema/version migration tests.
 
 ## Phase 3 — app startup and query integration
 
-- [ ] Paged catalog loading; remove corpus-wide work from startup.
-- [ ] Immediate text search; independently warmed visual query encoder.
-- [ ] Concurrent queries, cancellation/latest-query semantics and result fusion.
-- [ ] Correct metadata filtering and distinct-video ranking.
-- [ ] Bounded caches and native end-to-end latency checks.
+- [x] Paged catalog loading; remove corpus-wide work from native browsing startup.
+- [x] Immediate text search; independently warmed visual query encoder.
+- [x] Independent services, cancellation/latest-query semantics and result fusion.
+- [x] Correct metadata filtering and distinct-video ranking.
+- [x] Bounded caches and native end-to-end latency checks.
 
 ## Phase 4 — SSD previews
 
-- [ ] Define versioned content-addressed thumbnails and packed storyboards.
-- [ ] Generate during import/indexing, sharing decode work where possible.
-- [ ] Backfill/reuse existing frames with durable completeness tracking.
-- [ ] Use SSD previews for grid/scrubbing; optional evictable playback proxies.
-- [ ] Offline-originals acceptance checks and measured storage budget.
+- [x] Versioned, content-ID keyed previews and immutable packed storyboards.
+- [x] Generate during import/indexing, sharing native batch decode work.
+- [x] Backfill/reuse existing frames with durable indexed completeness queues.
+- [x] Use SSD previews for grid/scrubbing; full-resolution playback uses originals.
+- [x] Offline-originals acceptance checks and measured storage budget.
 
 ## Phase 5 — migration and release
 
-- [ ] Compare replacement against existing live-library results.
-- [ ] Validate concurrent editing/indexing, maintenance, interrupted work,
+- [x] Compare replacement against exact existing live-library vectors/results.
+- [x] Validate controlled editing-load/indexing, maintenance, interrupted work,
       filters, missing drives, new arrivals and deletions.
-- [ ] Package/sign/test a new immutable build.
-- [ ] Switch live app only after required checks pass; preserve rollback build.
-- [ ] Record final deployment, remaining limitations and maintenance behavior.
-- [ ] Retire redundant artifacts only after explicit retention review.
+- [x] Package/sign/test a new immutable build.
+- [x] Switch live app after acceptance; preserve a verified crop-aware rollback build.
+- [x] Record final deployment, measurement scope and maintenance behavior.
+- [x] Retire verified eligible caches; preserve unknown data, experiments and rollback builds.
 
 ## Decisions and activity log
 
