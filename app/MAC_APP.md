@@ -47,10 +47,11 @@ https://developer.apple.com/library/archive/documentation/FileManagement/Concept
 - [ ] Stop completed preview/index/maintenance workers; wake on relevant changes.
 - [ ] Start visual inference on demand and release it after idle timeout.
 - [ ] Verify idle → wake → work → idle, paused/retry, shutdown and restart behavior.
-- [ ] Investigate reported first DJI connection doing nothing (reconnect offloaded
-      successfully). No changes were deployed/disabled at the time. Check mount
-      notifications, per-connection identity, busy deferral/status and launch failures;
-  preserve the current working offload and source-removal verification rules.
+- [x] Investigate reported first DJI connection: retained system logs confirm two
+      attachments, with the first mount rejected/ejected by loginwindow while locked.
+      Timeline/evidence is below. No app change or deliberate pause caused this.
+- [ ] Validate the prospective mount-notification/connection-status improvements;
+      these cannot override a volume mount denied by macOS.
 - [ ] Install a real signed app and validate with the lab unavailable.
 - [ ] Verify all personal rows, selections, roots, original bytes and offline previews.
 - [ ] Document exact Backblaze inclusions/exclusions, restore and rollback.
@@ -74,8 +75,31 @@ completed checklist is historical; this document tracks the newly requested work
   a 15-second idle grace; native readiness checks wake them for work. Maintenance
   is one-shot and scheduled from native state, rather than three permanent workers.
 - DJI mount notifications, normalized connection identity and visible busy deferral
-  are added; these are prospective fixes, not a confirmed diagnosis of the report.
+  are added as robustness improvements. The reported incident was subsequently
+  traced to macOS mount refusal, not those possible application-level causes.
 - All of this is pending native compilation, lab-unavailable acceptance, real idle/
   wake measurements and production migration after the Mac becomes available.
 - Local validation: **155 Python tests, 150 passed / 5 Mac-only skips**; Ruff and
   diff whitespace checks pass. Native tests are prepared, not yet run.
+
+## DJI incident — retained log diagnosis
+
+2026-09-29, Mac local time (+03:00), inspected read-only while work stayed paused:
+
+- **13:50:17.017:** disk4/disk4s1 appeared; exFAT probe succeeded.
+- **13:50:17.177–.203:** loginwindow `CopySLMountApprovalCallback` logged
+  `Allow = NO`, `calling DADiskEject`, then `kDAReturnNotPermitted`.
+  Disk Arbitration had logged the session as locked at 13:50:09.786.
+- **13:50:17.209–.210:** disk4 was removed/ejected successfully without mounting.
+- **13:50:27.202:** Disk Arbitration logged the session unlocked.
+- **13:53:06.202–.400:** second disk4/disk4s1 appearance and successful mount;
+  FSKit identified its path as `/Volumes/Pocket4P`.
+- **13:53:13.842:** import journal modification time; new DJI files have saved
+  destinations in Originals. Journal schema records files, not connection times.
+- **13:53:25.573–.725:** successful unmount/eject following the import.
+
+The system-level refusal explains why Mami could not offload on the first attempt.
+The exact reason loginwindow considered the session locked is not established.
+Unlock before connecting; retain security settings rather than bypassing mount denial.
+Sources: unified logs for diskarbitrationd/loginwindow/fskitd, 13:45–14:05, and the
+read-only `~/Media/Originals/.mami-imports/journal.sqlite` inspection.
