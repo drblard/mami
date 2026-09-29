@@ -1,6 +1,36 @@
 # Mami scaling work — live checklist
 
-Last updated: 2026-09-28. Status: **Phase 1 in progress; personal-data split moved forward from Phase 2**.
+Last updated: 2026-09-29. Status: **Persistent-search integration and remaining acceptance checks in progress**.
+
+## Current checkpoint (read this before the historical log)
+
+- Pushed commits: `5dfd46c` (production/refactor checkpoint), `e77d4f5` (experiments).
+  SSH signing briefly failed; GitHub push succeeded using existing `gh` HTTPS
+  credentials without changing the remote. SSH to `ludi` is working again.
+- Live app: `prototype-20260928T180349767667Z`, with verified fast native previews.
+- New search candidate: `prototype-20260928T195607155287Z`; 14 Swift / 103 Python
+  tests, native projection/catalog/personal-data checks and signing pass.
+- Active isolated run: `~/mami-lab/benchmarks/persistent-native-20260929/`.
+  Projection + managed vectors built. Native Library ready in **1.399 s**, loading
+  100 summaries; three combined queries **19–21 ms** (warm OS cache possible).
+  Real process lifecycle checks passed: live insert visible **0.480 s**, replace,
+  delete, reinsert, hot generation switch, restart and transcript updates. All 60
+  queries during compaction succeeded, maximum **6.64 ms**. Personal DB unchanged.
+- Remaining: native full-path startup/results, update/compaction integration,
+  50× full-path and resource checks, packed SSD previews/offline tests, final
+  review and deployment. Do not read historical "in progress" entries as the
+  current deployment state.
+
+### 2026-09-29 — native startup and lifecycle milestone
+
+- Results: `persistent-native-20260929/native-check/result.json` and the fixture's
+  `lifecycle-*/result.json`. Source catalog, projection, vectors and injected fixture
+  assets are isolated from the live library; no original media changed.
+- Added reproducible `check_persistent_lifecycle.py`, including search while a new
+  generation builds, active-reader generation switching and process restart.
+- Native startup check now also exercises next-page loading, scoped filtering and
+  a SwiftUI grid screenshot. Automatic Photos/camera imports are centrally disabled
+  for integration-check launch modes. This expanded UI check still needs its next run.
 
 **Active work:** [production code review](CODE_REVIEW.md) and 50× search validation.
 The [import → previews → AI pipeline](PIPELINE.md) and review fixes are live in
