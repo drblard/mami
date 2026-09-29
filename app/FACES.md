@@ -1,8 +1,9 @@
 # People: face recognition, tagging and filtering
 
-Status: **implementation in progress** (2026-09-29). Core pipeline, personal
-store, worker lane and People UI are implemented with tests; the live backfill
-and signed release are pending. Measured facts are marked as such below.
+Status: **installed; live backfill running** (2026-09-29). Build
+`prototype-20260929T204729959318Z` (revision `56ce062`) is installed at
+`~/Applications/Mami.app`; the face lane started automatically and is indexing the
+current library newest first. Measured facts are marked as such below.
 Goal from the user: best achievable accuracy; slower indexing is acceptable. The
 current library should finish in days, and the planned ~2 TB of pre-2026 media
 must not take weeks. Personal, non-commercial use only.
@@ -151,6 +152,16 @@ Progress appears as a third footer lane (“Faces”).
       common case; dedicated split view not implemented yet).
 - [ ] Face boxes in the media preview; click a face to name it.
 - [x] People filter (media with all selected people) and People review sheet.
-- [ ] Native build/tests on `ludi`, isolated end-to-end `--people-test`, signed
-      release with the ONNX-enabled runtime (`~/mami-lab/runtime-env-faces`).
-- [ ] Live backfill of the current library, with progress and measured duration.
+- [x] Native build/tests on `ludi` (21 Swift / 191 Python, catalog + people store
+      check), isolated end-to-end `--people-test` on 36 real assets, signed release
+      with the ONNX-enabled runtime (`~/mami-lab/runtime-env-faces`, runtime tree
+      `prototype-20260929T202434970792Z/runtime-faces`).
+  - [x] The end-to-end check found and fixed: text-bound `HAVING` comparison (no
+        groups), read-only WAL reader failure after worker exit, CoreML writing to
+        the protocol descriptor, a dirty-fixture false failure (now guarded) and
+        blank controls over a transparent sheet background.
+- [x] Installed; personal-table digests unchanged; people tables added (empty).
+      Face model installed through the verified installer. Previous app retained
+      at `~/Applications/.Mami-install-eb63285b24a34e4195fa8a03b155f745.app`.
+- [ ] Live backfill of the current library completes; record measured duration.
+- [ ] User acceptance: name people, correct groups, People filter (physical use).

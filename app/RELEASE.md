@@ -1,8 +1,13 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Active build: `prototype-20260929T185222406970Z`
-(UI follow-ups; see [REMAINING.md](REMAINING.md)). Previous: `prototype-20260929T134121462682Z`,
-retained at `~/Applications/.Mami-install-b11a90e27c2a47e89b0d7377c1872f9d.app`. No data migration.
+Status: **deployed and verified**. Active build: `prototype-20260929T204729959318Z`
+(face recognition, revision `56ce062`; see [FACES.md](FACES.md)). Previous:
+`prototype-20260929T185222406970Z`, retained at
+`~/Applications/.Mami-install-eb63285b24a34e4195fa8a03b155f745.app`.
+Personal store: additive `people`, `face_labels`, `people_history` tables (older
+builds ignore them; do not delete them when rolling back). Generated face index:
+`Derived/Faces/` (rebuildable, excluded from backup). Face model:
+`Models/faces/antelopev2` (pinned SHA-256).
 
 ## Current installation — 2026-09-29 production-layout migration
 

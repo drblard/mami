@@ -36,7 +36,7 @@ synthetic grid-arrival row, and correctly failed the relocation check.
       at every step (`Mami --kind-switch-test`, `MamiMigration/kind-switch-20260929/`); the user
       could not reproduce it after quitting/reopening. Unexplained; live workers and preview
       maintenance were not part of the check.
-- [ ] Face detection, people tagging and a people filter: plan in [FACES.md](FACES.md).
+- [x] Face detection, people tagging and a people filter: installed; backfill and acceptance in [FACES.md](FACES.md).
 
 ## Verified foundations
 
