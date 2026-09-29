@@ -1,5 +1,7 @@
 # Mami scaling work — live checklist
 
+For the concise current checklist, follow [REMAINING.md](REMAINING.md).
+
 Last updated: 2026-09-29. Status: **Persistent-search integration and remaining acceptance checks in progress**.
 
 ## Current checkpoint (read this before the historical log)
@@ -29,6 +31,11 @@ activity/permission before resuming Mac tests or deployment changes.
   current deployment state.
 
 ### Latest local checkpoint before Mac pause
+
+Further local recovery fixes and exact pending gates are tracked in
+[REMAINING.md](REMAINING.md). Latest Linux validation: **136 tests, 133 passed /
+3 MLX skips**, Ruff passes. Native transport/UI/cache/count checks remain pending
+on the Mac; no deployment has changed during the pause.
 
 - Search coordination now serves SQLite text independently of visual initialization
   in a separate process; bounded visual restart recovery is covered by tests.

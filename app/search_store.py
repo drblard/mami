@@ -111,6 +111,7 @@ class SearchStore:
             with self.db:
                 self.db.execute('BEGIN IMMEDIATE')
                 self._create_facets()
+                self.db.execute("CREATE INDEX IF NOT EXISTS files_oldest ON files((captured=''),captured,asset)")
                 self.db.execute('INSERT INTO camera_counts SELECT camera,count(*) FROM files GROUP BY camera')
                 self.db.execute('INSERT INTO browse_counts SELECT camera,shape,kind,substr(captured,1,8),count(*) FROM files GROUP BY camera,shape,kind,substr(captured,1,8)')
                 self.db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import select
+import signal
 import subprocess
 import sys
 import threading
@@ -18,30 +19,43 @@ from vector_sync import resolve_generation
 
 VISUAL_REPLY_LIMIT = 8 * 1024 * 1024
 VISUAL_QUERY_TIMEOUT = 10
+VISUAL_STARTUP_TIMEOUT = 30
+VISUAL_REQUEST_LIMIT = 8 * 1024 * 1024
+VISUAL_SHUTDOWN_TIMEOUT = 2
 MAX_VISUAL_RESTARTS = 2
 
 
 class VisualClient:
     """A separate interpreter keeps MLX/tokenizer initialization off the text path."""
-    def __init__(self, args, executable, command=None):
+    def __init__(self, args, executable, command=None, clock=time.monotonic):
         if command is None:
             command = [sys.executable, '-B', str(Path(__file__).with_name('search_worker.py')),
                        '--index', args.index, '--packed-index', str(args.packed_index),
                        '--projection', str(args.projection), '--native-encoder', str(args.native_encoder),
                        '--native-executable', str(executable), '--visual-service']
         self.command = command
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.clock = clock
+        self.failure = None
+        self._start()
         self.restarts = 0
         self.buffer = bytearray()
         self.initialized = False
         self.samples = None
 
+    def _start(self):
+        self.process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        bufsize=0, start_new_session=True)
+        os.set_blocking(self.process.stdin.fileno(), False)
+        self.startup_deadline = self.clock() + VISUAL_STARTUP_TIMEOUT
+
     def read(self, timeout):
-        deadline = time.monotonic() + timeout
+        deadline = self.clock() + timeout
         while b'\n' not in self.buffer:
             if len(self.buffer) > VISUAL_REPLY_LIMIT:
-                raise ValueError('Visual response exceeded the protocol bound')
-            remaining = max(0, deadline-time.monotonic())
+                raise RuntimeError('Visual response exceeded the protocol bound')
+            remaining = max(0, deadline-self.clock())
+            if timeout > 0 and remaining == 0:
+                return None
             if not select.select([self.process.stdout], [], [], remaining)[0]:
                 return None
             data = os.read(self.process.stdout.fileno(), 65536)
@@ -51,21 +65,29 @@ class VisualClient:
         line, _, remaining = self.buffer.partition(b'\n')
         self.buffer = bytearray(remaining)
         if len(line) > VISUAL_REPLY_LIMIT:
-            raise ValueError('Visual response exceeded the protocol bound')
-        response = json.loads(line)
+            raise RuntimeError('Visual response exceeded the protocol bound')
+        try:
+            response = json.loads(line)
+        except (ValueError, UnicodeError) as error:
+            raise RuntimeError('Visual response was not valid JSON') from error
+        if not isinstance(response, dict):
+            raise RuntimeError('Visual response must be an object')
         if 'error' in response:
             raise RuntimeError(response['error'])
         return response
 
     def search(self, query, paths=None, scope=None):
+        if self.failure is not None:
+            raise RuntimeError(self.failure)
         try:
             return self._search(query, paths, scope)
         except (OSError, RuntimeError, TimeoutError) as error:
-            if self.restarts >= MAX_VISUAL_RESTARTS:
-                raise RuntimeError(f'Visual search could not recover: {error}') from error
             self.close()
+            if self.restarts >= MAX_VISUAL_RESTARTS:
+                self.failure = f'Visual search could not recover: {error}'
+                raise RuntimeError(self.failure) from error
             self.restarts += 1
-            self.process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+            self._start()
             self.buffer.clear()
             self.initialized = False
             self.samples = None
@@ -76,20 +98,34 @@ class VisualClient:
         if not self.initialized:
             response = self.read(0)
             if response is None:
+                if self.clock() >= self.startup_deadline:
+                    raise TimeoutError('Visual initialization deadline expired')
                 return [], True
-            if not response.get('ready'):
+            if response.get('ready') is not True:
                 raise RuntimeError('Visual process did not announce readiness')
             self.initialized = True
             self.samples = response.get('samples')
         request = dict(query=query, scope=scope or {})
         if paths is not None:
             request['paths'] = list(paths)
-        self.process.stdin.write((json.dumps(request)+'\n').encode())
-        self.process.stdin.flush()
-        response = self.read(VISUAL_QUERY_TIMEOUT)
+        data = memoryview((json.dumps(request)+'\n').encode())
+        if len(data) > VISUAL_REQUEST_LIMIT:
+            raise ValueError('Visual request exceeded the protocol bound')
+        deadline = self.clock() + VISUAL_QUERY_TIMEOUT
+        while data:
+            remaining = max(0, deadline-self.clock())
+            if remaining == 0 or not select.select([], [self.process.stdin], [], remaining)[1]:
+                raise TimeoutError('Visual request write deadline expired')
+            try:
+                written = os.write(self.process.stdin.fileno(), data[:65536])
+            except BlockingIOError:
+                continue
+            data = data[written:]
+        response = self.read(max(0, deadline-self.clock()))
         if response is None:
-            self.close()
             raise TimeoutError('Visual search response deadline expired')
+        if not isinstance(response.get('hits'), list):
+            raise RuntimeError('Visual response is missing its hit list')
         self.samples = response.get('samples', self.samples)
         return response['hits'], False
 
@@ -99,11 +135,20 @@ class VisualClient:
         except OSError:
             pass
         try:
-            self.process.wait(timeout=2)
+            self.process.wait(timeout=VISUAL_SHUTDOWN_TIMEOUT)
         except subprocess.TimeoutExpired:
-            self.process.kill()
+            self._kill_group()
             self.process.wait()
+        # An encoder may outlive a failed visual parent; it belongs to this
+        # private process group, never to the live app's other workers.
+        self._kill_group()
         self.process.stdout.close()
+
+    def _kill_group(self):
+        try:
+            os.killpg(self.process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 class VisualRuntime:
@@ -192,7 +237,7 @@ def run(args):
     if getattr(args, 'visual_service', False):
         runtime = VisualRuntime(args, executable)
         try:
-            if not runtime.ready.wait(30):
+            if not runtime.ready.wait(VISUAL_STARTUP_TIMEOUT):
                 raise TimeoutError('Visual initialization deadline expired')
             if runtime.error:
                 raise RuntimeError(runtime.error)
@@ -229,7 +274,14 @@ def run(args):
                         raise ValueError('Unknown search mode')
                     allowed = set(request['paths']) if 'paths' in request else None
                     scope = request.get('scope') or {}
-                    visual, pending = ([], False) if mode == 'speech' else visual_runtime.search(query, allowed, scope)
+                    visual, pending, visual_error = [], False, None
+                    if mode != 'speech':
+                        try:
+                            visual, pending = visual_runtime.search(query, allowed, scope)
+                        except (OSError, RuntimeError, ValueError) as error:
+                            if mode == 'visual':
+                                raise
+                            visual_error = str(error)
                     for hit in visual:
                         frame = projection.db.execute('SELECT frame,crop FROM frames WHERE asset=? AND ordinal=?', (hit['asset'], hit['ordinal'])).fetchone()
                         if frame:
@@ -243,6 +295,8 @@ def run(args):
                     hits = visual if mode == 'visual' else spoken if mode == 'speech' else combine_hits(visual, spoken)
                     reply = dict(hits=hits, visual_pending=pending, elapsed=time.monotonic()-started,
                                  indexed_samples=getattr(visual_runtime, 'samples', None) or manifest['rows'])
+                    if visual_error is not None:
+                        reply['visual_error'] = visual_error
                 except Exception as error:
                     reply = dict(error=str(error))
                 print(json.dumps(reply, ensure_ascii=False), flush=True)

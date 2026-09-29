@@ -100,6 +100,21 @@ validated native batch preview decoding).
 
 ## Activity log
 
+- Latest 2026-09-29 local loop: bounded visual request writes (previously only
+  reads were bounded), startup deadlines, strict reply framing and terminal restart
+  failure. Private process groups reap encoder descendants. Combined search returns
+  speech results with an explicit visual error after visual failure. Real subprocess
+  tests cover blocked I/O, invalid replies, partial EOF and exact restart exhaustion.
+- Atlas checks now cover priority changes during packing, cancellation before
+  publication, database publication failure/retry, EOF and persistent retry limits.
+  New/deleted frames invalidate stale pack/error markers. Raw retirement compares
+  exact manifest/source/projection metadata, not just sheet membership. Failed
+  published directories remain retained; bounded orphan cleanup is still open.
+- Native per-query metadata retention is limited to the loaded browse window and
+  current matches. Native assertions added for that bound and exact v6 scoped counts,
+  partial days and oldest-first pages. These need Mac compilation/validation.
+  Latest Linux suite: 136 tests, 133 passed / 3 MLX skips; Ruff passes.
+
 - 2026-09-29 local checkpoint: Mac work paused while the user's wife works.
   Independent text/visual processes now have bounded reply framing, query deadlines
   and at most two visual restarts. Local tests exercise pending initialization,

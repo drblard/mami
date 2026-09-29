@@ -54,6 +54,7 @@ import SwiftUI
         library.deviceFilter = "All devices"
     }
     var results: [[String: Any]] = []
+    let browsePaths = Set(library.items.map(\.path))
     library.query = "a photo"
     await library.search()?.value
     guard library.error == nil, !library.searching else { throw AppError.message(library.error ?? "Visual warmup failed") }
@@ -66,6 +67,9 @@ import SwiftUI
         guard library.error == nil, library.showingMatches, !library.items.isEmpty else {
             await library.worker.stop()
             throw AppError.message(library.error ?? "Search returned no visible media")
+        }
+        guard Set(library.formats.keys) == browsePaths.union(library.items.map(\.path)) else {
+            throw AppError.message("Search metadata cache retained results from an older query")
         }
         let elapsed = before.duration(to: clock.now).components
         results.append(["query": query, "seconds": Double(elapsed.seconds)+Double(elapsed.attoseconds)/1e18,

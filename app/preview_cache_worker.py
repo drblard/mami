@@ -17,13 +17,20 @@ CACHE_POLL_SECONDS = 30
 RETRY_DELAY_SECONDS = 5
 
 
+def check_backfill_priority(database, stop, busy):
+    if stop.is_set():raise InterruptedError('Preview packing stopped')
+    if busy.is_set():raise InterruptedError('Preview packing yields to active editing')
+    with connection(database) as db:
+        if db.execute("SELECT 1 FROM preview_jobs WHERE state IN ('queued','running') LIMIT 1").fetchone():
+            raise InterruptedError('Preview packing yields to pending previews')
+
+
 def main(args):
     os.nice(10)
     stop,busy=threading.Event(),threading.Event()
     signal.signal(signal.SIGTERM,lambda *_:stop.set())
     def checkpoint():
-        if stop.is_set():raise InterruptedError('Preview packing stopped')
-        if busy.is_set():raise InterruptedError('Preview packing yields to active editing')
+        check_backfill_priority(args.database,stop,busy)
     def controls():
         try:
             for line in sys.stdin:

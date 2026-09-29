@@ -199,6 +199,7 @@ actor SearchWorker {
         let elapsed: Double?
         let error: String?
         let visual_pending: Bool?
+        let visual_error: String?
     }
 
     func search(_ query: String, mode: String = "both", paths: [String]? = nil, scope: ProjectionReader.Scope? = nil) throws -> Reply {
@@ -578,8 +579,11 @@ actor SearchWorker {
                         let requested = (reply.hits ?? []).map(\.path)
                         let media = try await Task.detached { try projection.media(paths: requested) }.value
                         guard generation == current, !Task.isCancelled else { return }
+                        // Retain the loaded browse window and this reply, not
+                        // every off-page match from all previous queries.
+                        byPath = Dictionary(uniqueKeysWithValues: all.map { ($0.path, $0) })
                         for item in media { byPath[item.path] = item }
-                        formats.merge(MediaFormat.read(media)) { _, new in new }
+                        formats = MediaFormat.read(Array(byPath.values))
                     }
                     items = (reply.hits ?? []).compactMap { sample in
                         guard let original = byPath[sample.path] else { return nil }
@@ -597,10 +601,12 @@ actor SearchWorker {
                         try Task.checkCancellation()
                         continue
                     }
-                    let label = searchMode == "speech" ? "transcript matches · Automatic Romanian transcription"
+                    let label = reply.visual_error != nil ? "transcript matches · Visual search unavailable"
+                        : searchMode == "speech" ? "transcript matches · Automatic Romanian transcription"
                         : searchMode == "both" ? "combined matches · Visual similarity + Romanian speech"
                         : "nearest matches · Matches may be approximate"
                     status = "\(items.count) \(label) · \(String(format: "%.2f", reply.elapsed ?? 0))s"
+                    if let visualError = reply.visual_error { self.error = visualError }
                     searching = false
                     break
                 }

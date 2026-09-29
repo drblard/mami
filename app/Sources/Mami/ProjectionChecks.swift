@@ -38,6 +38,21 @@ func checkProjection(at root: URL) throws {
     scope = ProjectionReader.Scope(arrivalThrough: 100)
     try require(try reader.page(scope: scope).total == 100, "Grid-lock arrival cutoff changed")
     try require(try reader.arrivals(after: 100) == 150, "New-arrival count is incorrect")
+    let wholeDay = ProjectionReader.Scope(camera: "A", shape: "vertical", kind: "video",
+                                         from: "20260928", through: "20260928235959")
+    try require(try reader.page(scope: wholeDay).total == 124, "Day facets included unknown capture dates")
+    var lockedDay = wholeDay
+    lockedDay.arrivalThrough = 100
+    try require(try reader.page(scope: lockedDay).total == 50, "Scoped day count ignored the grid-lock cutoff")
+    let partialDay = ProjectionReader.Scope(from: "20260928000000", through: "20260928115959")
+    try require(try reader.page(scope: partialDay).total == 0, "Partial-day count used whole-day aggregates")
+    try require(try reader.page(scope: .init(assets: [])).total == 0, "Empty manual scope escaped its filter")
+    let oldest = ProjectionReader.Scope(oldestFirst: true)
+    let oldestFirst = try reader.page(scope: oldest)
+    let oldestSecond = try reader.page(scope: oldest, after: oldestFirst.cursor)
+    let oldestThird = try reader.page(scope: oldest, after: oldestSecond.cursor)
+    try require((oldestFirst.items + oldestSecond.items + oldestThird.items).map(\.assetID) == ids,
+                "Oldest-first paging lost equal dates or misplaced unknown dates")
     try require(try reader.frames(asset: "asset-001").first?.timestamp == 0.5, "On-demand frame lookup failed")
     try require(try reader.frames(asset: "asset-001").first?.crop == [0,0,100,200], "Packed preview crop was lost")
     try require(try reader.media(paths: ["asset-249"]).first?.assetID == "asset-249", "Off-page search result lookup failed")

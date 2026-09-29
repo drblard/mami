@@ -22,8 +22,14 @@ def ensure_pack_schema(database):
         db.execute('CREATE TABLE IF NOT EXISTS preview_packs(asset TEXT PRIMARY KEY,version INTEGER NOT NULL,directory TEXT NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS preview_pack_errors(asset TEXT PRIMARY KEY,error TEXT NOT NULL,attempts INTEGER NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS preview_retired(asset TEXT PRIMARY KEY,directory TEXT NOT NULL)')
-        db.execute("CREATE TRIGGER IF NOT EXISTS preview_pack_frame_update AFTER UPDATE ON index_units WHEN NEW.stage='frame' BEGIN DELETE FROM preview_packs WHERE asset=NEW.asset; DELETE FROM preview_pack_errors WHERE asset=NEW.asset; END")
-        db.execute("CREATE TRIGGER IF NOT EXISTS preview_pack_frame_delete AFTER DELETE ON index_units WHEN OLD.stage='frame' BEGIN DELETE FROM preview_packs WHERE asset=OLD.asset; END")
+        for name in ('preview_pack_frame_update','preview_pack_frame_delete'):
+            db.execute('DROP TRIGGER IF EXISTS '+name)
+        for operation in ('INSERT','UPDATE','DELETE'):
+            references = ['OLD','NEW'] if operation=='UPDATE' else ['OLD' if operation=='DELETE' else 'NEW']
+            changed = ' OR '.join(reference+".stage='frame'" for reference in references)
+            body = ' '.join(f'DELETE FROM {table} WHERE asset={reference}.asset;'
+                            for reference in references for table in ('preview_packs','preview_pack_errors','preview_retired'))
+            db.execute(f'CREATE TRIGGER IF NOT EXISTS preview_pack_invalidate_{operation} AFTER {operation} ON index_units WHEN {changed} BEGIN {body} END')
 
 
 def pack_asset(database, asset, artifacts, checkpoint=lambda: None):
@@ -83,6 +89,9 @@ def pack_asset(database, asset, artifacts, checkpoint=lambda: None):
         manifest['sheets'] = sheets
         with (staging/'manifest.json').open('x') as file:
             json.dump(manifest,file,indent=2);file.flush();os.fsync(file.fileno())
+        descriptor = os.open(staging,os.O_RDONLY)
+        try:os.fsync(descriptor)
+        finally:os.close(descriptor)
         checkpoint()
         with connection(database) as db:
             current = db.execute("SELECT ordinal,payload FROM index_units WHERE asset=? AND pipeline=? AND stage='frame' ORDER BY ordinal", (asset,PIPELINE)).fetchall()
@@ -130,19 +139,24 @@ def retire_raw_frames(database,asset,artifacts,projection,limit=256):
         directory=Path(row['directory'])
         if directory.is_symlink() or directory.parent.resolve()!=artifacts/'packed-previews':return None
         manifest=json.loads((directory/'manifest.json').read_text())
-        if manifest.get('asset')!=asset or manifest.get('version')!=ATLAS_VERSION:return None
-        current=[json.loads(row['payload']) for row in db.execute("SELECT payload FROM index_units WHERE asset=? AND pipeline=? AND stage='frame'",(asset,PIPELINE))]
+        if manifest.get('asset')!=asset or manifest.get('version')!=ATLAS_VERSION or manifest.get('pipeline')!=PIPELINE:return None
+        current={row['ordinal']:json.loads(row['payload']) for row in db.execute("SELECT ordinal,payload FROM index_units WHERE asset=? AND pipeline=? AND stage='frame'",(asset,PIPELINE))}
+        published={entry['ordinal']:entry['sample'] for entry in manifest['frames']}
+        if current!=published:return None
         targets={str(directory/name.name) for name in directory.glob('*.jpg')}
-        if not current or any(frame['frame'] not in targets or not frame.get('crop') for frame in current):return None
+        if not current or any(frame['frame'] not in targets or not frame.get('crop') for frame in current.values()):return None
         for target in targets:
+            if Path(target).is_symlink():return None
             expected=manifest.get('sheets',{}).get(Path(target).name)
             if expected is None:return None
             with open(target,'rb') as image:
                 if hashlib.file_digest(image,'sha256').hexdigest()!=expected:
                     raise ValueError('Packed preview checksum changed; raw frames retained')
         with contextlib.closing(sqlite3.connect(Path(projection).resolve().as_uri()+'?mode=ro',uri=True)) as visible:
-            frames=visible.execute('SELECT frame,crop FROM frames WHERE asset=?',(asset,)).fetchall()
-            if len(frames)!=len(current) or any(frame not in targets or not json.loads(crop or 'null') for frame,crop in frames):return None
+            frames=visible.execute('SELECT ordinal,frame,timestamp,crop FROM frames WHERE asset=?',(asset,)).fetchall()
+            projected={ordinal:(frame,timestamp,json.loads(crop or 'null')) for ordinal,frame,timestamp,crop in frames}
+            expected={ordinal:(sample['frame'],sample.get('timestamp'),sample['crop']) for ordinal,sample in current.items()}
+            if projected!=expected:return None
         folder=artifacts/asset.removeprefix('sha256:')
         removed=0
         for name,saved in manifest.get('original_signatures',{}).items():

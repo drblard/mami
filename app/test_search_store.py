@@ -268,12 +268,15 @@ class SearchStoreTests(unittest.TestCase):
                 self.store.db.execute('DROP TRIGGER '+name)
             self.store.db.execute('DROP TABLE camera_counts')
             self.store.db.execute('DROP TABLE browse_counts')
+            self.store.db.execute('DROP INDEX files_oldest')
             self.store.db.execute('PRAGMA user_version=5')
         with SearchStore(self.root/'search.sqlite') as upgraded:
             self.assertEqual(upgraded.db.execute('PRAGMA user_version').fetchone()[0],6)
             self.assertEqual(upgraded.db.execute('SELECT count FROM camera_counts').fetchone()[0],1)
             self.assertEqual(upgraded.page()['items'][0]['path'],'a')
             self.assertEqual(len(upgraded.speech('dun')),1)
+            plan=upgraded.db.execute("EXPLAIN QUERY PLAN SELECT asset,captured,summary FROM files ORDER BY (captured=''),captured,asset LIMIT 100").fetchall()
+            self.assertFalse(any('TEMP B-TREE' in row[3] for row in plan),plan)
 
 
 if __name__ == '__main__':
