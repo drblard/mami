@@ -4,7 +4,7 @@ import SwiftUI
 /// The worker owns durable checkpoints. This object only controls it and renders
 /// progress; neither file hashing nor inference runs on the UI thread.
 @MainActor final class Indexing: ObservableObject {
-    enum Lane: String {
+    enum Lane: String, Sendable {
         case search = "index"
         case previews = "preview"
         var title: String { self == .previews ? "Previews" : "AI search" }
@@ -15,8 +15,10 @@ import SwiftUI
     private init(lane: Lane) { self.lane = lane }
 
     static func startAll() {
-        previews.start()
-        shared.start()
+        previews.schedule()
+        shared.schedule()
+        previews.wakeWork()
+        shared.start(force: true)
     }
 
     static func publishedImport() {
@@ -60,6 +62,15 @@ import SwiftUI
     private var retries = 0
     private var quitting = false
     private var editorTimer: Timer?
+    private var wakeTimer: Timer?
+    private var idleTask: Task<Void, Never>?
+    private var checking = false
+    private var retiring = false
+    private var lastToken: String?
+    private var workPending = false
+    private var lastScan = Date.distantPast
+    private static let workerIdleGrace: Duration = .seconds(15)
+    private static let discoveryInterval: TimeInterval = 300
     static func activeEditing(bundleID: String?, idleSeconds: Double) -> Bool {
         bundleID == "com.lemon.lvoverseas" && idleSeconds.isFinite && idleSeconds >= 0 && idleSeconds < 60
     }
@@ -73,7 +84,43 @@ import SwiftUI
         return phase
     }
 
-    func start() {
+    private func schedule() {
+        guard wakeTimer == nil else { return }
+        wakeTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.start() }
+        }
+    }
+
+    func start(force: Bool = false) {
+        guard process == nil, !quitting, !checking else { return }
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
+        if lane == .search && Self.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle) {
+            phase = "Waiting while CapCut is actively used"
+            return
+        }
+        checking = true
+        let preview = lane == .previews, token = lastToken
+        Task {
+            defer { checking = false }
+            do {
+                if let state = try await Task.detached(priority: .utility, operation: {
+                    try BackgroundWork.read(catalog: .standard, preview: preview, previousToken: token)
+                }).value {
+                    lastToken = state.token; workPending = state.pending; paused = state.paused
+                    queueCounts = Progress.Counts(remaining: state.remaining, completed: state.completed, failed: state.failed)
+                }
+                guard !quitting, process == nil else { return }
+                let discoveryDue = lane == .search && Date().timeIntervalSince(lastScan) >= Self.discoveryInterval
+                if force || workPending || (!paused && discoveryDue) { launch() }
+                else if error == nil { phase = lane == .previews ? "Previews ready" : "Up to date" }
+            } catch {
+                if force { launch() }
+                else { self.error = "Could not check background work: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private func launch() {
         guard process == nil, !quitting else { return }
         do {
             let config = try Configuration.load()
@@ -83,7 +130,7 @@ import SwiftUI
                               "--database", Catalog.standard.database.path,
                               "--root", ProcessInfo.processInfo.environment["MAMI_MEDIA_ROOT"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals").path,
                                "--artifacts", Catalog.standard.artifacts.path, "--role", lane.rawValue]
-            var environment = ProcessInfo.processInfo.environment
+            var environment = config.workerEnvironment
             environment["HF_HUB_OFFLINE"] = "1"
             environment["PYTHONUNBUFFERED"] = "1"
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -112,7 +159,10 @@ import SwiftUI
                     self.output?.readabilityHandler = nil
                     self.process = nil
                     self.input = nil
+                    self.idleTask?.cancel(); self.idleTask = nil
+                    self.lastToken = nil
                     if !self.quitting {
+                        if self.retiring { self.retiring = false; return }
                         self.error = "Background worker stopped; completed checkpoints are saved."
                         if ended.terminationStatus != 0 && self.retries < 3 {
                             self.retries += 1
@@ -123,6 +173,8 @@ import SwiftUI
                 }
             }
             try task.run()
+            retiring = false
+            if lane == .search { lastScan = Date() }
             process = task
             input = stdin.fileHandleForWriting
             output = stdout.fileHandleForReading
@@ -155,7 +207,21 @@ import SwiftUI
                     catalogGeneration += 1
                     CatalogUpdates.shared.notify()
                     if lane == .previews { Self.shared.wakeWork() }
+                    else { Self.previews.wakeWork() }
                 }
+                let idle = paused || waiting || ["Up to date", "Previews ready", "Needs attention", "Preview needs attention", "Waiting for previews"].contains(phase)
+                if idle && idleTask == nil {
+                    let currentProcess = process
+                    idleTask = Task { [weak self] in
+                        do { try await Task.sleep(for: Self.workerIdleGrace) } catch { return }
+                        guard let self, self.process === currentProcess else { return }
+                        self.retiring = true
+                        self.send(["action": "stop"])
+                        try? self.input?.close()
+                        do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                        if let currentProcess, currentProcess.isRunning { currentProcess.terminate() }
+                    }
+                } else if !idle { idleTask?.cancel(); idleTask = nil }
             } catch { self.error = "Could not read indexing progress: \(error.localizedDescription)" }
         }
     }
@@ -168,12 +234,17 @@ import SwiftUI
             try WorkerPipe.write(data, to: input)
         } catch { self.error = "Could not control indexing: \(error.localizedDescription)" }
     }
-    func togglePause() { send(["action": paused ? "resume" : "pause"]) }
-    func scanNow() { if !running { retries = 0; start() }; send(["action": "scan"]) }
+    func togglePause() {
+        if !running { launch() }
+        send(["action": paused ? "resume" : "pause"])
+    }
+    func scanNow() { if !running { retries = 0; launch() }; send(["action": "scan"]) }
     func wakeWork() { if !running { start() }; send(["action": "work"]) }
-    func retry() { error = nil; if !running { retries = 0; start() }; send(["action": "retry"]) }
+    func retry() { error = nil; if !running { retries = 0; launch() }; send(["action": "retry"]) }
     func stop() {
         quitting = true
+        wakeTimer?.invalidate(); wakeTimer = nil
+        idleTask?.cancel(); idleTask = nil
         editorTimer?.invalidate(); editorTimer = nil
         send(["action": "stop"])
         try? input?.close()
@@ -211,7 +282,7 @@ struct IndexingBar: View {
                 if !indexing.current.isEmpty { Text(indexing.current).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary) }
                 Spacer()
                 if indexing.total > 0 && indexing.active { Text("\(indexing.done) / \(indexing.total)").monospacedDigit().foregroundStyle(.secondary) }
-                Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(!indexing.running)
+                Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(indexing.queueCounts == nil)
                 if indexing.lane == .search { Button("Scan now") { indexing.scanNow() } }
             }.font(.caption).frame(height: 22)
              Group {

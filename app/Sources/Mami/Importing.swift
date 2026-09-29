@@ -1,17 +1,7 @@
 import AppKit
 import SwiftUI
-
-struct CameraConnections {
-    private var attempted = Set<URL>()
-    mutating func next(_ connected: [URL], enabled: Bool, busy: Bool) -> URL? {
-        attempted.formIntersection(Set(connected))
-        guard enabled, !busy, let next = connected.first(where: { !attempted.contains($0) }) else { return nil }
-        attempted.insert(next)
-        return next
-    }
-    mutating func retry() { attempted.removeAll() }
-    mutating func disconnected(_ url: URL) { attempted.remove(url) }
-}
+import MamiCore
+import OSLog
 
 @MainActor final class Importing: ObservableObject {
     static let shared = Importing()
@@ -52,6 +42,7 @@ struct CameraConnections {
     private var cameraObservers: [NSObjectProtocol] = []
     private var connections = CameraConnections()
     private var manualCameraPending = false
+    private let cameraLog = Logger(subsystem: "local.mami.prototype", category: "CameraOffload")
     @Published var policies: [String: String] = [:]
     @Published private(set) var sourceFiles: [String] = []
     @Published private(set) var listing = false
@@ -77,6 +68,15 @@ struct CameraConnections {
         cameraObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main) { [weak self] notification in
             guard let url = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
             Task { @MainActor in self?.connections.disconnected(url) }
+        })
+        cameraObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didMountNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let url = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                self.connections.disconnected(url) // A fresh mount invalidates a missed unmount signal.
+                self.cameraLog.info("Volume mounted; checking for DJI")
+                self.checkCamera()
+            }
         })
         cameraTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkCamera() }
@@ -107,6 +107,12 @@ struct CameraConnections {
             return
         }
         if manualCameraPending && photosTransfer { cameraStatus = "Camera check queued — waiting for the current Photos transfer" }
+        if (automaticDJI || manualCameraPending), connections.hasPending(cameras), running || listing || photosTransfer {
+            let reason = photosTransfer ? "the Photos transfer" : listing ? "the file review" : "the current import"
+            let status = "DJI connected — waiting for \(reason)"
+            if cameraStatus != status { cameraLog.info("DJI detected; import deferred while busy") }
+            cameraStatus = status
+        }
         guard let camera = connections.next(cameras, enabled: automaticDJI || manualCameraPending, busy: running || listing || photosTransfer) else { return }
         manualCameraPending = false
         source = camera
@@ -115,8 +121,12 @@ struct CameraConnections {
         sourceFiles = []
         cameraError = nil
         cameraStatus = "Starting DJI offload…"
+        cameraLog.info("Starting detected DJI offload")
         start()
-        if !running { cameraError = error; cameraStatus = "Offload needs attention — retry when ready" }
+        if !running {
+            cameraError = error; cameraStatus = "Offload needs attention — retry when ready"
+            cameraLog.error("DJI worker did not start; explicit retry is available")
+        }
     }
 
     func chooseSource() {
@@ -177,7 +187,7 @@ struct CameraConnections {
             let config = try Configuration.load()
             let task = Process(), stdin = Pipe(), stdout = Pipe()
             task.executableURL = config.python
-            var environment = ProcessInfo.processInfo.environment
+            var environment = config.workerEnvironment
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
             task.environment = environment
             task.arguments = [Bundle.main.resourceURL!.appendingPathComponent("import_media.py").path,

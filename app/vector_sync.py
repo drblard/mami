@@ -109,7 +109,7 @@ def main(args):
                         changes=db.execute('SELECT count(DISTINCT asset) FROM vector_events WHERE sequence>?',(manifest['projection_sequence'],)).fetchone()[0]
                         changed_rows=db.execute('SELECT count(*) FROM embeddings WHERE asset IN (SELECT asset FROM vector_events WHERE sequence>?)',(manifest['projection_sequence'],)).fetchone()[0]
                     else:changes=1;changed_rows=0
-                if changes and (manifest is None or args.once or changes>=MAX_PENDING_ASSETS or changed_rows>=MAX_OVERLAY_ROWS//2 or time.time()-manifest['created']>=COMPACTION_INTERVAL_SECONDS):
+                if changes and (manifest is None or (args.once and not getattr(args,'scheduled',False)) or changes>=MAX_PENDING_ASSETS or changed_rows>=MAX_OVERLAY_ROWS//2 or time.time()-manifest['created']>=COMPACTION_INTERVAL_SECONDS):
                     generation=root/('generation-'+uuid.uuid4().hex)
                     print(json.dumps(dict(stage='building',generation=str(generation))),flush=True)
                     with tempfile.TemporaryDirectory(prefix='.building-',dir=root) as workspace:
@@ -137,4 +137,5 @@ if __name__=='__main__':
     parser.add_argument('--projection',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--once',action='store_true')
+    parser.add_argument('--scheduled',action='store_true',help='Apply normal compaction thresholds during a one-shot maintenance check')
     main(parser.parse_args())

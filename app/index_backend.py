@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from app_paths import media_tool
 from model_config import (cached_model_path, configure_cache_environment, FRAME_INTERVAL_SECONDS,
                           SPEECH_CACHE_BYTES, SPEECH_CHUNK_SECONDS, SPEECH_LANGUAGE, VISUAL_CPU_THREADS)
 
@@ -25,9 +26,8 @@ class Backend:
         return Path(__file__).resolve().parent.parent / 'MacOS/Mami'
     def __init__(self, artifacts):
         configure_cache_environment()
-        # mlx-whisper invokes ffmpeg by name when reading saved audio. Finder-
-        # launched apps do not inherit Homebrew's bin directory from a shell.
-        os.environ['PATH'] = '/opt/homebrew/bin:' + os.environ.get('PATH', '/usr/bin:/bin')
+        # mlx-whisper invokes ffmpeg by name; use the signed bundled helper.
+        os.environ['PATH'] = str(Path(media_tool('ffmpeg')).parent) + ':' + os.environ.get('PATH', '/usr/bin:/bin')
         self.artifacts = Path(artifacts)
         self.visual = None
         self.speech_model = None
@@ -40,7 +40,7 @@ class Backend:
             return dict(metadata=json.loads(result.stdout), timestamps=[None], speech_times=[], metadataVersion=self.metadata_version)
         from sampling import sample_times, last_frame_time
         from metadata import video_metadata
-        result = self.run_command(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(source)], text=True, timeout=60)
+        result = self.run_command([media_tool('ffprobe'), '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(source)], text=True, timeout=60)
         probe = json.loads(result.stdout)
         metadata = video_metadata(probe)
         length = float(probe.get('format', {}).get('duration', 0))
@@ -54,7 +54,7 @@ class Backend:
         if timestamp is None:
             self.run_command([str(self.image_helper()), '--image-frame', str(source), str(target)], timeout=120)
             return
-        cmd = ['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-filter_threads', '1']
+        cmd = [media_tool('ffmpeg'), '-nostdin', '-v', 'error', '-n', '-threads', '1', '-filter_threads', '1']
         if timestamp is not None:
             cmd += ['-ss', str(timestamp)]
         cmd += ['-i', str(source), '-frames:v', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease:out_range=full', '-pix_fmt', 'yuvj420p', '-q:v', '3', '-threads', '1', str(target)]
@@ -136,7 +136,7 @@ class Backend:
     def audio(self, source, target, start):
         key = str(source)
         if key not in self.audio_streams:
-            result = self.run_command(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_streams', '-of', 'json', key], text=True, timeout=60)
+            result = self.run_command([media_tool('ffprobe'), '-v', 'error', '-show_streams', '-of', 'json', key], text=True, timeout=60)
             # iPhone spatial recordings also contain a regular stereo track.
             # Automatic selection favors the four-channel APAC stream, for
             # which FFmpeg has no decoder. Preserve the original; select the
@@ -147,7 +147,7 @@ class Backend:
                 raise RuntimeError(f'No compatible transcription audio track in {source.name}')
             stream = max(streams, key=lambda s: s.get('disposition', {}).get('default', 0))
             self.audio_streams[key] = stream['index']
-        self.run_command(['/opt/homebrew/bin/ffmpeg', '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', key, '-map', f'0:{self.audio_streams[key]}', '-t', str(SPEECH_CHUNK_SECONDS), '-vn', '-ac', '1', '-ar', '16000', str(target)], timeout=120)
+        self.run_command([media_tool('ffmpeg'), '-nostdin', '-v', 'error', '-n', '-threads', '1', '-ss', str(start), '-i', key, '-map', f'0:{self.audio_streams[key]}', '-t', str(SPEECH_CHUNK_SECONDS), '-vn', '-ac', '1', '-ar', '16000', str(target)], timeout=120)
 
     def speech(self, audio, start):
         import mlx_whisper

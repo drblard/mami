@@ -4,6 +4,9 @@ For the concise current checklist, follow [REMAINING.md](REMAINING.md).
 
 Last updated: 2026-09-29. Status: **Completed, deployed and verified**.
 
+**New production-layout/lifecycle work:** [MAC_APP.md](MAC_APP.md). The scaling
+release below remains live while that separately verified migration is prepared.
+
 ## Current release (read this before the historical log)
 
 - Active: **`prototype-20260929T090709977496Z`**, revision `0d43d1f`, through

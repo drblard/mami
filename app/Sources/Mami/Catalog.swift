@@ -10,29 +10,35 @@ struct Catalog: Sendable {
 
     static func configured(environment: [String: String] = ProcessInfo.processInfo.environment,
                            home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Catalog {
-        if let override = environment["MAMI_CATALOG"] {
+        let paths = AppPaths(environment: environment, home: home)
+        if let override = environment["MAMI_CATALOG"],
+           URL(fileURLWithPath: override).resolvingSymlinksInPath() != paths.catalog.resolvingSymlinksInPath() {
             return Catalog(directory: URL(fileURLWithPath: override))
         }
-        return Catalog(directory: home.appendingPathComponent("mami-lab/catalog/database"),
-                       backups: home.appendingPathComponent("mami-lab/backups/catalog"),
-                       legacyAnnotations: home.appendingPathComponent("mami-lab/catalog/annotations"),
-                       artifacts: home.appendingPathComponent("mami-lab/index-artifacts"))
+        return Catalog(directory: paths.catalog,
+                       backups: paths.personal.appendingPathComponent("Backups"),
+                       legacyAnnotations: paths.personal.appendingPathComponent("LegacyAnnotations"),
+                       artifacts: paths.artifacts,
+                       personalDatabase: paths.personal.appendingPathComponent("user.sqlite"))
     }
     private static let lock = NSRecursiveLock()
     let directory: URL
     let backups: URL
     let legacyAnnotationsDirectory: URL
     let artifacts: URL
+    private let personalDatabase: URL
     var database: URL { directory.appendingPathComponent("catalog.sqlite") }
-    var userDatabase: URL { directory.appendingPathComponent("user.sqlite") }
+    var userDatabase: URL { personalDatabase }
     var userBackups: URL { backups.appendingPathComponent("user-state") }
     private static let userTables = PersonalDataMigration.tables
+    private struct Ownership: Codable { let version: Int; let identity: String }
 
-    init(directory: URL, backups: URL? = nil, legacyAnnotations: URL? = nil, artifacts: URL? = nil) {
+    init(directory: URL, backups: URL? = nil, legacyAnnotations: URL? = nil, artifacts: URL? = nil, personalDatabase: URL? = nil) {
         self.directory = directory
         self.backups = backups ?? directory.appendingPathComponent("backups")
         self.legacyAnnotationsDirectory = legacyAnnotations ?? directory.appendingPathComponent("legacy-annotations")
         self.artifacts = artifacts ?? directory.appendingPathComponent("index-artifacts")
+        self.personalDatabase = personalDatabase ?? directory.appendingPathComponent("user.sqlite")
     }
 
     private func access<T>(_ body: (SQLDatabase) throws -> T) throws -> T {
@@ -97,7 +103,13 @@ struct Catalog: Sendable {
     /// The existing catalog lock serializes migration and both stores' writers.
     /// Publish the new user database only after copying, pruning and verification.
     private func userAccess<T>(_ body: (SQLDatabase) throws -> T) throws -> T {
-        try access { source in
+        let owner = userDatabase.deletingLastPathComponent().appendingPathComponent("ownership.json")
+        if FileManager.default.fileExists(atPath: owner.path), !FileManager.default.fileExists(atPath: userDatabase.path) {
+            throw AppError.message("Personal-data database is missing. Restore its backup before opening this library.")
+        }
+        try FileManager.default.createDirectory(at: userDatabase.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                              attributes: [.posixPermissions: 0o700])
+        return try access { source in
             let identity = try source.scalar("SELECT identity FROM state WHERE id=1")
             if !FileManager.default.fileExists(atPath: userDatabase.path) {
                 guard try source.rows("SELECT name FROM sqlite_master WHERE name='user_store_migration'").isEmpty else {
@@ -109,6 +121,16 @@ struct Catalog: Sendable {
             guard try user.scalar("SELECT version FROM user_store_info WHERE source_identity=?", [identity]) == String(PersonalDataMigration.version),
                   try user.scalar("SELECT identity FROM state WHERE id=1") == identity else {
                 throw AppError.message("User data belongs to another catalog or a newer version. Restore into a new directory.")
+            }
+            if FileManager.default.fileExists(atPath: owner.path) {
+                let marker = try JSONDecoder().decode(Ownership.self, from: Data(contentsOf: owner))
+                guard marker.version == 1, marker.identity == identity else {
+                    throw AppError.message("Personal-data ownership marker belongs to another library")
+                }
+            } else {
+                try JSONEncoder().encode(Ownership(version: 1, identity: identity)).write(to: owner, options: .withoutOverwriting)
+                try DurableFile.synchronize(owner)
+                try DurableFile.synchronizeDirectory(owner.deletingLastPathComponent())
             }
             if try !source.hasTable("user_store_migration") {
                 try source.transaction {

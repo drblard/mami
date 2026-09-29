@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import select
+import subprocess
 import tempfile
 import sys
 import time
@@ -14,6 +15,27 @@ import packed_search_worker as worker
 
 
 class ReadinessTests(unittest.TestCase):
+    def test_coordinator_crash_reaps_private_visual_group(self):
+        child=('import os,sys,threading,time,subprocess; sys.path.insert(0,sys.argv[1]); '
+               'from packed_search_worker import watch_parent; '
+               'subprocess.Popen([sys.executable,"-c","import time; time.sleep(30)"]); '
+               'watch_parent(threading.Event(),.02); print(os.getpid(),flush=True); time.sleep(30)')
+        parent='import subprocess,sys,time; subprocess.Popen([sys.executable,"-u","-c",sys.argv[1],sys.argv[2]],start_new_session=True); time.sleep(30)'
+        process=subprocess.Popen([sys.executable,'-u','-c',parent,child,str(Path(worker.__file__).parent)],stdout=subprocess.PIPE)
+        group=None
+        try:
+            self.assertTrue(select.select([process.stdout],[],[],3)[0])
+            group=int(process.stdout.readline())
+            process.kill();process.wait(timeout=3)
+            self.assertTrue(select.select([process.stdout],[],[],3)[0], 'Visual descendant kept its output pipe after the coordinator exited')
+            self.assertEqual(process.stdout.read(),b'')
+        finally:
+            if process.poll() is None:process.kill();process.wait()
+            if group:
+                try:os.killpg(group,9)
+                except ProcessLookupError:pass
+            process.stdout.close()
+
     def client(self, script, **kwargs):
         client=worker.VisualClient(None,None,command=[sys.executable,'-u','-c',script],**kwargs)
         self.addCleanup(client.close)
@@ -140,7 +162,7 @@ class ReadinessTests(unittest.TestCase):
             self.assertFalse(replies[0]['visual_ready'])
             self.assertEqual(replies[1]['hits'][0]['path'], 'clip')
             self.assertNotIn('error',replies[1])
-            self.assertEqual(replies[1]['indexed_samples'],0)
+            self.assertEqual(replies[1]['indexed_samples'],0 if mode=='both' else 1)
             if mode=='both':
                 self.assertEqual(replies[1]['visual_error'],'Visual initialization failed')
                 self.assertFalse(replies[1]['visual_pending'])

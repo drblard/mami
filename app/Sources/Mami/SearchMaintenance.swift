@@ -14,6 +14,10 @@ import Darwin
     private var quitting = false
     private var failures: [String: String] = [:]
     private static let shutdownGrace: Duration = .seconds(2)
+    private var configuration: Configuration?
+    private var checking = false
+    private var lastVectorAttempt = Date.distantPast
+    private var retryAfter: [String: Date] = [:]
 
     private func setFailure(_ message: String?, for worker: String) {
         failures[worker] = message
@@ -21,24 +25,50 @@ import Darwin
     }
 
     func start(_ configuration: Configuration) throws {
-        guard workers.isEmpty, let projection = configuration.searchProjection, let vectors = configuration.packedIndex else { return }
+        guard activityTimer == nil, configuration.searchProjection != nil, configuration.packedIndex != nil else { return }
         quitting = false
-        try launch(name: "projection", script: "search_sync.py", configuration: configuration,
-                   arguments: ["--catalog", Catalog.standard.database.path, "--output", projection,
-                               "--index", configuration.index.path, "--vector-root", vectors] + (configuration.speech.map { ["--speech", $0] } ?? []))
-        // Direct immutable generations are supported for isolated checks. Only
-        // managed roots with an ownership marker may run automatic compaction.
-        if FileManager.default.fileExists(atPath: URL(fileURLWithPath: vectors).appendingPathComponent("owner.json").path) {
-            try launch(name: "vectors", script: "vector_sync.py", configuration: configuration,
-                       arguments: ["--projection", projection, "--output", vectors])
+        self.configuration = configuration
+        activityTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.poll() }
         }
-        if configuration.packPreviews {
-            try launch(name: "preview-cache", script: "preview_cache_worker.py", configuration: configuration,
-                       arguments: ["--database", Catalog.standard.database.path, "--artifacts", Catalog.standard.artifacts.path, "--projection", projection])
-        }
+        poll()
+    }
+
+    private func poll() {
+        guard !quitting, !checking, let configuration,
+              let projection = configuration.searchProjection, let vectors = configuration.packedIndex else { return }
         reportActivity()
-        activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reportActivity() }
+        checking = true
+        let editorActive = Self.editorActive()
+        Task {
+            defer { checking = false }
+            do {
+                let needed = try await Task.detached(priority: .utility) {
+                    try MaintenanceWork.read(catalog: .standard, projection: URL(fileURLWithPath: projection), vectors: URL(fileURLWithPath: vectors))
+                }.value
+                guard !quitting else { return }
+                setFailure(nil, for: "scheduler")
+                func available(_ name: String) -> Bool { workers[name] == nil && (retryAfter[name] ?? .distantPast) <= Date() }
+                if needed.projection && available("projection") {
+                    var arguments = ["--catalog", Catalog.standard.database.path, "--output", projection, "--vector-root", vectors, "--once"]
+                    if FileManager.default.fileExists(atPath: configuration.index.path) { arguments += ["--index", configuration.index.path] }
+                    if let speech = configuration.speech, FileManager.default.fileExists(atPath: speech) { arguments += ["--speech", speech] }
+                    try launch(name: "projection", script: "search_sync.py", configuration: configuration, arguments: arguments)
+                }
+                if !editorActive && !needed.projection && needed.vectors && available("vectors") && Date().timeIntervalSince(lastVectorAttempt) >= 60 {
+                    let root = URL(fileURLWithPath: vectors)
+                    if FileManager.default.fileExists(atPath: root.appendingPathComponent("owner.json").path) ||
+                        root == AppPaths().search.appendingPathComponent("Vectors") {
+                        lastVectorAttempt = Date()
+                        try launch(name: "vectors", script: "vector_sync.py", configuration: configuration,
+                                   arguments: ["--projection", projection, "--output", vectors, "--once", "--scheduled"])
+                    }
+                }
+                if !editorActive && configuration.packPreviews && needed.previews && available("preview-cache") {
+                    try launch(name: "preview-cache", script: "preview_cache_worker.py", configuration: configuration,
+                               arguments: ["--database", Catalog.standard.database.path, "--artifacts", Catalog.standard.artifacts.path, "--projection", projection, "--once"])
+                }
+            } catch { setFailure("Could not schedule maintenance: \(error.localizedDescription)", for: "scheduler") }
         }
     }
 
@@ -47,7 +77,7 @@ import Darwin
         guard let resources = Bundle.main.resourceURL else { throw AppError.message("Worker resources unavailable") }
         process.executableURL = configuration.python
         process.arguments = ["-B", resources.appendingPathComponent(script).path] + arguments
-        var environment = ProcessInfo.processInfo.environment
+        var environment = configuration.workerEnvironment
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         environment["OMP_NUM_THREADS"] = "4"
         environment["OPENBLAS_NUM_THREADS"] = "4"
@@ -93,19 +123,29 @@ import Darwin
         guard workers[name] === process else { return }
         workers[name] = nil
         try? inputs.removeValue(forKey: name)?.close()
-        if !quitting { setFailure("Maintenance stopped; existing search data remains usable", for: name) }
+        if !quitting {
+            if process.terminationStatus == 0 {
+                setFailure(nil, for: name)
+                if name == "projection" { CatalogUpdates.shared.notify() }
+            } else {
+                retryAfter[name] = Date().addingTimeInterval(30)
+                setFailure("Maintenance stopped; retrying after a short delay", for: name)
+            }
+        }
+    }
+
+    private static func editorActive() -> Bool {
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
+        return Indexing.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)
     }
 
     private func reportActivity() {
-        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
-        let active = Indexing.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)
-        do {
-            var data = try JSONSerialization.data(withJSONObject: ["action": "editor-activity", "active": active])
-            data.append(10)
-            for name in ["vectors", "preview-cache"] {
-                if let input = inputs[name] { try WorkerPipe.write(data, to: input) }
-            }
-        } catch { self.error = "Could not update search maintenance scheduling: \(error.localizedDescription)" }
+        guard Self.editorActive() else { return }
+        for name in ["vectors", "preview-cache"] {
+            // One-shot workers have no command reader. Interrupt cooperatively
+            // at their next checkpoint when editing starts; later ticks retry.
+            if let process = workers[name], process.isRunning { process.terminate() }
+        }
     }
 
     func stop() {
@@ -113,6 +153,7 @@ import Darwin
         activityTimer?.invalidate(); activityTimer = nil
         for input in inputs.values { try? input.close() }
         inputs.removeAll()
+        for process in workers.values where process.isRunning { process.terminate() }
         let deadline = ContinuousClock.now.advanced(by: Self.shutdownGrace)
         while workers.values.contains(where: \.isRunning), ContinuousClock.now < deadline {
             Thread.sleep(forTimeInterval: 0.01)

@@ -1,6 +1,9 @@
 # Production code review — live checklist
 
 Started 2026-09-28 at the user's request. **Completed and deployed 2026-09-29.**
+
+Follow-up review in progress: standard Mac storage, self-contained packaging and
+on-demand worker lifecycle. Acceptance is tracked in [MAC_APP.md](MAC_APP.md).
 Scope: production Swift/Python, packaging and tests (~8.3k lines before this pass).
 Scaling experiments remain isolated in `app/scaling/`; their results are not a
 substitute for production correctness. Current live build:
@@ -99,6 +102,17 @@ validated native previews and indexed atlas maintenance).
   every `fatalError`, force unwrap or `try?` mechanically.
 
 ## Activity log
+
+- Production-layout follow-up is local-only while the Mac is in use. Standard
+  paths, verified no-clobber storage migration, physical-reference relocation,
+  separate personal ownership, runtime bundling and on-demand lifecycle changes
+  are implemented with 155 Python checks (150 pass / 5 Mac-only skips). Added
+  missing-personal-store, interrupted-publication, competing-destination,
+  checkpoint-preservation and coordinator-crash regressions. Native compilation,
+  signing/relocation validation and real migration remain open in `MAC_APP.md`.
+  The reported first-connect DJI issue was not caused by deployment: no changes
+  had been installed. Added mount observation, canonical connection keys and
+  visible busy deferral for the next native checks; cause remains unconfirmed.
 
 - Final release `prototype-20260929T090709977496Z`, revision `0d43d1f`, is active
   through `~/Applications/Mami.app`. Its unchanged Swift executable matches the

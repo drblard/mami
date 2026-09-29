@@ -41,6 +41,7 @@ def ensure_schema(db):
     present = db.execute("SELECT 1 FROM sqlite_master WHERE name='index_schema'").fetchone()
     version = db.execute('SELECT version FROM index_schema').fetchone()[0] if present else 0
     if version == INDEX_SCHEMA_VERSION:
+        ensure_readiness_views(db)
         return
     if version not in (0, 1):
         raise ValueError('Unsupported indexing queue version')
@@ -67,6 +68,17 @@ def ensure_schema(db):
     db.execute("CREATE TRIGGER index_jobs_preview_time AFTER UPDATE OF capture_time ON index_jobs BEGIN UPDATE preview_jobs SET capture_time=NEW.capture_time WHERE asset=NEW.asset AND capture_time IS NOT NEW.capture_time; END")
     db.execute('UPDATE index_schema SET version=?', (INDEX_SCHEMA_VERSION,))
     db.execute('UPDATE state SET revision=revision+1,change_token=lower(hex(randomblob(16))) WHERE id=1')
+    ensure_readiness_views(db)
+
+
+def ensure_readiness_views(db):
+    db.execute(f"CREATE INDEX IF NOT EXISTS index_work_pending ON index_jobs(asset) WHERE state IN ('queued','running') OR (state='error' AND attempts<{MAX_JOB_ATTEMPTS})")
+    db.execute('CREATE VIEW IF NOT EXISTS mami_preview_work AS SELECT asset FROM preview_jobs WHERE ('+PENDING_PREVIEW_PREDICATE+
+               ') AND (SELECT paused FROM preview_control WHERE id=1)=0')
+    db.execute(f"""CREATE VIEW IF NOT EXISTS mami_index_work AS SELECT j.asset FROM index_jobs j JOIN preview_jobs p ON p.asset=j.asset
+        WHERE p.state='complete' AND (j.state IN ('queued','running') OR (j.state='error' AND j.attempts<{MAX_JOB_ATTEMPTS}))
+        AND (SELECT paused FROM scan_control WHERE id=1)=0
+        AND NOT EXISTS (SELECT 1 FROM mami_preview_work)""")
 
 
 def track_changes(db, table):

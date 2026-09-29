@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import tempfile
 
-DIRECTORY = Path.home() / 'mami-lab/signing'
+DIRECTORY = Path(os.environ.get('MAMI_SIGNING_DIRECTORY',Path.home() / 'Library/Application Support/Mami Developer/Signing'))
 CONFIG = DIRECTORY / 'identity.json'
 
 
@@ -27,6 +27,8 @@ def setup():
         print('Existing signing identity retained:', load()['fingerprint'])
         print('If not yet trusted, run once in Terminal on the Mac and approve the prompt:\n' + trust_command())
         return
+    if (Path.home()/'mami-lab/signing/identity.json').exists():
+        raise RuntimeError('An existing development signing identity must be migrated; refusing to replace it.')
     if DIRECTORY.exists():
         raise RuntimeError(f'{DIRECTORY} already exists without a completed identity. Inspect it; do not regenerate or overwrite its key.')
     DIRECTORY.mkdir(mode=0o700, parents=True)
@@ -86,15 +88,23 @@ def load():
     value = json.loads(CONFIG.read_text())
     if len(value['fingerprint']) != 40 or any(c not in '0123456789ABCDEF' for c in value['fingerprint']):
         raise RuntimeError('Invalid signing certificate fingerprint')
-    for key in ('keychain', 'passwordFile'):
+    for key in ('keychain',):
         if not Path(value[key]).is_file():
             raise RuntimeError(f'Missing signing material: {key}. Restore the existing identity; do not replace it.')
     return value
 
 
-def sign(bundle):
+def password_for(identity):
+    if 'passwordService' in identity:
+        return run(['/usr/bin/security','find-generic-password','-s',identity['passwordService'],
+                    '-a',identity['passwordAccount'],'-w'],text=True).stdout.rstrip('\n')
+    # Explicit legacy/custom developer identities remain readable during migration.
+    return Path(identity['passwordFile']).read_text().strip()
+
+
+def sign(bundle, nested=()):
     identity = load()
-    password = Path(identity['passwordFile']).read_text().strip()
+    password = password_for(identity)
     run(['/usr/bin/security', 'unlock-keychain', '-p', password, identity['keychain']])
     requirement = f'designated => identifier "local.mami.prototype" and certificate leaf = H"{identity["fingerprint"]}"'
     # codesign also needs the identity in the user search list, even with an
@@ -104,6 +114,9 @@ def sign(bundle):
         previous = shlex.split(run(['/usr/bin/security', 'list-keychains', '-d', 'user'], text=True).stdout)
         try:
             run(['/usr/bin/security', 'list-keychains', '-d', 'user', '-s', *dict.fromkeys([*previous, identity['keychain']])])
+            for path in nested:
+                run(['/usr/bin/codesign', '--force', '--sign', identity['fingerprint'], '--keychain', identity['keychain'],
+                     '--timestamp=none', str(path)])
             run(['/usr/bin/codesign', '--force', '--sign', identity['fingerprint'], '--keychain', identity['keychain'],
                  '--timestamp=none', '--requirements', '=' + requirement, str(bundle)])
         except subprocess.CalledProcessError as error:

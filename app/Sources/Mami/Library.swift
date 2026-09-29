@@ -117,27 +117,47 @@ struct Configuration: Sendable {
     var packedIndex: String? = nil
     var searchProjection: String? = nil
     var packPreviews = false
+    var standardLayout = false
+    var launchEnvironment: [String: String]? = nil
+    var workerEnvironment: [String: String] {
+        var result = launchEnvironment ?? ProcessInfo.processInfo.environment
+        for key in ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"] { result.removeValue(forKey: key) }
+        result["PYTHONNOUSERSITE"] = "1"
+        result["PYTHONDONTWRITEBYTECODE"] = "1"
+        let paths = AppPaths(environment: result)
+        result["MAMI_SUPPORT_ROOT"] = paths.support.path
+        if result["MAMI_CACHE_ROOT"] == nil {
+            if let catalog = result["MAMI_CATALOG"], URL(fileURLWithPath: catalog).resolvingSymlinksInPath() != paths.catalog.resolvingSymlinksInPath() {
+                result["MAMI_CACHE_ROOT"] = URL(fileURLWithPath: catalog).appendingPathComponent("runtime-cache").path
+            } else { result["MAMI_CACHE_ROOT"] = paths.caches.path }
+        }
+        let helpers = worker.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Helpers")
+        result["PATH"] = helpers.path + ":" + python.deletingLastPathComponent().path + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        return result
+    }
 
     static func load(environment env: [String: String] = ProcessInfo.processInfo.environment, resourceDirectory: URL? = nil) throws -> Configuration {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let paths = AppPaths(environment: env)
         let resources = resourceDirectory ?? Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let configURL = resources.appendingPathComponent("configuration.json")
         let defaults = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: configURL))) ?? [:]
-        guard let index = env["MAMI_INDEX"] ?? defaults["index"] else {
+        let standardLayout = defaults["layout"] == "standard-v1"
+        guard let index = env["MAMI_INDEX"] ?? (standardLayout ? paths.legacyVisual.path : defaults["index"]) else {
             throw AppError.message("No visual index configured. Set MAMI_INDEX or bundle configuration.json.")
         }
-        let isolated = env["MAMI_CATALOG"] != nil
-        let packed = env["MAMI_PACKED_INDEX"] ?? (isolated ? nil : defaults["packed_index"])
-        let projection = env["MAMI_SEARCH_PROJECTION"] ?? (isolated ? nil : defaults["search_projection"])
+        let isolated = env["MAMI_CATALOG"].map { URL(fileURLWithPath: $0).resolvingSymlinksInPath() != paths.catalog.resolvingSymlinksInPath() } ?? false
+        let packed = env["MAMI_PACKED_INDEX"] ?? (isolated ? nil : standardLayout ? paths.search.appendingPathComponent("Vectors").path : defaults["packed_index"])
+        let projection = env["MAMI_SEARCH_PROJECTION"] ?? (isolated ? nil : standardLayout ? paths.search.appendingPathComponent("search.sqlite").path : defaults["search_projection"])
         return Configuration(
             index: URL(fileURLWithPath: index),
-            python: URL(fileURLWithPath: env["MAMI_PYTHON"] ?? home.appendingPathComponent("mami-lab/.venv/bin/python").path),
+            python: URL(fileURLWithPath: env["MAMI_PYTHON"] ?? resources.deletingLastPathComponent().appendingPathComponent("Helpers/Python/bin/python3").path),
             worker: URL(fileURLWithPath: env["MAMI_WORKER"] ?? resources.appendingPathComponent("search_worker.py").path),
-            speech: env["MAMI_SPEECH"] ?? defaults["speech"],
-            nativeEncoder: env["MAMI_NATIVE_ENCODER"] ?? defaults["native_encoder"],
+            speech: env["MAMI_SPEECH"] ?? (standardLayout ? paths.legacySpeech.path : defaults["speech"]),
+            nativeEncoder: env["MAMI_NATIVE_ENCODER"] ?? (standardLayout ? resources.appendingPathComponent("TextEncoder").path : defaults["native_encoder"]),
             packedIndex: packed,
             searchProjection: projection,
-            packPreviews: packed != nil && projection != nil && (env["MAMI_PACK_PREVIEWS"] ?? defaults["pack_previews"]) == "1")
+            packPreviews: packed != nil && projection != nil && (env["MAMI_PACK_PREVIEWS"] ?? defaults["pack_previews"]) == "1",
+            standardLayout: standardLayout, launchEnvironment: env)
     }
 }
 
@@ -158,10 +178,16 @@ actor SearchWorker {
     private var output: FileHandle?
     private var reader: LineReader?
     private var configuration: Configuration?
+    private var idleTask: Task<Void, Never>?
+    private var activityGeneration = 0
+    private static let idleTimeout: Duration = .seconds(60)
 
     func start(_ config: Configuration) throws {
         abortWorker()
         configuration = config
+    }
+
+    private func launch(_ config: Configuration) throws {
         let task = Process()
         task.qualityOfService = .userInitiated
         task.executableURL = config.python
@@ -171,7 +197,7 @@ actor SearchWorker {
         if let encoder = config.nativeEncoder { task.arguments! += ["--native-encoder", encoder] }
         if let packed = config.packedIndex { task.arguments! += ["--packed-index", packed] }
         if let projection = config.searchProjection { task.arguments! += ["--projection", projection] }
-        var env = ProcessInfo.processInfo.environment
+        var env = config.workerEnvironment
         env["HF_HUB_OFFLINE"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -205,7 +231,10 @@ actor SearchWorker {
 
     func search(_ query: String, mode: String = "both", paths: [String]? = nil, scope: ProjectionReader.Scope? = nil) throws -> Reply {
         try Task.checkCancellation()
-        if process?.isRunning != true, let configuration { try start(configuration) }
+        idleTask?.cancel(); idleTask = nil
+        activityGeneration += 1
+        defer { scheduleIdleExit() }
+        if process?.isRunning != true, let configuration { try launch(configuration) }
         guard let input, process?.isRunning == true else { throw AppError.message("Search process is not running.") }
         var request: [String: Any] = ["query": query, "mode": mode]
         if let paths { request["paths"] = paths }
@@ -225,6 +254,7 @@ actor SearchWorker {
     }
 
     func stop() async {
+        idleTask?.cancel(); idleTask = nil
         let ending = process
         let endingOutput = output
         try? input?.close()
@@ -256,6 +286,7 @@ actor SearchWorker {
     }
 
     private func abortWorker() {
+        idleTask?.cancel(); idleTask = nil
         try? input?.close()
         try? output?.close()
         // This worker only reads generated search data. A broken protocol or
@@ -268,8 +299,23 @@ actor SearchWorker {
     }
 
     deinit {
+        idleTask?.cancel()
         try? input?.close()
         if process?.isRunning == true { process?.terminate() }
+    }
+
+    private func scheduleIdleExit() {
+        let generation = activityGeneration
+        idleTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.idleTimeout) } catch { return }
+            await self?.expire(generation)
+        }
+    }
+
+    private func expire(_ generation: Int) async {
+        guard generation == activityGeneration else { return }
+        idleTask = nil
+        await stop()
     }
 }
 
@@ -383,6 +429,29 @@ actor SearchWorker {
             try await Task.detached { try Catalog.standard.prepareUserStore() }.value
             speechAvailable = config.speech != nil
             if let path = config.searchProjection {
+                let prepared = (try? SQLDatabase(URL(fileURLWithPath: path), readOnly: true).scalar("SELECT ready FROM checkpoint WHERE id=1")) == "1"
+                if !prepared {
+                    status = "Preparing the search catalog…"
+                    try await Task.detached(priority: .userInitiated) {
+                        let process = Process()
+                        process.executableURL = config.python
+                        process.environment = config.workerEnvironment
+                        process.arguments = ["-B", config.worker.deletingLastPathComponent().appendingPathComponent("prepare_storage.py").path,
+                                             "--catalog", Catalog.standard.database.path, "--projection", path]
+                        if FileManager.default.fileExists(atPath: config.index.path) { process.arguments! += ["--index", config.index.path] }
+                        if let speech = config.speech, FileManager.default.fileExists(atPath: speech) { process.arguments! += ["--speech", speech] }
+                        process.standardError = FileHandle.standardError
+                        try process.run()
+                        defer { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
+                        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+                        while process.isRunning && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
+                        if process.isRunning {
+                            kill(process.processIdentifier, SIGKILL)
+                            throw AppError.message("Preparing generated search data exceeded its deadline; retry to resume")
+                        }
+                        guard process.terminationStatus == 0 else { throw AppError.message("Could not prepare generated search data") }
+                    }.value
+                }
                 let identity = try await Task.detached { try Catalog.standard.identity() }.value
                 let reader = ProjectionReader(database: URL(fileURLWithPath: path), sourceIdentity: identity)
                 let initial = try await Task.detached { try (reader.facets(), reader.page(scope: .init())) }.value

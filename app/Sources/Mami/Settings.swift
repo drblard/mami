@@ -4,6 +4,7 @@ import AppKit
 struct MamiSettings: View {
     @ObservedObject private var photos = PhotosImporting.shared
     @ObservedObject private var importing = Importing.shared
+    @ObservedObject private var models = ModelDownloads.shared
     @ViewState private var reviewCamera = false
     private var busy: Bool { photos.running || importing.photosTransfer }
     private var cameraBusy: Bool { importing.running && !importing.photosTransfer }
@@ -81,8 +82,17 @@ struct MamiSettings: View {
                 Text("If disconnected early, reconnect to resume verified work. Failed or stopped offloads do not eject. Turn automatic offload off before connecting to review per-file exceptions first.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Storage and local models") {
+                Text("Personal data and recovery snapshots: \(AppPaths().personal.path)")
+                    .font(.caption).textSelection(.enabled)
+                Button("Show personal data in Finder") { NSWorkspace.shared.open(AppPaths().personal) }
+                Text("Originals and Personal need backup. Derived indexes/previews and downloaded models can be regenerated.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(models.status).font(.caption)
+                Button("Download / repair indexing models") { models.download() }.disabled(models.running)
+            }
             Section("Archiving") {
-                Text("Completed imports are remembered in the backed-up catalog. Changing the destination or moving an imported file does not request another iCloud download.")
+                Text("Completed imports are remembered in the backed-up personal database. Changing the destination or moving an imported file does not request another iCloud download.")
                 Text("Managed NFS / HDD archiving is not available yet. It will need verified moves and catalog location updates so originals remain accessible when the archive is connected.")
                     .foregroundStyle(.secondary)
             }.font(.caption)

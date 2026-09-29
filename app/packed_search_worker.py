@@ -25,6 +25,17 @@ VISUAL_SHUTDOWN_TIMEOUT = 2
 MAX_VISUAL_RESTARTS = 2
 
 
+def watch_parent(stop, interval=1):
+    """A private visual process group must not survive a crashed coordinator."""
+    parent=os.getppid()
+    if os.getpgrp()!=os.getpid():return
+    def monitor():
+        while not stop.wait(interval):
+            if parent==1 or os.getppid()!=parent:
+                os.killpg(os.getpid(),signal.SIGKILL)
+    threading.Thread(target=monitor,daemon=True).start()
+
+
 class VisualClient:
     """A separate interpreter keeps MLX/tokenizer initialization off the text path."""
     def __init__(self, args, executable, command=None, clock=time.monotonic):
@@ -236,6 +247,7 @@ def run(args):
     executable = Path(args.native_executable) if args.native_executable else Path(__file__).resolve().parent.parent/'MacOS/Mami'
     if getattr(args, 'visual_service', False):
         runtime = VisualRuntime(args, executable)
+        watch_parent(runtime.stop)
         try:
             if not runtime.ready.wait(VISUAL_STARTUP_TIMEOUT):
                 raise TimeoutError('Visual initialization deadline expired')
@@ -253,13 +265,16 @@ def run(args):
         finally:
             runtime.close()
         return
-    generation = resolve_generation(args.packed_index)
-    manifest = json.loads((generation/'manifest.json').read_text())
+    try:
+        generation = resolve_generation(args.packed_index)
+        manifest = json.loads((generation/'manifest.json').read_text())
+    except FileNotFoundError:
+        generation = None
+        manifest = dict(rows=0)
     with SearchStore(args.projection, read_only=True) as projection:
         checkpoint = projection.db.execute('SELECT identity,epoch FROM checkpoint WHERE id=1 AND ready=1').fetchone()
-        if checkpoint is None or checkpoint['identity'] != manifest['source_identity'] or checkpoint['epoch'] != manifest['epoch']:
-            raise ValueError('Packed index and catalog projection identities differ')
-        visual_runtime = VisualClient(args, executable)
+        if checkpoint is None:raise ValueError('Search projection is not ready')
+        visual_runtime = None
         try:
             print(json.dumps(dict(ready=True, visual_ready=False, samples=manifest['rows'])), flush=True)
             for line in sys.stdin:
@@ -277,6 +292,11 @@ def run(args):
                     visual, pending, visual_error = [], False, None
                     if mode != 'speech':
                         try:
+                            if visual_runtime is not None and getattr(visual_runtime,'failure',None) is not None:
+                                latest=resolve_generation(args.packed_index)
+                                if latest!=generation:
+                                    visual_runtime.close();visual_runtime=None;generation=latest
+                            if visual_runtime is None:visual_runtime = VisualClient(args, executable)
                             visual, pending = visual_runtime.search(query, allowed, scope)
                         except (OSError, RuntimeError, ValueError) as error:
                             if mode == 'visual':
@@ -302,4 +322,4 @@ def run(args):
                     reply = dict(error=str(error))
                 print(json.dumps(reply, ensure_ascii=False), flush=True)
         finally:
-            visual_runtime.close()
+            if visual_runtime is not None:visual_runtime.close()

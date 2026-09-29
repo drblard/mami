@@ -749,7 +749,7 @@ struct LibraryView: View {
                 backups.schedule()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); Indexing.previews.stop(); SearchMaintenance.shared.stop(); backups.flush() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); Indexing.previews.stop(); SearchMaintenance.shared.stop(); ModelDownloads.shared.stop(); backups.flush() }
         .task(id: catalogUpdates.generation) {
             if catalogUpdates.generation > 0 {
                 do { try await Task.sleep(for: .milliseconds(100)) } catch { return }

@@ -190,7 +190,8 @@ class Importer:
 
     @staticmethod
     def capture_time(path):
-        result = subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_entries',
+        from app_paths import media_tool
+        result = subprocess.run([media_tool('ffprobe'), '-v', 'error', '-show_entries',
                                  'format_tags:stream_tags', '-of', 'json', str(path)], capture_output=True, text=True, check=True, timeout=60)
         probe = json.loads(result.stdout)
         tags = [probe.get('format', {}).get('tags', {})] + [s.get('tags', {}) for s in probe.get('streams', [])]

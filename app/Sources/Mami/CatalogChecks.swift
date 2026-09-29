@@ -13,6 +13,11 @@ func checkCatalog(at root: URL) throws {
     try require(configured.backups == isolatedDirectory.appendingPathComponent("backups"), "Catalog override leaked backups into the live library")
     try require(configured.legacyAnnotationsDirectory == isolatedDirectory.appendingPathComponent("legacy-annotations"), "Catalog override reads live legacy annotations")
     try require(configured.artifacts == isolatedDirectory.appendingPathComponent("index-artifacts"), "Catalog override writes live indexing artifacts")
+    let production = Catalog.configured(environment: [:], home: root)
+    let support = root.appendingPathComponent("Library/Application Support/Mami")
+    try require(production.database == support.appendingPathComponent("Derived/Catalog/catalog.sqlite"), "Generated catalog is outside Application Support")
+    try require(production.userDatabase == support.appendingPathComponent("Personal/user.sqlite"), "Personal data was mixed into the derived catalog directory")
+    try require(production.userBackups == support.appendingPathComponent("Personal/Backups/user-state"), "Personal backups have no persistent production home")
     let configurationRoot = root.appendingPathComponent("configuration-fixture")
     try FileManager.default.createDirectory(at: configurationRoot, withIntermediateDirectories: true)
     let configuration: [String: String] = ["index": "/unused/index", "packed_index": "/live/vectors", "search_projection": "/live/search.sqlite", "pack_previews": "1"]
