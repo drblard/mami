@@ -1,12 +1,19 @@
 # Mac application layout and worker lifecycle
 
-Status: **migration in progress**. Existing live release remains in `mami-lab`
-until the verified migration and installation steps below complete.
+Status: **production storage migrated; self-contained app installed and validated**.
+Accepted build: `prototype-20260929T134121462682Z`, installed as a real bundle at
+`~/Applications/Mami.app`. Backup/restore instructions: [BACKUP.md](BACKUP.md).
 
-**Mac work paused:** user reports his wife is using it. A one-time process check
-found no agent build/test/migration jobs to stop. No production data has moved;
-the installed app is unchanged. Continue Linux-only implementation/checks until
-the user confirms availability and foreground/idle activity is checked again.
+**Mac work resumed:** user confirmed availability; foreground was Brave Browser,
+idle over six minutes. Candidate `prototype-20260929T120320841579Z` is isolated.
+Native validation passes after correcting the scheduler annotation and macOS path
+alias handling. The original signing identity is now in the user's Keychains and
+developer Application Support; its unlock credential is in login Keychain. GUI
+signing is required by the existing Keychain access policy. The old app was quit
+normally, production storage was copied/published, and old lab data is retained.
+The real application is installed at `~/Applications/Mami.app`, and live idle
+observation confirms zero helper processes. Final UI/lifecycle acceptance passes,
+including superseded searches and explicit paused/retry wake-up.
 
 ## Production homes
 
@@ -37,31 +44,40 @@ https://developer.apple.com/library/archive/documentation/FileManagement/Concept
       3.12 plus site packages, Homebrew FFmpeg dependency closure, pinned models,
       legacy frame/vector inputs and catalog JSON paths. All 17,264 current media
       URLs point into Originals; physical lab references are derived frame/vector/audio.
-- [ ] Centralize standard-directory resolution; isolate test overrides.
-- [ ] Separate personal and generated database paths without changing personal data.
-- [ ] Bundle relocatable Python/media dependencies; preserve licenses and sign nested code.
-- [ ] Migrate required models, legacy inputs, previews, vectors and databases with
+- [x] Centralize standard-directory resolution; isolation checks pass on Linux/Mac.
+- [x] Separate personal and generated database paths without changing personal meaning/revision.
+- [x] Bundle relocatable Python/media dependencies; imports/media decode and strict
+      post-run signing pass. Python's executable/framework and resource data are
+      separated according to code-signing layout requirements; no Homebrew loads.
+- [x] Migrate required models, legacy inputs, previews, vectors and databases with
       verified copies, atomic publication and interruption recovery.
-- [ ] Keep ownership/missing-store detection and original-media paths intact.
-- [ ] Move developer signing material out of the lab without replacing its identity.
-- [ ] Stop completed preview/index/maintenance workers; wake on relevant changes.
-- [ ] Start visual inference on demand and release it after idle timeout.
-- [ ] Verify idle → wake → work → idle, paused/retry, shutdown and restart behavior.
+      Data is published and verified: 17,278 media records, 16,914 Photos verification
+      rows and 167,643 physical resource references outside the lab. Search rebuilt.
+- [x] Keep ownership/missing-store detection and original-media paths intact.
+- [x] Move developer signing material out of the lab without replacing its identity.
+- [x] Stop completed preview/index/maintenance workers; wake on relevant changes.
+- [x] Start visual inference on demand and release it after idle timeout.
+- [x] Verify idle → wake → work → idle, paused/retry, shutdown and restart behavior.
 - [x] Investigate reported first DJI connection: retained system logs confirm two
       attachments, with the first mount rejected/ejected by loginwindow while locked.
       Timeline/evidence is below. No app change or deliberate pause caused this.
-- [ ] Validate the prospective mount-notification/connection-status improvements;
-      these cannot override a volume mount denied by macOS.
-- [ ] Install a real signed app and validate with the lab unavailable.
-- [ ] Verify all personal rows, selections, roots, original bytes and offline previews.
-- [ ] Document exact Backblaze inclusions/exclusions, restore and rollback.
-- [ ] Commit/push tested milestones and record the final live installation.
+- [x] Native camera tests pass: enable, busy deferral, once-per-connection,
+      reconnect and explicit retry. Physical DJI replug acceptance remains a user
+      observation; these changes cannot override a volume mount denied by macOS.
+- [x] Install a real signed app and validate with the lab unavailable.
+      Native search/scrubbing, bundled Python modules, FFmpeg and actual speech
+      inference passed while the development directory was renamed/unavailable.
+- [x] Verify personal rows/revision, selection meaning, roots, byte-verified resource
+      copies and unchanged original locations. Native packed previews/search pass.
+- [x] Document exact Backblaze inclusions/exclusions and restore in [BACKUP.md](BACKUP.md).
+      A self-contained, signed previous app is retained under `Mami/Recovery/`.
+- [x] Record final live installation and acceptance receipts; commit/push this tested milestone.
 
 No legacy tree is deleted during migration. Once the lab-independent acceptance
 passes, the whole lab can be excluded from backup. The prior scaling release's
 completed checklist is historical; this document tracks the newly requested work.
 
-## Local implementation checkpoint (not deployed)
+## Historical local implementation checkpoint (superseded by acceptance below)
 
 - Standard-directory resolution and separate personal-store routing are implemented.
   Ownership checks protect a missing personal store independently of catalog caches.
@@ -81,6 +97,44 @@ completed checklist is historical; this document tracks the newly requested work
   wake measurements and production migration after the Mac becomes available.
 - Local validation: **155 Python tests, 150 passed / 5 Mac-only skips**; Ruff and
   diff whitespace checks pass. Native tests are prepared, not yet run.
+
+## Resumed native validation
+
+Current build/runtime notes: Python and native modules are embedded and relocated;
+the native text encoder is bundled. The dependency-derived deployment minimum for
+this local arm64 build is macOS 26.2 (the target Mac is newer). No claim is made
+that this bundle supports older macOS versions. Application updates exchange whole
+signed bundles atomically; runtime data stays in Application Support.
+
+- 16 Swift tests / 156 Python tests pass on the Mac. Fixed a main-actor helper
+  annotation and canonical directory aliases exposed by macOS `/var` paths.
+- Packaging initially failed because executable/data files from a full Python
+  distribution were placed in nested-code slots. Reworked to a small signed
+  launcher, a versioned Python framework, resource data and individually signed
+  extension libraries. Removed unused developer entry points. Runtime imports,
+  media-tool decode and post-execution signature verification now pass.
+- The old app was shut down normally before copying. Originals and original lab
+  files remain untouched. Personal meaning, revision and ownership were verified;
+  copied physical references resolve in Application Support. The new native path
+  loads 100 items and passes browsing/search/crop checks against migrated data.
+- Lifecycle acceptance passed against isolated support/media roots, including
+  lazy search startup, idle exit and new-media wake-up. No old-lab runtime is being
+  used by the installed application's workers.
+- Installed-app audit reached **zero helper processes while idle**, with the
+  native application remaining open. Fresh media wakes previews/inference/search
+  and all helpers return to idle. Missing-personal-store protection and deep
+  signature checks pass. Native UI acceptance exposed an old test race between
+  manual and debounced searches after lazy startup; the test now awaits the latest
+  request rather than asserting against a superseded task. Final UI rerun passed.
+- Pausing persists and releases the worker; resuming and retrying an errored job
+  wake a sleeping worker and complete successfully. Catalog/transport and missing
+  personal-store checks pass. No personal data is silently recreated.
+- Backblaze cloud restore and a physical DJI reconnect were not performed by these
+  automated checks. Local data integrity and lab-independent operation are verified.
+- Final installed build passed a second lab-unavailable run and reached zero helpers
+  again; Mami is left running. `Personal/migration.json` records phase `accepted`.
+  Selected acceptance logs/reports are archived on Linux under
+  `/home/steevel/mami-lab/benchmarks/mac-app-20260929/` without databases/originals.
 
 ## DJI incident — retained log diagnosis
 

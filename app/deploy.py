@@ -12,7 +12,9 @@ remote = '/Users/ludi/mami-lab/apps/' + name
 archive = io.BytesIO()
 with tarfile.open(fileobj=archive, mode='w') as tar:
     deployment_files = ['Package.swift', 'Sources', 'Tests', 'benchmark_search.py', 'package.py',
-                        'bundle_runtime.py', 'storage_migration.py', 'migrate_signing.py',
+                        'bundle_runtime.py', 'storage_migration.py', 'migrate_signing.py', 'run_gui_command.py',
+                        'install_production.py', 'verify_storage_migration.py', 'check_lab_independence.py',
+                        'check_mac_installation.py', 'check_idle_app.py',
                         'bundle_resources.py', 'signing.py', 'build_catalog.py', 'restore_catalog.py',
                         'relocate_catalog.py', 'prune_catalog_backups.py', 'check_media_pipeline.py', 'check_dji_responsiveness.py', 'check_preview_atlas.py', 'check_persistent_lifecycle.py', 'check_search_resources.py', 'check_search_acceptance.py', 'check_cold_native.py', 'check_native_release.py', 'verify.py', 'build_search_store.py', 'prepare_text_encoder.py']
     deployment_files += list(WORKER_RESOURCES)

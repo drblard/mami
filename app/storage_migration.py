@@ -76,14 +76,19 @@ class Relocator:
     def __init__(self,lab,target,staging,configuration):
         self.lab,self.target,self.staging=lab,target,staging
         self.prefixes=[(lab/'index-artifacts',target/'Derived/Artifacts'),
-                       (Path(configuration['index']),target/'Derived/Legacy/Visual'),
-                       (Path(configuration['speech']),target/'Derived/Legacy/Speech'),
+                       (Path(configuration['index']).resolve(),target/'Derived/Legacy/Visual'),
+                       (Path(configuration['speech']).resolve(),target/'Derived/Legacy/Speech'),
                        (lab/'runs',target/'Derived/Legacy/Artifacts')]
+        self.seed_prefixes=[(Path(configuration['index']),target/'Derived/Legacy/Visual'),
+                            (Path(configuration['speech']),target/'Derived/Legacy/Speech'),*self.prefixes[:3]]
         self.files={}
 
     def physical(self,value,required=True):
         if not isinstance(value,str) or not Path(value).is_absolute():return value
         source=Path(value)
+        # Normalize directory aliases (/var versus /private/var on macOS), but
+        # preserve the final filename even when it is a legacy index symlink.
+        source=source.parent.resolve()/source.name
         if not source.is_relative_to(self.lab):return value
         if value in self.files:return self.files[value]
         for old,new in self.prefixes:
@@ -163,7 +168,7 @@ def migrate(lab,target,configuration,checkpoint=lambda stage:None):
                         db.execute('UPDATE '+table+' SET payload=? WHERE rowid=?',(updated,rowid))
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='seed_sources'").fetchone():
                     for (value,) in db.execute('SELECT source FROM seed_sources').fetchall():
-                        for old,new in relocator.prefixes[:3]:
+                        for old,new in relocator.seed_prefixes:
                             if value.startswith(str(old)+':'):
                                 db.execute('UPDATE seed_sources SET source=? WHERE source=?',(str(new)+value[len(str(old)):],value))
                                 break

@@ -2,13 +2,14 @@
 
 Started 2026-09-28 at the user's request. **Completed and deployed 2026-09-29.**
 
-Follow-up review in progress: standard Mac storage, self-contained packaging and
-on-demand worker lifecycle. Acceptance is tracked in [MAC_APP.md](MAC_APP.md).
+Follow-up implemented and validated: standard Mac storage, self-contained packaging
+and on-demand workers. Acceptance and limitations: [MAC_APP.md](MAC_APP.md).
 Scope: production Swift/Python, packaging and tests (~8.3k lines before this pass).
 Scaling experiments remain isolated in `app/scaling/`; their results are not a
 substitute for production correctness. Current live build:
-`prototype-20260929T090709977496Z` (paged persistent search, separate queues,
-validated native previews and indexed atlas maintenance).
+`prototype-20260929T134121462682Z` (real signed app, Application Support storage,
+lazy search and idle worker release). 16 Swift and 156 Python tests pass on the Mac;
+native UI, lifecycle including paused/retry wake-up, and lab-independent checks pass.
 
 ## Review approach
 

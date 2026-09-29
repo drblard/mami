@@ -12,6 +12,16 @@ struct AppPaths: Sendable {
     var legacyVisual: URL { support.appendingPathComponent("Derived/Legacy/Visual") }
     var legacySpeech: URL { support.appendingPathComponent("Derived/Legacy/Speech") }
 
+    func prepareGeneratedDirectories() throws {
+        for directory in [support.appendingPathComponent("Derived"), models, caches] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var url = directory
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try url.setResourceValues(values)
+        }
+    }
+
     init(environment: [String: String] = ProcessInfo.processInfo.environment,
          home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         let manager = FileManager.default

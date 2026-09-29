@@ -787,6 +787,15 @@ struct MamiApp: App {
 
 @main enum EntryPoint {
     @MainActor static func main() {
+        if let index = CommandLine.arguments.firstIndex(of: "--worker-lifecycle-test"), CommandLine.arguments.indices.contains(index + 1) {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            Task {
+                do { try await checkWorkerLifecycle(at: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) }
+                catch { print("WORKER LIFECYCLE TEST FAILED: \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
         if CommandLine.arguments.contains("--worker-pipe-test") {
             do { try WorkerPipe.check(); try SearchMaintenance.checkShutdown(); exit(0) }
             catch { fputs("WORKER PIPE TEST FAILED: \(error)\n", stderr); exit(1) }
@@ -1221,13 +1230,13 @@ struct MamiApp: App {
         if let date = library.catalogMedia.compactMap({ $0.metadata?.sortDate }).first(where: { $0.count >= 8 }) {
             let day = "\(date.prefix(4))-\(date.dropFirst(4).prefix(2))-\(date.dropFirst(6).prefix(2))"
             library.query = "goats on \(day)"
-            await library.search()?.value
+            await library.searchAndWait()
             let count = library.catalogMedia.filter { library.matchesDate($0) }.count
             guard library.items.count == min(60, count), library.items.allSatisfy({ library.matchesDate($0) }) else { throw AppError.message("Date range was not applied before search limit") }
             library.query = "on \(day)"
-            await library.search()?.value
+            await library.searchAndWait()
             guard library.items.count == count, !library.showingMatches else { throw AppError.message("Date-only search failed") }
-            library.query = ""; await library.search()?.value
+            library.query = ""; await library.searchAndWait()
         }
         print("DATES month/year, leap year, inclusive range, unknown dates, invalid dates and pre-limit search filtering passed")
         guard MediaFormat.classify(width: 1920, height: 1080, orientation: 6) == .vertical,
@@ -1241,7 +1250,7 @@ struct MamiApp: App {
             library.query = "goats"
             // Let the view's automatic filter-change search settle before awaiting this query.
             try await Task.sleep(for: .milliseconds(100))
-            await library.search()?.value
+            await library.searchAndWait()
             let available = library.formats.values.filter { $0 == format }.count
             guard library.items.count == min(60, available), library.items.allSatisfy({ library.matchesFormat($0) }) else {
                 throw AppError.message("Shape filter failed for \(format): \(library.items.count) of \(available)")
@@ -1257,7 +1266,7 @@ struct MamiApp: App {
         if let device = library.devices.first {
             library.deviceFilter = device
             try await Task.sleep(for: .milliseconds(100))
-            await library.search()?.value
+            await library.searchAndWait()
             let count = library.catalogMedia.filter { $0.device == device }.count
             guard library.items.count == min(60, count), library.items.allSatisfy({ $0.device == device }) else {
                 throw AppError.message("Device filter did not constrain search candidates")
@@ -1268,13 +1277,13 @@ struct MamiApp: App {
         }
         try await Task.sleep(for: .milliseconds(100))
         library.query = "bringing food to goats"
-        await library.search()?.value
+        await library.searchAndWait()
         guard library.items.count == 60, library.showingMatches else { throw AppError.message("UI search failed") }
         try await Task.sleep(for: .seconds(1))
         try snapshot("search.png")
         if library.speechAvailable {
             library.query = "Dunăre"
-            await library.search()?.value
+            await library.searchAndWait()
             guard library.items.count == 60, library.items.contains(where: { $0.match.evidence != nil }),
                   Set(library.items.map(\.path)).count == library.items.count else {
                 throw AppError.message("Combined search lost spoken matches or duplicated files")
@@ -1285,7 +1294,7 @@ struct MamiApp: App {
             library.mode = "speech"
             try await Task.sleep(for: .milliseconds(200))
             library.query = "Dunăre"
-            await library.search()?.value
+            await library.searchAndWait()
             guard !library.items.isEmpty, library.items.allSatisfy({ $0.match.evidence != nil }) else {
                 throw AppError.message("Spoken-word search failed")
             }
@@ -1294,7 +1303,7 @@ struct MamiApp: App {
             print("SPEECH_MATCHES \(library.items.count)")
         }
         library.query = ""
-        await library.search()?.value
+        await library.searchAndWait()
         guard library.items.count == 498, !library.showingMatches else { throw AppError.message("Clear search failed") }
         await library.worker.stop()
         var cameraConnections = CameraConnections()
@@ -1445,7 +1454,7 @@ struct MamiApp: App {
         window.orderOut(nil)
         print("TRANSPORT initial position and seek refresh passed without hover")
         library.query = ""; library.format = .all; library.deviceFilter = "All devices"; library.dateEnabled = false
-        await library.search()?.value
+        await library.searchAndWait()
         library.gridLocked = true
         let before = library.items.map(\.id)
         let original = library.catalogMedia.first { $0.kind == "image" }!
@@ -1456,7 +1465,7 @@ struct MamiApp: App {
         try Catalog.standard.synchronize([arrival])
         await library.refreshCatalog()
         guard library.items.map(\.id) == before, library.pendingMediaCount == 1 else { throw AppError.message("Locked grid changed during catalog refresh") }
-        await library.search()?.value
+        await library.searchAndWait()
         guard library.items.map(\.id) == before else { throw AppError.message("Search escaped locked catalog snapshot") }
         library.refreshGrid()
         guard library.gridLocked, library.pendingMediaCount == 0, library.items.contains(where: { $0.id == arrival.id }) else {

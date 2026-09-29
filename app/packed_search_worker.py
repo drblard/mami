@@ -292,12 +292,20 @@ def run(args):
                     visual, pending, visual_error = [], False, None
                     if mode != 'speech':
                         try:
+                            base_available=True
+                            try:resolve_generation(args.packed_index)
+                            except FileNotFoundError:base_available=False
+                            if not base_available:
+                                pending=True
+                            elif visual_runtime is None:
+                                visual_runtime = VisualClient(args, executable)
                             if visual_runtime is not None and getattr(visual_runtime,'failure',None) is not None:
                                 latest=resolve_generation(args.packed_index)
                                 if latest!=generation:
                                     visual_runtime.close();visual_runtime=None;generation=latest
-                            if visual_runtime is None:visual_runtime = VisualClient(args, executable)
-                            visual, pending = visual_runtime.search(query, allowed, scope)
+                            if base_available:
+                                if visual_runtime is None:visual_runtime = VisualClient(args, executable)
+                                visual, pending = visual_runtime.search(query, allowed, scope)
                         except (OSError, RuntimeError, ValueError) as error:
                             if mode == 'visual':
                                 raise

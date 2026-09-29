@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--index')
 parser.add_argument('--standard-layout',action='store_true')
 parser.add_argument('--runtime-env',type=Path,help='Build-time Python environment to embed')
+parser.add_argument('--runtime-tree',type=Path,help='Previously verified embedded-runtime Contents tree')
 parser.add_argument('--ffmpeg',type=Path,help='Build-time FFmpeg executable to embed')
 parser.add_argument('--ffprobe',type=Path,help='Build-time ffprobe executable to embed')
 parser.add_argument('--speech')
@@ -25,7 +26,8 @@ parser.add_argument('--metadata', help='Reuse previously extracted capture metad
 parser.add_argument('--relocations', help='Verified SHA-256 relocation report')
 args = parser.parse_args()
 if not args.standard_layout and not args.index:raise ValueError('Supply an index or use the standard production layout')
-if args.standard_layout and not all((args.runtime_env,args.ffmpeg,args.ffprobe,args.native_encoder)):
+if args.runtime_env and args.runtime_tree:raise ValueError('Choose one runtime source')
+if args.standard_layout and not (args.native_encoder and (args.runtime_tree or all((args.runtime_env,args.ffmpeg,args.ffprobe)))):
     raise ValueError('A production bundle requires its Python/media runtime and native text encoder')
 if args.runtime_env and not all((args.ffmpeg,args.ffprobe)):
     raise ValueError('An embedded runtime also requires both media tools')
@@ -47,6 +49,14 @@ nested=[];runtime_report=None
 if args.runtime_env:
     from bundle_runtime import embed_runtime
     nested,runtime_report=embed_runtime(contents,args.runtime_env,args.ffmpeg,args.ffprobe)
+elif args.runtime_tree:
+    for name in ('Helpers','Frameworks','Resources/ThirdParty','Resources/Python'):
+        source=args.runtime_tree/name
+        if source.exists():shutil.copytree(source,contents/name,dirs_exist_ok=True,symlinks=True)
+    runtime_report=json.loads((resources/'ThirdParty/runtime-manifest.json').read_text())
+    nested=[contents/path for path in [*runtime_report['bundled_libraries'],*runtime_report.get('runtime_bundles',[])]]
+    if any(not path.resolve().is_relative_to(contents.resolve()) or not path.exists() for path in nested):
+        raise ValueError('Invalid cached runtime manifest')
 for name in WORKER_RESOURCES:
     shutil.copy2(root / name, resources / name)
 with (resources / 'configuration.json').open('x') as f:

@@ -13,8 +13,9 @@ CONFIG = DIRECTORY / 'identity.json'
 
 
 def trust_command():
+    keychain=json.loads(CONFIG.read_text())['keychain'] if CONFIG.exists() else str(DIRECTORY/'Mami-signing.keychain-db')
     return shlex.join(['/usr/bin/security', 'add-trusted-cert', '-r', 'trustRoot', '-p', 'codeSign',
-                       '-k', str(DIRECTORY / 'Mami-signing.keychain-db'), str(DIRECTORY / 'Mami-local-signing.crt')])
+                       '-k', keychain, str(DIRECTORY / 'Mami-local-signing.crt')])
 
 
 def run(args, **kwargs):
@@ -120,9 +121,7 @@ def sign(bundle, nested=()):
             run(['/usr/bin/codesign', '--force', '--sign', identity['fingerprint'], '--keychain', identity['keychain'],
                  '--timestamp=none', '--requirements', '=' + requirement, str(bundle)])
         except subprocess.CalledProcessError as error:
-            raise RuntimeError('Code signing failed: ' + error.stderr.decode(errors='replace').strip()
-                               + '\nIf this is the first build, approve the certificate from Terminal on the Mac:\n'
-                               + trust_command()) from None
+            raise RuntimeError('Code signing failed: ' + error.stderr.decode(errors='replace').strip()) from None
         finally:
             run(['/usr/bin/security', 'list-keychains', '-d', 'user', '-s', *previous])
     run(['/usr/bin/codesign', '--verify', '--strict', '--verbose=2', str(bundle)])
@@ -131,8 +130,18 @@ def sign(bundle, nested=()):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--sign-bundle',type=Path)
+    args=parser.parse_args()
     try:
-        setup()
+        if args.sign_bundle:
+            manifest=args.sign_bundle/'Contents/Resources/ThirdParty/runtime-manifest.json'
+            runtime=json.loads(manifest.read_text()) if manifest.exists() else {}
+            nested=[args.sign_bundle/'Contents'/name for name in [*runtime.get('bundled_libraries',[]),*runtime.get('runtime_bundles',[])]]
+            sign(args.sign_bundle,nested=nested)
+            print('Signed application verified')
+        else:setup()
     except subprocess.CalledProcessError as error:
         # stdout from security can include key attributes; report only stderr.
         raise SystemExit(f'Signing setup failed ({Path(error.cmd[0]).name}, exit {error.returncode}): {error.stderr.decode(errors="replace")}') from None

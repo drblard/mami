@@ -150,7 +150,7 @@ struct Configuration: Sendable {
         let projection = env["MAMI_SEARCH_PROJECTION"] ?? (isolated ? nil : standardLayout ? paths.search.appendingPathComponent("search.sqlite").path : defaults["search_projection"])
         return Configuration(
             index: URL(fileURLWithPath: index),
-            python: URL(fileURLWithPath: env["MAMI_PYTHON"] ?? resources.deletingLastPathComponent().appendingPathComponent("Helpers/Python/bin/python3").path),
+            python: URL(fileURLWithPath: env["MAMI_PYTHON"] ?? resources.deletingLastPathComponent().appendingPathComponent("Helpers/MamiPython").path),
             worker: URL(fileURLWithPath: env["MAMI_WORKER"] ?? resources.appendingPathComponent("search_worker.py").path),
             speech: env["MAMI_SPEECH"] ?? (standardLayout ? paths.legacySpeech.path : defaults["speech"]),
             nativeEncoder: env["MAMI_NATIVE_ENCODER"] ?? (standardLayout ? resources.appendingPathComponent("TextEncoder").path : defaults["native_encoder"]),
@@ -181,6 +181,7 @@ actor SearchWorker {
     private var idleTask: Task<Void, Never>?
     private var activityGeneration = 0
     private static let idleTimeout: Duration = .seconds(60)
+    var isRunning: Bool { process?.isRunning == true }
 
     func start(_ config: Configuration) throws {
         abortWorker()
@@ -426,6 +427,9 @@ actor SearchWorker {
         guard all.isEmpty else { return }
         do {
             let config = try Configuration.load()
+            if config.standardLayout {
+                try await Task.detached { try AppPaths().prepareGeneratedDirectories() }.value
+            }
             try await Task.detached { try Catalog.standard.prepareUserStore() }.value
             speechAvailable = config.speech != nil
             if let path = config.searchProjection {
@@ -592,6 +596,15 @@ actor SearchWorker {
             items = all
         } catch { self.error = "Could not load more media: \(error.localizedDescription)" }
     }
+    func searchAndWait() async {
+        search()
+        while let task = pendingSearch {
+            let current = generation
+            await task.value
+            if current == generation { return }
+        }
+    }
+
     @discardableResult func search() -> Task<Void, Never>? {
         pendingSearch?.cancel()
         generation += 1

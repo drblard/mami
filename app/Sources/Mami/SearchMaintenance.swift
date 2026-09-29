@@ -18,6 +18,7 @@ import Darwin
     private var checking = false
     private var lastVectorAttempt = Date.distantPast
     private var retryAfter: [String: Date] = [:]
+    var activeWorkerCount: Int { workers.values.filter(\.isRunning).count }
 
     private func setFailure(_ message: String?, for worker: String) {
         failures[worker] = message
@@ -48,7 +49,7 @@ import Darwin
                 }.value
                 guard !quitting else { return }
                 setFailure(nil, for: "scheduler")
-                func available(_ name: String) -> Bool { workers[name] == nil && (retryAfter[name] ?? .distantPast) <= Date() }
+                @MainActor func available(_ name: String) -> Bool { workers[name] == nil && (retryAfter[name] ?? .distantPast) <= Date() }
                 if needed.projection && available("projection") {
                     var arguments = ["--catalog", Catalog.standard.database.path, "--output", projection, "--vector-root", vectors, "--once"]
                     if FileManager.default.fileExists(atPath: configuration.index.path) { arguments += ["--index", configuration.index.path] }

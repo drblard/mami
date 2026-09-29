@@ -1,8 +1,36 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Completed gates: [REMAINING.md](REMAINING.md).
-Active application: `prototype-20260929T090709977496Z` (revision `0d43d1f`).
-All paths below are on `ludi`, under `~/mami-lab` unless stated otherwise.
+Status: **deployed and verified**. Active build: `prototype-20260929T134121462682Z`.
+
+## Current installation — 2026-09-29 production-layout migration
+
+- `~/Applications/Mami.app` is a real, immutable signed bundle, with Python, native
+  text encoding and media tools included. Original signing identity is preserved.
+- Personal authority: `~/Library/Application Support/Mami/Personal/user.sqlite`;
+  snapshots: `Personal/Backups/user-state/`. Generated storage: `Mami/Derived/`;
+  indexing models: `Mami/Models/`; disposable cache: `~/Library/Caches/Mami/`.
+- Verified migration: 17,278 media records, 16,914 Photos verification records,
+  selection and roots preserved, personal revision unchanged, 167,643 physical
+  frame/vector/audio references checked outside the lab. Originals remain in
+  `~/Media/Originals/`. The old lab tree is retained, not current authority.
+- 16 Swift / 156 Python tests pass; native UI/catalog/transport, missing personal
+  store protection, idle/wake/pause/retry and strict signatures pass. Live idle
+  app has zero helpers. Lab-unavailable search, preview, FFmpeg and speech pass.
+- Self-contained recovery app: `~/Library/Application Support/Mami/Recovery/Mami-20260929T123229.app`.
+  Quit Mami before exchanging bundles; preserve the current Personal folder.
+  Never restore stale lab personal data merely to roll back an app update.
+- Receipts: `Personal/installation-accepted.json`, `installation-final.json` and
+  `migration.json`. Detailed test reports: `~/Library/Caches/MamiMigration/`.
+- Runtime minimum for this arm64 build: macOS 26.2, derived from embedded libraries.
+- [MAC_APP.md](MAC_APP.md) tracks acceptance; [BACKUP.md](BACKUP.md) gives current
+  backup exclusions and recovery. The whole lab may now be excluded from backup.
+
+## Historical scaling release and pre-migration recovery
+
+The remaining sections describe `prototype-20260929T090709977496Z` (`0d43d1f`).
+Their lab paths and activation/rollback procedure are historical; use the current
+installation and recovery instructions above for the migrated personal store.
+Historical gates: [REMAINING.md](REMAINING.md).
 
 ## Data and compatibility
 

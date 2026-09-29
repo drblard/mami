@@ -21,6 +21,8 @@ def configure_cache_environment():
     os.environ['HF_HOME'] = str(models_directory() / 'huggingface')
     os.environ['TORCH_HOME'] = str(cache / 'torch')
     os.environ['XDG_CACHE_HOME'] = str(cache)
+    os.environ['NUMBA_CACHE_DIR'] = str(cache/'numba')
+    os.environ['TORCHINDUCTOR_CACHE_DIR'] = str(cache/'torch-inductor')
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     os.environ['HF_HUB_OFFLINE'] = '1'
 

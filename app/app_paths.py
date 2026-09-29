@@ -20,9 +20,9 @@ def models_directory():
 
 
 def personal_database(catalog):
-    catalog=Path(catalog).resolve()
+    catalog=Path(catalog)
     standard=support_directory()/'Derived/Catalog/catalog.sqlite'
-    if catalog==standard.resolve():return support_directory()/'Personal/user.sqlite'
+    if catalog.resolve()==standard.resolve():return support_directory()/'Personal/user.sqlite'
     return catalog.parent/'user.sqlite'
 
 

@@ -4,12 +4,15 @@ For the concise current checklist, follow [REMAINING.md](REMAINING.md).
 
 Last updated: 2026-09-29. Status: **Completed, deployed and verified**.
 
-**New production-layout/lifecycle work:** [MAC_APP.md](MAC_APP.md). The scaling
-release below remains live while that separately verified migration is prepared.
+**Current deployment:** `prototype-20260929T134121462682Z`, a real self-contained
+`~/Applications/Mami.app`, with data in Application Support. Layout/lifecycle
+acceptance: [MAC_APP.md](MAC_APP.md). Backup guidance: [BACKUP.md](BACKUP.md).
+The scaling measurements below describe the preceding release; they were not
+repeated as 50× benchmarks during the storage migration.
 
-## Current release (read this before the historical log)
+## Scaling release baseline (superseded installation paths)
 
-- Active: **`prototype-20260929T090709977496Z`**, revision `0d43d1f`, through
+- Scaling baseline: **`prototype-20260929T090709977496Z`**, revision `0d43d1f`, through
   `~/Applications/Mami.app` on `ludi`. Crop-aware legacy fallback:
   `prototype-20260929T081741386944Z-fallback`.
 - 14 Swift tests on the unchanged verified native binary; **143 Python tests pass

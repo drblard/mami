@@ -15,6 +15,26 @@ import packed_search_worker as worker
 
 
 class ReadinessTests(unittest.TestCase):
+    def test_missing_vector_base_serves_text_while_preparation_is_pending(self):
+        class Projection:
+            def __init__(self,*args,**kwargs):self.db=self
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def execute(self,*args):return self
+            def fetchone(self):return dict(identity='fixture',epoch='epoch')
+            def speech(self,*args,**kwargs):return [dict(path='clip',kind='video',timestamp=1,frame='cached',evidence='capre')]
+        output=io.StringIO()
+        args=SimpleNamespace(native_encoder='artifact',native_executable='helper',projection='projection',packed_index='missing')
+        with patch.object(worker,'SearchStore',Projection),patch.object(worker,'resolve_generation',side_effect=FileNotFoundError), \
+             patch.object(worker,'VisualClient',side_effect=AssertionError('Visual process should wait for its base')), \
+             patch.object(worker.sys,'stdin',iter([json.dumps(dict(query='capre',mode='both'))+'\n'])),patch.object(worker.sys,'stdout',output):
+            worker.run(args)
+        replies=[json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(replies[0]['ready'])
+        self.assertTrue(replies[1]['visual_pending'])
+        self.assertEqual(replies[1]['hits'][0]['path'],'clip')
+        self.assertEqual(replies[1]['indexed_samples'],0)
+
     def test_coordinator_crash_reaps_private_visual_group(self):
         child=('import os,sys,threading,time,subprocess; sys.path.insert(0,sys.argv[1]); '
                'from packed_search_worker import watch_parent; '

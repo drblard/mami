@@ -13,24 +13,30 @@ def run(command):
     return result.stdout
 
 
-def migrate(source,destination,keychain):
+def migrate(source,destination,keychain,resume=False):
     source=source.resolve();destination=destination.absolute();keychain=keychain.absolute()
-    if destination.exists():raise FileExistsError('Developer destination already exists; inspect before retrying')
-    if keychain.exists():raise FileExistsError('Destination keychain already exists; do not overwrite it')
+    if (destination.exists() or keychain.exists()) and not resume:
+        raise FileExistsError('Migration output exists; inspect it and use --resume without replacing its key')
     identity=json.loads((source/'identity.json').read_text())
     password=Path(identity['passwordFile']).read_text().strip()
-    destination.mkdir(parents=True,mode=0o700)
+    destination.mkdir(parents=True,mode=0o700,exist_ok=resume)
     keychain.parent.mkdir(parents=True,exist_ok=True)
-    shutil.copy2(identity['keychain'],keychain);keychain.chmod(0o600)
-    if hashlib.sha256(Path(identity['keychain']).read_bytes()).digest()!=hashlib.sha256(keychain.read_bytes()).digest():
-        raise ValueError('Copied keychain differs')
+    if not keychain.exists():
+        shutil.copy2(identity['keychain'],keychain);keychain.chmod(0o600)
+        if hashlib.sha256(Path(identity['keychain']).read_bytes()).digest()!=hashlib.sha256(keychain.read_bytes()).digest():
+            raise ValueError('Copied keychain differs')
     run(['/usr/bin/security','unlock-keychain','-p',password,str(keychain)])
+    identities=run(['/usr/bin/security','find-identity','-v','-p','codesigning',str(keychain)])
+    if identity['fingerprint'] not in identities:raise ValueError('Destination does not contain the original signing identity')
     service='Mami Developer Code Signing';account='Mami'
     run(['/usr/bin/security','add-generic-password','-U','-s',service,'-a',account,'-w',password])
     recovered=run(['/usr/bin/security','find-generic-password','-s',service,'-a',account,'-w']).rstrip('\n')
     if recovered!=password:raise ValueError('Signing password was not preserved in Keychain')
     for name in ('Mami-local-signing.p12','Mami-local-signing.crt'):
-        shutil.copy2(source/name,destination/name)
+        if (destination/name).exists():
+            if hashlib.sha256((source/name).read_bytes()).digest()!=hashlib.sha256((destination/name).read_bytes()).digest():
+                raise ValueError('Existing recovery file differs; retained without overwrite')
+        else:shutil.copy2(source/name,destination/name)
         (destination/name).chmod(0o600)
     updated=dict(fingerprint=identity['fingerprint'],keychain=str(keychain),passwordService=service,passwordAccount=account)
     (destination/'identity.json').write_text(json.dumps(updated,indent=2));(destination/'identity.json').chmod(0o600)
@@ -43,4 +49,5 @@ if __name__=='__main__':
     parser.add_argument('--source',type=Path,required=True)
     parser.add_argument('--destination',type=Path,default=Path.home()/'Library/Application Support/Mami Developer/Signing')
     parser.add_argument('--keychain',type=Path,default=Path.home()/'Library/Keychains/Mami-signing.keychain-db')
-    args=parser.parse_args();migrate(args.source,args.destination,args.keychain)
+    parser.add_argument('--resume',action='store_true')
+    args=parser.parse_args();migrate(args.source,args.destination,args.keychain,args.resume)
