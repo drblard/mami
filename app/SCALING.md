@@ -6,6 +6,18 @@ Last updated: 2026-09-29. Status: **Persistent-search integration and remaining 
 
 ## Current checkpoint (read this before the historical log)
 
+**Release activated:** `prototype-20260929T081741386944Z`, via
+`~/Applications/Mami.app`. Live audit matches **17,257 assets** in catalog and
+projection; all personal-table digests are unchanged, including **16,906 Photos
+verification rows**, saved selection and library roots. Audit/safety backup:
+`~/mami-lab/catalog/release-audit-20260929/`.
+
+Final maintenance patch `prototype-20260929T090709977496Z` is signed and passes
+143 Python tests on the Mac. Native sources match the previously tested executable
+byte-for-byte. Live checks exposed a cleanup lookup scan; indexed pending/obsolete
+queues now avoid rescanning completed work. Migration on a live-catalog snapshot:
+29 ms, 4,467 packs, zero pack/retirement backlog. Patch activation is next.
+
 Latest resumed checks: candidate `prototype-20260929T065032418935Z` passes 14 Swift
 and 136 Python tests, native v6 projection/cache checks, 50× readiness **76 ms**
 (visual results by **1.67 s**, warm caches possible). Current-process lifecycle

@@ -16,6 +16,10 @@ CLEANUP_BATCH_SIZE = 8
 def ensure_generation_schema(db):
     db.execute('CREATE TABLE IF NOT EXISTS preview_generations(id INTEGER PRIMARY KEY,asset TEXT NOT NULL,directory TEXT UNIQUE NOT NULL,staging TEXT NOT NULL,digest TEXT NOT NULL,review TEXT)')
     db.execute('CREATE INDEX IF NOT EXISTS preview_generation_asset ON preview_generations(asset,id)')
+    if 'obsolete' not in {row[1] for row in db.execute('PRAGMA table_info(preview_generations)')}:
+        db.execute('ALTER TABLE preview_generations ADD COLUMN obsolete INTEGER NOT NULL DEFAULT 1')
+        db.execute('UPDATE preview_generations SET obsolete=0 WHERE directory IN (SELECT directory FROM preview_packs)')
+    db.execute('CREATE INDEX IF NOT EXISTS preview_generation_cleanup ON preview_generations(obsolete,review,id)')
 
 
 def register_generation(database,asset,directory,staging):
@@ -54,7 +58,7 @@ def prune_generations(database,artifacts,projection,checkpoint=lambda:None):
     removed=0
     with connection(database) as db:
         ensure_generation_schema(db)
-        candidates=db.execute('''SELECT g.* FROM preview_generations g WHERE g.review IS NULL
+        candidates=db.execute('''SELECT g.* FROM preview_generations g WHERE g.obsolete=1 AND g.review IS NULL
             AND NOT EXISTS (SELECT 1 FROM preview_packs p WHERE p.directory=g.directory)
             AND (SELECT count(*) FROM preview_generations newer WHERE newer.asset=g.asset AND newer.id>g.id
                  AND NOT EXISTS (SELECT 1 FROM preview_packs p WHERE p.directory=newer.directory))>=?

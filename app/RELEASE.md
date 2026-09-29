@@ -44,8 +44,9 @@ is explicitly recorded below. All paths below are on `ludi`, under `~/mami-lab`.
 
 The original fast-preview build does not understand atlas crop coordinates. After
 packing starts, use a **crop-aware fallback build**, not that older executable.
-Candidate `prototype-20260929T070426288464Z` is signed with legacy search defaults
-and crop-aware rendering; its fallback acceptance must be completed before release.
+Fallback `prototype-20260929T081741386944Z-fallback` is signed with legacy search
+defaults and crop-aware rendering. It passes legacy search, offline packed
+scrubbing and stale-reference recovery on the retired-raw-frame fixture.
 
 1. Quit the new app and confirm maintenance workers exit; keep all data in place.
 2. Point the stable application symlink at the verified crop-aware fallback and open
@@ -67,13 +68,16 @@ This format cannot meet a 2 GiB total budget while preserving the accepted quali
 The revised acceptance budget is **3.5 GiB steady search-service footprint**, with
 **7 GiB transient allowance during an idle-time generation swap**, on the 64 GiB
 target Mac. Sustained measurements and editor-contention checks must verify those
-limits before this decision is accepted. UI and background inference are measured
+limits before this decision is accepted. The completed 4,096-query kernel-counter
+run measured ~3 GiB steady and a 5.57 GiB visual-process lifetime peak during swap,
+with p95 40.6 ms. The controlled CapCut/decode/import/inference check also passes.
+UI and background inference are measured
 separately; macOS shared file-cache residency is not the same as private footprint.
 
 ## Activation record
 
-- [ ] All required acceptance gates closed with evidence.
-- [ ] Crop-aware fallback validated.
+- [x] Performance, quality, recovery, offline and contention gates have evidence.
+- [x] Crop-aware fallback validated.
 - [ ] Personal-state audit/backup verified.
 - [ ] Active bundle and stable link recorded.
 - [ ] Live import/search/preview/signature checks pass.

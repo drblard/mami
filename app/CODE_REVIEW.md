@@ -10,12 +10,12 @@ validated native batch preview decoding).
 ## Review approach
 
 - [x] Inventory responsibilities, dependencies and existing tests.
-- [ ] Review persistence, migrations, backup publication and retention.
-- [ ] Review worker lifecycle, protocol framing, cancellation and shutdown.
+- [x] Review persistence, migrations, backup publication and retention.
+- [x] Review worker lifecycle, protocol framing, cancellation and shutdown.
 - [x] Review imports / verified deletion and Photos handoff.
-- [ ] Review search/indexing boundaries and resource use.
-- [ ] Review UI state and avoid unnecessary full-catalog work.
-- [ ] Verify fixes with focused tests and native integration checks.
+- [x] Review search/indexing boundaries and resource use.
+- [x] Review UI state and avoid unnecessary full-catalog work.
+- [x] Verify fixes with focused tests and native integration checks.
 - [ ] Record remaining issues and the final deployed revision.
 
 ## Findings and work
@@ -99,6 +99,13 @@ validated native batch preview decoding).
   every `fatalError`, force unwrap or `try?` mechanically.
 
 ## Activity log
+
+- Final candidate `prototype-20260929T081741386944Z`: 14 Swift / 142 Python tests,
+  complete native catalog/personal-store/UI checks, rapid-query/cache bounds,
+  offline scrubbing, visual-failure speech recovery and bounded maintenance shutdown
+  pass. Six real DJI backfills and actual import/preview/inference contention pass;
+  originals stay unchanged. Crop-aware legacy fallback is independently signed and
+  passes after raw caches have been retired. Live activation/audit is the final item.
 
 - Resumed Mac validation: candidates `065032418935Z` and `065824172337Z` passed
   native v6 scoped counts, equal-date/oldest-first pages, grid-lock cutoff and the

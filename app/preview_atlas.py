@@ -8,21 +8,35 @@ import uuid
 
 from index_store import connection,ensure_schema,signature
 from model_config import PIPELINE
-from preview_retention import register_generation
+from preview_retention import ensure_generation_schema,register_generation
 
 CELL_PIXELS = 256
 SHEET_COLUMNS = 8
 FRAMES_PER_SHEET = 32
 JPEG_QUALITY = 80
 ATLAS_VERSION = 1
+MAX_PACK_ATTEMPTS = 3
 
 
 def ensure_pack_schema(database):
     with connection(database) as db:
         ensure_schema(db)
         db.execute('CREATE TABLE IF NOT EXISTS preview_packs(asset TEXT PRIMARY KEY,version INTEGER NOT NULL,directory TEXT NOT NULL)')
+        db.execute('CREATE INDEX IF NOT EXISTS preview_pack_directory ON preview_packs(directory)')
         db.execute('CREATE TABLE IF NOT EXISTS preview_pack_errors(asset TEXT PRIMARY KEY,error TEXT NOT NULL,attempts INTEGER NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS preview_retired(asset TEXT PRIMARY KEY,directory TEXT NOT NULL)')
+        ensure_generation_schema(db)
+        db.execute('CREATE TABLE IF NOT EXISTS preview_pack_pending(asset TEXT PRIMARY KEY,capture_time REAL)')
+        db.execute('CREATE INDEX IF NOT EXISTS preview_pack_pending_order ON preview_pack_pending(capture_time DESC,asset)')
+        db.execute('CREATE TABLE IF NOT EXISTS preview_retire_pending(asset TEXT PRIMARY KEY,directory TEXT NOT NULL)')
+        db.execute('CREATE TABLE IF NOT EXISTS preview_pack_queue_info(version INTEGER NOT NULL)')
+        version_row=db.execute('SELECT version FROM preview_pack_queue_info').fetchone()
+        version=version_row[0] if version_row else 0
+        if version>2:raise ValueError('Unsupported preview maintenance queue schema')
+        enqueue="""INSERT INTO preview_pack_pending SELECT asset,capture_time FROM index_jobs j
+            WHERE j.asset={asset} AND j.state='complete' AND j.kind='video'
+            AND EXISTS (SELECT 1 FROM index_units u WHERE u.asset=j.asset AND u.stage='frame' AND u.ordinal=1)
+            ON CONFLICT(asset) DO UPDATE SET capture_time=excluded.capture_time;"""
         for name in ('preview_pack_frame_update','preview_pack_frame_delete'):
             db.execute('DROP TRIGGER IF EXISTS '+name)
         for operation in ('INSERT','UPDATE','DELETE'):
@@ -31,21 +45,51 @@ def ensure_pack_schema(database):
             body = ' '.join(f'DELETE FROM {table} WHERE asset={reference}.asset;'
                             for reference in references for table in ('preview_packs','preview_pack_errors','preview_retired'))
             db.execute(f'CREATE TRIGGER IF NOT EXISTS preview_pack_invalidate_{operation} AFTER {operation} ON index_units WHEN {changed} BEGIN {body} END')
+            if version<2:db.execute(f'DROP TRIGGER IF EXISTS preview_pack_enqueue_{operation}')
+            queue_body=' '.join(f'UPDATE preview_generations SET obsolete=1 WHERE asset={reference}.asset; DELETE FROM preview_retire_pending WHERE asset={reference}.asset; '+enqueue.format(asset=reference+'.asset') for reference in references)
+            db.execute(f'CREATE TRIGGER IF NOT EXISTS preview_pack_enqueue_{operation} AFTER {operation} ON index_units WHEN {changed} BEGIN {queue_body} END')
+        for operation in ('INSERT','UPDATE'):
+            db.execute(f'''CREATE TRIGGER IF NOT EXISTS preview_pack_job_{operation} AFTER {operation} ON index_jobs BEGIN
+                DELETE FROM preview_pack_pending WHERE asset=NEW.asset AND (NEW.state!='complete' OR NEW.kind!='video');
+                {enqueue.format(asset='NEW.asset')} END''')
+        db.execute('''CREATE TRIGGER IF NOT EXISTS preview_pack_job_DELETE AFTER DELETE ON index_jobs BEGIN
+            DELETE FROM preview_pack_pending WHERE asset=OLD.asset; END''')
+        if version<1:
+            db.execute('''INSERT OR IGNORE INTO preview_pack_pending SELECT asset,capture_time FROM index_jobs j
+                WHERE j.state='complete' AND j.kind='video' AND NOT EXISTS (SELECT 1 FROM preview_packs p WHERE p.asset=j.asset)
+                AND EXISTS (SELECT 1 FROM index_units u WHERE u.asset=j.asset AND u.stage='frame' AND u.ordinal=1)
+                AND NOT EXISTS (SELECT 1 FROM preview_pack_errors e WHERE e.asset=j.asset AND e.attempts>=?)''',(MAX_PACK_ATTEMPTS,))
+        if version<2:
+            db.execute('''INSERT OR IGNORE INTO preview_retire_pending SELECT asset,directory FROM preview_packs p
+                WHERE NOT EXISTS (SELECT 1 FROM preview_retired r WHERE r.asset=p.asset AND r.directory=p.directory)
+                AND NOT EXISTS (SELECT 1 FROM preview_pack_errors e WHERE e.asset=p.asset AND e.attempts>=?)''',(MAX_PACK_ATTEMPTS,))
+            db.execute('DELETE FROM preview_pack_queue_info')
+            db.execute('INSERT INTO preview_pack_queue_info VALUES(2)')
+
+
+def complete_pack(db,asset,directory):
+    db.execute('INSERT INTO preview_packs VALUES(?,?,?) ON CONFLICT(asset) DO UPDATE SET version=excluded.version,directory=excluded.directory',
+               (asset,ATLAS_VERSION,str(directory)))
+    db.execute('UPDATE preview_generations SET obsolete=(directory!=?) WHERE asset=?',(str(directory),asset))
+    db.execute('DELETE FROM preview_pack_pending WHERE asset=?',(asset,))
+    db.execute('INSERT INTO preview_retire_pending VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET directory=excluded.directory',(asset,str(directory)))
 
 
 def pack_asset(database, asset, artifacts, checkpoint=lambda: None):
     from PIL import Image, ImageOps
     ensure_pack_schema(database)
     with connection(database) as db:
-        job = db.execute('SELECT state FROM index_jobs WHERE asset=?', (asset,)).fetchone()
-        if job is None or job['state'] != 'complete':
+        job = db.execute('SELECT state,kind FROM index_jobs WHERE asset=?', (asset,)).fetchone()
+        if job is None or job['state'] != 'complete' or job['kind'] != 'video':
+            db.execute('DELETE FROM preview_pack_pending WHERE asset=?',(asset,))
             return None
         rows = db.execute("SELECT ordinal,payload FROM index_units WHERE asset=? AND pipeline=? AND stage='frame' ORDER BY ordinal", (asset, PIPELINE)).fetchall()
         frames = [(row['ordinal'], json.loads(row['payload'])) for row in rows]
         if len(frames) < 2:
+            db.execute('DELETE FROM preview_pack_pending WHERE asset=?',(asset,))
             return None
         if all(sample.get('crop') for _, sample in frames):
-            db.execute('INSERT OR REPLACE INTO preview_packs VALUES(?,?,?)',(asset,ATLAS_VERSION,str(Path(frames[0][1]['frame']).parent)))
+            complete_pack(db,asset,Path(frames[0][1]['frame']).parent)
             return None
         original_payloads = [(row['ordinal'], row['payload']) for row in rows]
     root = Path(artifacts)/'packed-previews'
@@ -97,8 +141,8 @@ def pack_asset(database, asset, artifacts, checkpoint=lambda: None):
         register_generation(database,asset,final,staging)
         with connection(database) as db:
             current = db.execute("SELECT ordinal,payload FROM index_units WHERE asset=? AND pipeline=? AND stage='frame' ORDER BY ordinal", (asset,PIPELINE)).fetchall()
-            state = db.execute('SELECT state FROM index_jobs WHERE asset=?', (asset,)).fetchone()
-            if state is None or state['state'] != 'complete' or [(row['ordinal'],row['payload']) for row in current] != original_payloads:
+            state = db.execute('SELECT state,kind FROM index_jobs WHERE asset=?', (asset,)).fetchone()
+            if state is None or state['state'] != 'complete' or state['kind'] != 'video' or [(row['ordinal'],row['payload']) for row in current] != original_payloads:
                 return None
             os.rename(staging, final)
             descriptor = os.open(root,os.O_RDONLY)
@@ -120,9 +164,7 @@ def pack_asset(database, asset, artifacts, checkpoint=lambda: None):
                 sample=value['match']
                 value['match']=replacements.get((sample['frame'],sample.get('timestamp')),sample)
                 db.execute('UPDATE media SET payload=? WHERE path=?',(json.dumps(value,sort_keys=True),row['path']))
-            db.execute('CREATE TABLE IF NOT EXISTS preview_packs(asset TEXT PRIMARY KEY,version INTEGER NOT NULL,directory TEXT NOT NULL)')
-            db.execute('INSERT INTO preview_packs VALUES(?,?,?) ON CONFLICT(asset) DO UPDATE SET version=excluded.version,directory=excluded.directory',
-                       (asset,ATLAS_VERSION,str(final)))
+            complete_pack(db,asset,final)
     return manifest
 
 

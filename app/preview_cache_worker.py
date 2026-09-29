@@ -9,11 +9,9 @@ import sys
 import threading
 
 from index_store import connection,PENDING_PREVIEW_PREDICATE
-from model_config import PIPELINE
-from preview_atlas import ATLAS_VERSION,ensure_pack_schema,pack_asset,retire_raw_frames
+from preview_atlas import MAX_PACK_ATTEMPTS,ensure_pack_schema,pack_asset,retire_raw_frames
 from preview_retention import prune_generations
 
-MAX_PACK_ATTEMPTS = 3
 CACHE_POLL_SECONDS = 30
 RETRY_DELAY_SECONDS = 5
 
@@ -55,12 +53,12 @@ def main(args):
                     if preview_pending:
                         asset=None
                     else:
-                        row=db.execute("SELECT j.asset FROM index_jobs j WHERE j.state='complete' AND j.kind='video' AND NOT EXISTS (SELECT 1 FROM preview_pack_errors e WHERE e.asset=j.asset AND e.attempts>=?) AND NOT EXISTS (SELECT 1 FROM preview_packs p WHERE p.asset=j.asset AND p.version=?) AND EXISTS (SELECT 1 FROM index_units u WHERE u.asset=j.asset AND u.pipeline=? AND u.stage='frame' AND u.ordinal=1) ORDER BY j.capture_time DESC LIMIT 1",(MAX_PACK_ATTEMPTS,ATLAS_VERSION,PIPELINE)).fetchone()
+                        row=db.execute("SELECT p.asset FROM preview_pack_pending p WHERE NOT EXISTS (SELECT 1 FROM preview_pack_errors e WHERE e.asset=p.asset AND e.attempts>=?) ORDER BY p.capture_time DESC,p.asset LIMIT 1",(MAX_PACK_ATTEMPTS,)).fetchone()
                         asset=row['asset'] if row else None
                 if asset is None:
                     if args.projection and not preview_pending:
                         with connection(args.database) as db:
-                            retired_candidates=db.execute('SELECT p.asset,p.directory FROM preview_packs p WHERE NOT EXISTS (SELECT 1 FROM preview_retired r WHERE r.asset=p.asset AND r.directory=p.directory) AND NOT EXISTS (SELECT 1 FROM preview_pack_errors e WHERE e.asset=p.asset AND e.attempts>=?) LIMIT 16',(MAX_PACK_ATTEMPTS,)).fetchall()
+                            retired_candidates=db.execute('SELECT p.asset,p.directory FROM preview_retire_pending p WHERE NOT EXISTS (SELECT 1 FROM preview_pack_errors e WHERE e.asset=p.asset AND e.attempts>=?) LIMIT 16',(MAX_PACK_ATTEMPTS,)).fetchall()
                         made_progress=False
                         for candidate in retired_candidates:
                             checkpoint()
@@ -71,6 +69,7 @@ def main(args):
                             if removed==0:
                                 with connection(args.database) as db:
                                     db.execute('INSERT OR REPLACE INTO preview_retired VALUES(?,?)',(asset,candidate['directory']))
+                                    db.execute('DELETE FROM preview_retire_pending WHERE asset=? AND directory=?',(asset,candidate['directory']))
                             else:print(json.dumps(dict(changed=True,stage='ready',retired_raw_frames=removed)),flush=True)
                         if made_progress:continue
                     if args.once:return
@@ -85,6 +84,8 @@ def main(args):
                 if asset:
                     with connection(args.database) as db:
                         db.execute('INSERT INTO preview_pack_errors VALUES(?,?,1) ON CONFLICT(asset) DO UPDATE SET error=excluded.error,attempts=preview_pack_errors.attempts+1',(asset,str(error)))
+                        db.execute('DELETE FROM preview_pack_pending WHERE asset=? AND EXISTS (SELECT 1 FROM preview_pack_errors WHERE asset=? AND attempts>=?)',(asset,asset,MAX_PACK_ATTEMPTS))
+                        db.execute('DELETE FROM preview_retire_pending WHERE asset=? AND EXISTS (SELECT 1 FROM preview_pack_errors WHERE asset=? AND attempts>=?)',(asset,asset,MAX_PACK_ATTEMPTS))
                 print(json.dumps(dict(error=str(error))),flush=True)
                 if args.once:raise
                 stop.wait(RETRY_DELAY_SECONDS)

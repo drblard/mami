@@ -65,6 +65,27 @@ class PreviewAtlasTests(unittest.TestCase):
         with connection(self.database) as db:db.execute("UPDATE index_jobs SET state='running'")
         self.assertIsNone(pack_asset(self.database,self.asset,self.root/'artifacts'))
 
+    def test_pending_queue_is_transactional_and_does_not_rescan_completed_assets(self):
+        ensure_pack_schema(self.database)
+        with connection(self.database) as db:
+            self.assertEqual(db.execute('SELECT asset FROM preview_pack_pending').fetchone()[0],self.asset)
+        pack_asset(self.database,self.asset,self.root/'artifacts')
+        ensure_pack_schema(self.database)
+        with connection(self.database) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM preview_pack_pending').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT obsolete FROM preview_generations').fetchone()[0],0)
+            db.execute("UPDATE index_units SET payload=payload WHERE stage='frame' AND ordinal=0")
+            self.assertEqual(db.execute('SELECT count(*) FROM preview_pack_pending').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT obsolete FROM preview_generations').fetchone()[0],1)
+        self.assertIsNone(pack_asset(self.database,self.asset,self.root/'artifacts'))
+        with connection(self.database) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM preview_pack_pending').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT obsolete FROM preview_generations').fetchone()[0],0)
+            plan=db.execute('EXPLAIN QUERY PLAN SELECT * FROM preview_generations WHERE obsolete=1 AND review IS NULL ORDER BY id LIMIT 8').fetchall()
+            self.assertTrue(any('SEARCH' in row[3] and 'preview_generation_cleanup' in row[3] for row in plan),plan)
+            plan=db.execute("EXPLAIN QUERY PLAN SELECT p.asset FROM preview_pack_pending p WHERE NOT EXISTS (SELECT 1 FROM preview_pack_errors e WHERE e.asset=p.asset AND e.attempts>=?) ORDER BY p.capture_time DESC,p.asset LIMIT 1",(3,)).fetchall()
+            self.assertFalse(any('TEMP B-TREE' in row[3] for row in plan),plan)
+
     def test_frame_repairs_invalidate_completion_errors_and_retirement(self):
         ensure_pack_schema(self.database)
         operations=[
