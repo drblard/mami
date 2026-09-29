@@ -28,6 +28,8 @@ struct Catalog: Sendable {
     let artifacts: URL
     private let personalDatabase: URL
     var database: URL { directory.appendingPathComponent("catalog.sqlite") }
+    /// Generated face index beside the catalog (Derived/Faces for the standard library).
+    var facesDatabase: URL { directory.deletingLastPathComponent().appendingPathComponent("Faces/faces.sqlite") }
     var userDatabase: URL { personalDatabase }
     var userBackups: URL { backups.appendingPathComponent("user-state") }
     private static let userTables = PersonalDataMigration.tables
@@ -102,7 +104,8 @@ struct Catalog: Sendable {
 
     /// The existing catalog lock serializes migration and both stores' writers.
     /// Publish the new user database only after copying, pruning and verification.
-    private func userAccess<T>(_ body: (SQLDatabase) throws -> T) throws -> T {
+    /// Personal-store access under the catalog writer lock, with ownership checks.
+    func userAccess<T>(_ body: (SQLDatabase) throws -> T) throws -> T {
         let owner = userDatabase.deletingLastPathComponent().appendingPathComponent("ownership.json")
         if FileManager.default.fileExists(atPath: owner.path), !FileManager.default.fileExists(atPath: userDatabase.path) {
             throw AppError.message("Personal-data database is missing. Restore its backup before opening this library.")

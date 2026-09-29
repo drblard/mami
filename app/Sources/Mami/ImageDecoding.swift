@@ -48,18 +48,21 @@ enum ImageDecoding {
         result["technical"] = technical
         return result
     }
-    static func preview(_ path: String, to target: String) throws {
+    /// Longest side for face analysis: large enough for small faces in group photos.
+    static let faceAnalysisPixelSize = 4096
+
+    static func preview(_ path: String, to target: String, maxPixelSize: Int = 640, quality: Double = 0.85) throws {
         guard !FileManager.default.fileExists(atPath: target) else { throw AppError.message("Preview target already exists") }
         let source = try source(path)
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 640
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
         ] as CFDictionary),
               let output = CGImageDestinationCreateWithURL(URL(fileURLWithPath: target) as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
             throw AppError.message("macOS could not decode image preview")
         }
-        CGImageDestinationAddImage(output, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        CGImageDestinationAddImage(output, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
         guard CGImageDestinationFinalize(output) else { throw AppError.message("Cannot save image preview") }
     }
 }

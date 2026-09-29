@@ -56,6 +56,7 @@ import Darwin
         if task.terminationStatus == 0 {
             status = "Indexing models installed."
             Indexing.shared.retry()
+            Indexing.faces.retry()
         } else { status = "Model download did not complete. Check the connection and try again." }
     }
     func stop() { process?.terminate() }

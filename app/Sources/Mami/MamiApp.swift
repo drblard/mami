@@ -454,6 +454,9 @@ struct LibraryView: View {
     @ViewState private var sort = "default"
     @ViewState private var favoritesOnly = false
     @ViewState private var selectedLabels = Set<String>()
+    @ViewState private var selectedPeople = Set<String>()
+    @ViewState private var showPeople = false
+    @StateObject private var people = PeopleLibrary()
     @ViewState private var showImport = false
     @ViewState private var showDateRange = false
     @ViewState private var showShortcuts = false
@@ -473,6 +476,7 @@ struct LibraryView: View {
                 && library.matchesDevice($0)
                 && library.matchesDate($0)
                 && (selectedLabels.isEmpty || !labels.isDisjoint(with: selectedLabels))
+                && (selectedPeople.isEmpty || people.filterAssets.contains($0.assetID))
         }
         if sort == "default" && library.showingMatches { return filtered }
         return filtered.sorted {
@@ -487,17 +491,20 @@ struct LibraryView: View {
         guard library.usesProjection else { return }
         library.browseKind = kind == "all" ? nil : kind
         library.oldestFirst = sort == "oldest"
+        var assets: Set<String>? = nil
         if favoritesOnly || !selectedLabels.isEmpty {
-            library.browseAssets = Set(annotations.values.compactMap { asset, value in
+            assets = Set(annotations.values.compactMap { asset, value in
                 let labels = Set(value.tags + [value.place])
                 return (!favoritesOnly || value.favorite) && (selectedLabels.isEmpty || !labels.isDisjoint(with: selectedLabels)) ? asset : nil
             })
-        } else { library.browseAssets = nil }
+        }
+        if !selectedPeople.isEmpty { assets = assets.map { $0.intersection(people.filterAssets) } ?? people.filterAssets }
+        library.browseAssets = assets
         library.search()
     }
-    private var hasFilters: Bool { kind != "all" || library.format != .all || library.deviceFilter != "All devices" || library.dateEnabled || library.queryDates != nil || favoritesOnly || !selectedLabels.isEmpty }
+    private var hasFilters: Bool { kind != "all" || library.format != .all || library.deviceFilter != "All devices" || library.dateEnabled || library.queryDates != nil || favoritesOnly || !selectedLabels.isEmpty || !selectedPeople.isEmpty }
     private func clearFilters() {
-        kind = "all"; library.format = .all; library.deviceFilter = "All devices"; favoritesOnly = false; selectedLabels = []
+        kind = "all"; library.format = .all; library.deviceFilter = "All devices"; favoritesOnly = false; selectedLabels = []; selectedPeople = []
         library.dateEnabled = false
         if let parsed = try? DateSearch.parse(library.query) { library.query = parsed.text }
         library.search()
@@ -645,6 +652,8 @@ struct LibraryView: View {
             }.padding(.horizontal, 24).padding(.bottom, 10)
             HStack {
                 TagFilterPicker(available: availableLabels, selected: $selectedLabels)
+                PeopleFilterPicker(model: people, selected: $selectedPeople) { showPeople = true }
+                    .sheet(isPresented: $showPeople) { PeopleView(model: people) { showPeople = false } }
                 Button { showDateRange = true } label: {
                     Label(library.dateEnabled ? DateFilterDraft.label(from: library.dateFrom, through: library.dateThrough) : "Date", systemImage: "calendar")
                 }
@@ -740,6 +749,8 @@ struct LibraryView: View {
         .onChange(of: sort) { _, _ in updatePagedFilters() }
         .onChange(of: favoritesOnly) { _, _ in updatePagedFilters() }
         .onChange(of: selectedLabels) { _, _ in updatePagedFilters() }
+        .onChange(of: selectedPeople) { _, value in people.setFilter(value); updatePagedFilters() }
+        .onChange(of: people.filterAssets) { _, _ in if !selectedPeople.isEmpty { updatePagedFilters() } }
         .onChange(of: annotations.values) { _, _ in if favoritesOnly || !selectedLabels.isEmpty { updatePagedFilters() } }
         .onChange(of: library.ready) { _, ready in if ready { updatePagedFilters() } }
         .background(Button("Focus search") { searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden())
@@ -754,7 +765,7 @@ struct LibraryView: View {
                 backups.schedule()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); Indexing.previews.stop(); SearchMaintenance.shared.stop(); ModelDownloads.shared.stop(); backups.flush() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); Indexing.previews.stop(); Indexing.faces.stop(); SearchMaintenance.shared.stop(); ModelDownloads.shared.stop(); backups.flush() }
         .task(id: catalogUpdates.generation) {
             if catalogUpdates.generation > 0 {
                 do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
@@ -817,6 +828,13 @@ struct MamiApp: App {
                 exit(0)
             } catch { fputs("\(error)\n", stderr); exit(1) }
         }
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--image-face-frame" {
+            do {
+                try ImageDecoding.preview(CommandLine.arguments[2], to: CommandLine.arguments[3],
+                                          maxPixelSize: ImageDecoding.faceAnalysisPixelSize, quality: 0.95)
+                exit(0)
+            } catch { fputs("\(error)\n", stderr); exit(1) }
+        }
         if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--image-probe" || CommandLine.arguments[1] == "--image-frame" {
             do {
                 if CommandLine.arguments[1] == "--image-probe" {
@@ -834,6 +852,24 @@ struct MamiApp: App {
             Task {
                 do { try await checkPersistentSearch(at: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) }
                 catch { print("PERSISTENT SEARCH TEST FAILED: \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--people-test"), CommandLine.arguments.indices.contains(index + 1) {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            Task {
+                do { try await checkPeopleWorkflow(at: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) }
+                catch { Indexing.faces.stop(); print("PEOPLE TEST FAILED: \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--kind-switch-test"), CommandLine.arguments.indices.contains(index + 1) {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            Task {
+                do { try await checkKindSwitching(at: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) }
+                catch { print("KIND SWITCH TEST FAILED: \(error)"); exit(1) }
             }
             NSApplication.shared.run()
             return

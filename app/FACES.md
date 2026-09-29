@@ -1,6 +1,8 @@
 # People: face recognition, tagging and filtering
 
-Status: **planned** (2026-09-29). Nothing below is implemented or measured yet.
+Status: **implementation in progress** (2026-09-29). Core pipeline, personal
+store, worker lane and People UI are implemented with tests; the live backfill
+and signed release are pending. Measured facts are marked as such below.
 Goal from the user: best achievable accuracy; slower indexing is acceptable. The
 current library should finish in days, and the planned ~2 TB of pre-2026 media
 must not take weeks. Personal, non-commercial use only.
@@ -16,14 +18,24 @@ must not take weeks. Personal, non-commercial use only.
 - Run both through ONNX Runtime (CoreML execution provider, CPU fallback) in the
   existing bundled Python worker. The detector's keypoints produce the standard
   ArcFace 112×112 alignment, so detection and recognition stay consistent.
+- The published detector declares 640×640 output shapes despite dynamic inputs,
+  which CoreML rejects. Fixed-size square copies (640, 1920) are generated once
+  from the verified original into `Derived/Faces/Engine` (with CoreML caches).
+- **Measured (M1 Max):** CPU detection 749 ms at 1920 px and 90 ms/face recognition;
+  CoreML GPU 48 ms and 5 ms/face. An ANE (`ALL`) recognizer prediction **hung
+  indefinitely** during the first feasibility run, so both models use `CPUAndGPU`
+  (equally fast), and the worker has a per-frame heartbeat watchdog.
 - Apple Vision was considered: it detects faces well but exposes no identity
   embedding, so it cannot tag people by itself.
 
 ### Coverage
 
-- **Photos:** decode the original, not the 640 px preview. Detect at a long side
-  of ~1920 px; tiled detection for very large images if small faces are missed.
-  Crop/align each face from the full-resolution original.
+- **Photos:** decode the original (macOS ImageIO, orientation applied, primary
+  HEIF image) at up to 4096 px, not the 640 px preview.
+- **Multi-scale detection (measured):** at 1920 px, close-up faces (selfies, DJI
+  vlogging) exceed the detector's anchor range and are missed. On the first 409
+  sample files: preview 640 px found 419 faces, 1920 px alone 264, and 640+1920
+  merged with NMS **461**. Production detects at 640 and 1920 and merges.
 - **Videos:** decode the original at ~1080 px and sample one frame per second,
   reusing the existing timestamps. Faces of one person that are close in time are
   grouped into a short track, and only the sharpest, most frontal faces per track
@@ -31,23 +43,43 @@ must not take weeks. Personal, non-commercial use only.
 - Quality scores (detector confidence, face size, blur, pose) are recorded, so
   tiny or blurry faces can be shown but excluded from automatic matching.
 
-### Throughput (estimate, to be measured)
+### Throughput and quality (measured)
 
-Assumed on the M1 Pro: detection ~15–30 ms per frame and recognition ~10–20 ms per
-face, with hardware video decoding. This suggests hours for the current ~17k
-assets, and roughly one to three days for 2 TB, depending on video duration.
-A feasibility benchmark on a sample of real media must replace these guesses
-before anything is scheduled.
+Rerun on `ludi` (M1 Max, CoreML GPU, idle/locked Mac, warm OS cache possible):
+deterministic sample of 400 photos and 40 videos (1,621 video seconds) from
+Originals, read-only; results in `~/mami-lab/benchmarks/faces-20260929/run2/`.
+
+| | preview 640 px | multi-scale 640+1920 (chosen) |
+|---|---|---|
+| faces found | 1,412 | **1,725** (+22%) |
+| reliable faces | 916 | **1,076** (+17%) |
+| seconds per photo (incl. decode) | 0.31 | 0.46 |
+| seconds per video second | 0.19 | 0.26 |
+| projected current library (12,566 photos, 27.2 h video) | 6.2 h | **8.6 h** |
+
+The 2 TB pre-2026 import is not measured; at the same per-item cost it would be
+roughly 3–4 days of background work (an extrapolation, not a measurement).
+Grouping 299 reliable representatives gave 41 groups of ≥2; visual review of the
+contact sheet found every group to be one person, and all 84 faces of the largest
+group (photos and videos across dates) the same person. Grouping errs towards
+splitting (e.g. one video's track forming its own group); naming a person then
+suggests the rest. This is a small sample of mostly one family, not a benchmark
+of recognition accuracy across ages; confirmation remains the user's decision.
 
 ### Data ownership
 
 - **Generated (catalog/Derived):** face detections, boxes, keypoints, quality,
   embeddings and automatic clusters. They can be rebuilt; they never trigger
   personal backups.
-- **Personal (`user.sqlite`):** people (name, created), confirmed and rejected
-  face assignments. Each assignment stores asset ID, timestamp, normalized box
-  and a copy of the face embedding (~2 KB), so names survive a full regeneration
-  of the face index and can be re-matched without guessing.
+- **Personal (`user.sqlite`):** `people`, `face_labels` (confirmed/rejected, one
+  confirmation per face) and `people_history`. Labels are keyed by asset,
+  timestamp and normalized box (6 decimals), not embedding copies: the pinned
+  model regenerates embeddings, and regenerated faces are matched by overlap
+  (IoU ≥ 0.5, ±0.25 s), so labels survive a full face-index rebuild while keeping
+  personal backups small. Changes bump the personal revision (normal backups).
+- **Generated (`Derived/Faces/faces.sqlite`):** jobs, faces, embeddings, groups and
+  assignments, plus `Crops/` thumbnails for representative faces. Separate from
+  `catalog.sqlite` to avoid growth and writer-lock contention.
 - Migration adds new personal tables only. Verified, atomic publication and
   backup/restore follow the existing personal-store rules.
 
@@ -91,20 +123,34 @@ Automatic groups will contain mistakes; correcting them must be quick and perman
 
 ### Pipeline priority
 
-Face indexing is a separate durable queue after previews, consistent with
-[PIPELINE.md](PIPELINE.md): import visibility and previews stay first, and it
-yields to CapCut activity like the AI lane. Progress appears as its own lane.
+`face_worker.py` owns a separate durable queue mirrored from catalog assets whose
+previews are complete. It yields while preview or AI-search work is pending
+([PIPELINE.md](PIPELINE.md)), waits during active CapCut use, persists pause,
+requeues on quit (no attempt spent) and bounds failures at 3 attempts. A face
+that yields no heartbeat for 120 s fails its asset and restarts the worker.
+Progress appears as a third footer lane (“Faces”).
 
 ## Checklist
 
-- [ ] Feasibility: pinned models, isolated benchmark on a real sample (photos and
-      DJI video). Measure speed per photo/video-minute, recall of small faces and
-      clustering quality; compare preview-frame vs full-resolution coverage.
-- [ ] Generated face schema and queue; worker stage with cancellation/EOF/restart tests.
-- [ ] Personal people/assignment tables, migration, backup/restore tests.
-- [ ] Clustering/matching with exact threshold tests on fixtures, including
-      confirmed/rejected constraints surviving re-clustering and a full rebuild.
-- [ ] Correction actions: remove, move, new person from selection, split, merge, undo.
-- [ ] Native People view, naming/confirmation, preview face boxes and People filter.
-- [ ] Native build/tests on `ludi`, isolated fixture run, then signed release.
+- [x] Pinned models (archive + file SHA-256), verified atomic install via Settings'
+      model download; isolated benchmark environment and sample on `ludi`.
+- [x] Feasibility benchmark rerun (GPU units, checkpointed): final timings,
+      projected library duration and visual group-purity review (above).
+  - [x] First run: resolution comparison (above). It hung in an ANE prediction
+        at 430/440 files; results were in memory only. Rerun saves checkpoints.
+- [x] Generated face schema and queue; worker with pause, retry, stop/requeue,
+      upstream yielding and stall watchdog (Python tests, fake extractor).
+- [x] Personal people/label tables, exact scoped undo, history, revision bump
+      (native `--catalog-test` check written; Mac run pending).
+- [x] Grouping (mutual nearest neighbours, confirmed faces linked), suggestions
+      (closest confirmed face, margin), rejections honored, track propagation;
+      exact tests on synthetic identities and on the store.
+- [x] Correction actions: deselect then name, add/move to person, not-this-person,
+      confirm suggestions, rename, merge, remove person, multi-step undo.
+- [ ] Split a mixed group at a stricter threshold (deselect-and-name covers the
+      common case; dedicated split view not implemented yet).
+- [ ] Face boxes in the media preview; click a face to name it.
+- [x] People filter (media with all selected people) and People review sheet.
+- [ ] Native build/tests on `ludi`, isolated end-to-end `--people-test`, signed
+      release with the ONNX-enabled runtime (`~/mami-lab/runtime-env-faces`).
 - [ ] Live backfill of the current library, with progress and measured duration.

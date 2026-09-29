@@ -156,6 +156,7 @@ func checkCatalog(at root: URL) throws {
     try require(FileManager.default.fileExists(atPath: personalRestore.userBackups.appendingPathComponent(unrecognized.file).path), "Retention removed an unrecognized backup")
     try checkProjection(at: root)
     print("USER STORE TEST PASSED: verified migration, generated-data exclusion, index-change suppression, personal-only restore, content-ID reconnect, missing-store detection and bounded retention")
+    try checkPeopleStore(at: root)
     print("CATALOG TEST PASSED: no-change skips, no-op saves, legacy migration, rollback, restore, backup failure/retry and retained history")
     print("CATALOG TEST OUTPUT: \(root.path)")
 }

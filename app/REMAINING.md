@@ -30,6 +30,12 @@ synthetic grid-arrival row, and correctly failed the relocation check.
 - [x] Idle progress lanes collapse after `ProgressVisibility.idleHideDelay` (10 s);
       active, paused and errored lanes stay visible for their controls.
 - [x] Install the signed candidate (user approved an immediate install).
+- [ ] Reported once after install: grid thumbnails vanished after All → Videos → Photos → Videos.
+      Not reproduced: all 400 sampled projection frame files existed; a native check driving the
+      real kind picker on copies of the live catalog/projection/personal store rendered thumbnails
+      at every step (`Mami --kind-switch-test`, `MamiMigration/kind-switch-20260929/`); the user
+      could not reproduce it after quitting/reopening. Unexplained; live workers and preview
+      maintenance were not part of the check.
 - [ ] Face detection, people tagging and a people filter: plan in [FACES.md](FACES.md).
 
 ## Verified foundations

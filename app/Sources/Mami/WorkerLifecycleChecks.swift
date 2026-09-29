@@ -14,7 +14,7 @@ import AppKit
     let configuration = try Configuration.load()
     try SearchMaintenance.shared.start(configuration)
     Indexing.startAll()
-    defer { Indexing.shared.stop(); Indexing.previews.stop(); SearchMaintenance.shared.stop() }
+    defer { Indexing.shared.stop(); Indexing.previews.stop(); Indexing.faces.stop(); SearchMaintenance.shared.stop() }
 
     func wait(_ description: String, seconds: Int, _ predicate: () async throws -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))

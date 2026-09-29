@@ -8,18 +8,35 @@ import MamiCore
     enum Lane: String, Sendable {
         case search = "index"
         case previews = "preview"
-        var title: String { self == .previews ? "Previews" : "AI search" }
+        case faces = "faces"
+        var title: String {
+            switch self {
+            case .previews: return "Previews"
+            case .search: return "AI search"
+            case .faces: return "Faces"
+            }
+        }
+        /// Lanes that run inference yield to active CapCut use before starting.
+        var yieldsToEditor: Bool { self != .previews }
     }
     static let shared = Indexing(lane: .search)
     static let previews = Indexing(lane: .previews)
+    static let faces = Indexing(lane: .faces)
+    static var all: [Indexing] { [previews, shared, faces] }
+    /// Phases in which a worker has nothing to do; it is released after a grace period.
+    static let idlePhases: Set<String> = ["Up to date", "Needs attention", "Scan needs attention", "Previews ready", "Preview needs attention",
+                                          "Waiting for previews", "Faces ready", "Faces need attention", "Waiting for previews and AI search",
+                                          "Face model not installed"]
     let lane: Lane
     private init(lane: Lane) { self.lane = lane }
 
     static func startAll() {
         previews.schedule()
         shared.schedule()
+        faces.schedule()
         previews.wakeWork()
         shared.start(force: true)
+        faces.start()
     }
 
     static func publishedImport() {
@@ -79,7 +96,7 @@ import MamiCore
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
         send(["action": "editor-activity", "active": Self.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)])
     }
-    var active: Bool { running && !["Up to date", "Needs attention", "Scan needs attention", "Previews ready", "Preview needs attention", "Waiting for previews"].contains(phase) }
+    var active: Bool { running && !Self.idlePhases.contains(phase) }
     var label: String {
         if paused { return waiting || !active ? "Paused — progress saved" : "Pausing after current step…" }
         return phase
@@ -95,17 +112,23 @@ import MamiCore
     func start(force: Bool = false) {
         guard process == nil, !quitting, !checking else { return }
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
-        if lane == .search && Self.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle) {
+        if lane.yieldsToEditor && Self.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle) {
             phase = "Waiting while CapCut is actively used"
             return
         }
+        if lane == .faces && !FaceIndex.modelInstalled {
+            phase = "Face model not installed"
+            error = "Download the face model in Settings → Storage and local models."
+            return
+        }
         checking = true
-        let preview = lane == .previews, token = lastToken
+        let lane = lane, token = lastToken
         Task {
             defer { checking = false }
             do {
                 if let state = try await Task.detached(priority: .utility, operation: {
-                    try BackgroundWork.read(catalog: .standard, preview: preview, previousToken: token)
+                    lane == .faces ? try FaceIndex.backgroundWork(catalog: .standard, previousToken: token)
+                        : try BackgroundWork.read(catalog: .standard, preview: lane == .previews, previousToken: token)
                 }).value {
                     lastToken = state.token; workPending = state.pending; paused = state.paused
                     queueCounts = Progress.Counts(remaining: state.remaining, completed: state.completed, failed: state.failed)
@@ -113,7 +136,7 @@ import MamiCore
                 guard !quitting, process == nil else { return }
                 let discoveryDue = lane == .search && Date().timeIntervalSince(lastScan) >= Self.discoveryInterval
                 if force || workPending || (!paused && discoveryDue) { launch() }
-                else if error == nil { phase = lane == .previews ? "Previews ready" : "Up to date" }
+                else if error == nil { phase = lane == .previews ? "Previews ready" : lane == .faces ? "Faces ready" : "Up to date" }
             } catch {
                 if force { launch() }
                 else { self.error = "Could not check background work: \(error.localizedDescription)" }
@@ -127,10 +150,16 @@ import MamiCore
             let config = try Configuration.load()
             let task = Process()
             task.executableURL = config.python
-            task.arguments = [(Bundle.main.resourceURL!.appendingPathComponent("index_worker.py")).path,
-                              "--database", Catalog.standard.database.path,
-                              "--root", ProcessInfo.processInfo.environment["MAMI_MEDIA_ROOT"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals").path,
-                               "--artifacts", Catalog.standard.artifacts.path, "--role", lane.rawValue]
+            if lane == .faces {
+                task.arguments = [(Bundle.main.resourceURL!.appendingPathComponent("face_worker.py")).path,
+                                  "--catalog", Catalog.standard.database.path, "--faces", Catalog.standard.facesDatabase.path,
+                                  "--models", FaceIndex.modelDirectory.path, "--image-helper", Bundle.main.executableURL!.path]
+            } else {
+                task.arguments = [(Bundle.main.resourceURL!.appendingPathComponent("index_worker.py")).path,
+                                  "--database", Catalog.standard.database.path,
+                                  "--root", ProcessInfo.processInfo.environment["MAMI_MEDIA_ROOT"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals").path,
+                                   "--artifacts", Catalog.standard.artifacts.path, "--role", lane.rawValue]
+            }
             var environment = config.workerEnvironment
             environment["HF_HUB_OFFLINE"] = "1"
             environment["PYTHONUNBUFFERED"] = "1"
@@ -180,7 +209,7 @@ import MamiCore
             input = stdin.fileHandleForWriting
             output = stdout.fileHandleForReading
             running = true
-            if lane == .search {
+            if lane.yieldsToEditor {
                 reportEditorActivity()
                 editorTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                     Task { @MainActor in self?.reportEditorActivity() }
@@ -203,14 +232,21 @@ import MamiCore
                 gpuUtilization = progress.gpu_utilization
                 if let counts = progress.queue_counts { queueCounts = counts }
                 if let message = progress.error { error = message }
-                else if phase == "Up to date" || phase == "Previews ready" { error = nil }
+                else if ["Up to date", "Previews ready", "Faces ready"].contains(phase) {
+                    // A worker that reaches a healthy idle state earns back its restart budget.
+                    error = nil; retries = 0
+                }
                 if progress.changed {
                     catalogGeneration += 1
-                    CatalogUpdates.shared.notify()
-                    if lane == .previews { Self.shared.wakeWork() }
-                    else { Self.previews.wakeWork() }
+                    // Face results are a separate generated store; the media catalog is unchanged.
+                    if lane != .faces {
+                        CatalogUpdates.shared.notify()
+                        if lane == .previews { Self.shared.wakeWork() }
+                        else { Self.previews.wakeWork() }
+                        Self.faces.wakeWork()
+                    }
                 }
-                let idle = paused || waiting || ["Up to date", "Previews ready", "Needs attention", "Preview needs attention", "Waiting for previews"].contains(phase)
+                let idle = paused || waiting || Self.idlePhases.contains(phase)
                 if idle && idleTask == nil {
                     let currentProcess = process
                     idleTask = Task { [weak self] in
@@ -242,6 +278,12 @@ import MamiCore
     func scanNow() { if !running { retries = 0; launch() }; send(["action": "scan"]) }
     func wakeWork() { if !running { start() }; send(["action": "work"]) }
     func retry() { error = nil; if !running { retries = 0; launch() }; send(["action": "retry"]) }
+    /// Regroup faces and refresh suggestions after the user's people edits.
+    func recomputeFaces() {
+        guard lane == .faces, FaceIndex.modelInstalled else { return }
+        if !running { retries = 0; launch() }
+        send(["action": "recompute"])
+    }
     func stop() {
         quitting = true
         wakeTimer?.invalidate(); wakeTimer = nil
@@ -258,7 +300,7 @@ struct IndexQueueSummary: View {
     var body: some View {
         HStack(spacing: 8) {
             if let counts = indexing.queueCounts {
-                Text("\(indexing.lane.title): \(counts.remaining) left · \(counts.completed) \(indexing.lane == .previews ? "ready" : "indexed")")
+                Text("\(indexing.lane.title): \(counts.remaining) left · \(counts.completed) \(indexing.lane == .previews ? "ready" : indexing.lane == .faces ? "scanned" : "indexed")")
                 if counts.failed > 0 { Text("\(counts.failed) need attention").foregroundStyle(.orange) }
             } else { Text("Counting indexing queue…") }
         }.monospacedDigit().lineLimit(1)
