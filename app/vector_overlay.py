@@ -1,5 +1,6 @@
 """Bounded exact delta over an immutable packed base, with atomic refreshes."""
 from dataclasses import dataclass
+import json
 
 MAX_OVERLAY_ROWS = 32768
 MAX_EVENT_BATCH = 4096
@@ -43,7 +44,7 @@ class VectorOverlay:
                     projected_count=sum(len(value) for key,value in updated.items() if key!=asset)+replacement_count
                     if projected_count>MAX_OVERLAY_ROWS:
                         raise RuntimeError('Vector delta requires background compaction')
-                    for row in db.execute('SELECT ordinal,vector_path,vector_row,frame,timestamp FROM embeddings WHERE asset=? ORDER BY ordinal',(asset,)):
+                    for row in db.execute('SELECT ordinal,vector_path,vector_row,frame,timestamp,crop FROM embeddings WHERE asset=? ORDER BY ordinal',(asset,)):
                         path=row['vector_path']
                         if row['vector_row'] is None:
                             vector=np.load(path,allow_pickle=False)
@@ -53,7 +54,7 @@ class VectorOverlay:
                         if vector.shape!=(768,) or not np.isfinite(vector).all():
                             raise ValueError('Invalid incremental vector')
                         sample=dict(asset=asset,path=metadata['path'],kind=metadata['kind'],camera=metadata['camera'],
-                                    captured=metadata['captured'],shape=metadata['shape'],arrival=metadata['arrival'],frame=row['frame'],timestamp=row['timestamp'])
+                                    captured=metadata['captured'],shape=metadata['shape'],arrival=metadata['arrival'],ordinal=row['ordinal'],frame=row['frame'],timestamp=row['timestamp'],crop=json.loads(row['crop'] or 'null'))
                         entries.append((sample,vector))
                 updated[asset]=entries  # Empty entry masks deleted or no-longer-indexed assets.
             count=sum(len(value) for value in updated.values())

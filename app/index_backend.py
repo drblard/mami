@@ -103,7 +103,7 @@ class Backend:
     def model_path(kind):
         return cached_model_path(kind)
 
-    def embedding(self, frame, target):
+    def embedding(self, frame, target, crop=None):
         import numpy as np
         import torch
         from PIL import Image
@@ -119,6 +119,11 @@ class Backend:
             self.visual = (AutoProcessor.from_pretrained(path, local_files_only=True), AutoModel.from_pretrained(path, local_files_only=True).to('cpu').eval())
         processor, model = self.visual
         with Image.open(frame) as image:
+            if crop is not None:
+                x,y,width,height=crop
+                if x<0 or y<0 or width<=0 or height<=0 or x+width>image.width or y+height>image.height:
+                    raise ValueError('Invalid packed preview crop')
+                image=image.crop((x,y,x+width,y+height))
             inputs = processor(images=image.convert('RGB'), return_tensors='pt')
         with torch.inference_mode():
             feature = model.get_image_features(**inputs)

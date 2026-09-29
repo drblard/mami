@@ -36,6 +36,12 @@ enum MediaFormat: String, CaseIterable, Identifiable, Sendable {
     static func read(_ media: [Media]) -> [String: MediaFormat] {
         Dictionary(uniqueKeysWithValues: media.map { item in
             if let cached = item.cachedFormat, let format = MediaFormat(rawValue: cached) { return (item.path, format) }
+            if let size = item.frames.first?.sourceSize, size.count == 2 {
+                return (item.path, classify(width: Double(size[0]), height: Double(size[1])))
+            }
+            if let crop = item.frames.first?.crop, crop.count == 4 {
+                return (item.path, classify(width: Double(crop[2]), height: Double(crop[3])))
+            }
             guard let frame = item.frames.first,
                   let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: frame.frame) as CFURL, nil),
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -54,6 +60,9 @@ struct Sample: Codable, Sendable {
     let frame: String
     let score: Double?
     let evidence: String?
+    var crop: [Int]? = nil
+    var sourceSize: [Int]? = nil
+    var cacheKey: String { frame + (crop.map { "#" + $0.map(String.init).joined(separator: ",") } ?? "") }
 }
 
 struct Manifest: Decodable {
@@ -107,24 +116,28 @@ struct Configuration: Sendable {
     var nativeEncoder: String? = nil
     var packedIndex: String? = nil
     var searchProjection: String? = nil
+    var packPreviews = false
 
-    static func load() throws -> Configuration {
-        let env = ProcessInfo.processInfo.environment
+    static func load(environment env: [String: String] = ProcessInfo.processInfo.environment, resourceDirectory: URL? = nil) throws -> Configuration {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let resources = Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let resources = resourceDirectory ?? Bundle.main.resourceURL ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let configURL = resources.appendingPathComponent("configuration.json")
         let defaults = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: configURL))) ?? [:]
         guard let index = env["MAMI_INDEX"] ?? defaults["index"] else {
             throw AppError.message("No visual index configured. Set MAMI_INDEX or bundle configuration.json.")
         }
+        let isolated = env["MAMI_CATALOG"] != nil
+        let packed = env["MAMI_PACKED_INDEX"] ?? (isolated ? nil : defaults["packed_index"])
+        let projection = env["MAMI_SEARCH_PROJECTION"] ?? (isolated ? nil : defaults["search_projection"])
         return Configuration(
             index: URL(fileURLWithPath: index),
             python: URL(fileURLWithPath: env["MAMI_PYTHON"] ?? home.appendingPathComponent("mami-lab/.venv/bin/python").path),
             worker: URL(fileURLWithPath: env["MAMI_WORKER"] ?? resources.appendingPathComponent("search_worker.py").path),
             speech: env["MAMI_SPEECH"] ?? defaults["speech"],
             nativeEncoder: env["MAMI_NATIVE_ENCODER"] ?? defaults["native_encoder"],
-            packedIndex: env["MAMI_PACKED_INDEX"] ?? defaults["packed_index"],
-            searchProjection: env["MAMI_SEARCH_PROJECTION"] ?? defaults["search_projection"])
+            packedIndex: packed,
+            searchProjection: projection,
+            packPreviews: packed != nil && projection != nil && (env["MAMI_PACK_PREVIEWS"] ?? defaults["pack_previews"]) == "1")
     }
 }
 
@@ -371,7 +384,7 @@ actor SearchWorker {
                 let reader = ProjectionReader(database: URL(fileURLWithPath: path), sourceIdentity: identity)
                 let initial = try await Task.detached { try (reader.facets(), reader.page(scope: .init())) }.value
                 projection = reader
-                if !CommandLine.arguments.contains("--ui-test") && !CommandLine.arguments.contains("--self-test") && !CommandLine.arguments.contains("--persistent-search-test") {
+                if !LaunchMode.isIntegrationCheck {
                     try SearchMaintenance.shared.start(config)
                 }
                 projectedCameras = initial.0.cameras
@@ -388,7 +401,7 @@ actor SearchWorker {
                 ready = true
                 status = "\(totalMediaCount) files · Local search ready"
                 if !query.isEmpty { search() }
-                if !CommandLine.arguments.contains("--ui-test") && !CommandLine.arguments.contains("--self-test") && !CommandLine.arguments.contains("--persistent-search-test") {
+                if !LaunchMode.isIntegrationCheck {
                     Indexing.startAll()
                 }
                 return
@@ -415,7 +428,7 @@ actor SearchWorker {
             byPath = Dictionary(uniqueKeysWithValues: media.map { ($0.path, $0) })
             items = media
             status = "\(media.count) files · Loading local search model…"
-            if !CommandLine.arguments.contains("--ui-test") && !CommandLine.arguments.contains("--self-test") && !CommandLine.arguments.contains("--persistent-search-test") {
+            if !LaunchMode.isIntegrationCheck {
                 Indexing.startAll()
             }
             try await worker.start(config)
@@ -448,6 +461,15 @@ actor SearchWorker {
                     formats = MediaFormat.read(all)
                     pageScope = scope; pageCursor = page.cursor
                     totalMediaCount = page.total
+                    items = all
+                } else if !showingMatches {
+                    let paths = all.map(\.path)
+                    let refreshed = try await Task.detached { try projection.media(paths: paths) }.value
+                    guard !Task.isCancelled else { return }
+                    let updated = Dictionary(uniqueKeysWithValues: refreshed.map { ($0.path,$0) })
+                    all = all.map { updated[$0.path] ?? $0 }
+                    byPath.merge(updated) { _, new in new }
+                    formats.merge(MediaFormat.read(refreshed)) { _, new in new }
                     items = all
                 }
                 return

@@ -14,11 +14,16 @@ parser.add_argument('--speech')
 parser.add_argument('--native-encoder')
 parser.add_argument('--packed-index')
 parser.add_argument('--search-projection')
+parser.add_argument('--pack-previews', action='store_true')
 parser.add_argument('--inventory')
 parser.add_argument('--catalog')
 parser.add_argument('--metadata', help='Reuse previously extracted capture metadata for unchanged media')
 parser.add_argument('--relocations', help='Verified SHA-256 relocation report')
 args = parser.parse_args()
+if args.packed_index and (not args.native_encoder or not args.search_projection):
+    raise ValueError('Packed search requires both native encoder and search projection')
+if args.pack_previews and not args.packed_index:
+    raise ValueError('Preview packing requires persistent search and its crop-aware projection')
 signing.load()  # No silent fallback to build-specific ad-hoc signing.
 root = Path(__file__).resolve().parent
 bundle = root / 'Mami.app'
@@ -38,10 +43,10 @@ with (resources / 'configuration.json').open('x') as f:
     if args.native_encoder:
         config['native_encoder'] = args.native_encoder
     if args.packed_index:
-        if not args.native_encoder or not args.search_projection:
-            raise ValueError('Packed search requires both native encoder and search projection')
         config['packed_index'] = args.packed_index
         config['search_projection'] = args.search_projection
+    if args.pack_previews:
+        config['pack_previews'] = '1'
     json.dump(config, f)
 if args.inventory:
     from metadata import export_metadata

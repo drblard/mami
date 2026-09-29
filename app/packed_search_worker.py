@@ -83,16 +83,19 @@ def run(args):
                     feature=encode(query)
                     with generation_lock:
                         visual=generation_state['overlay'].search(feature,paths=allowed,scope=scope)
+                    for hit in visual:
+                        frame=projection.db.execute('SELECT frame,crop FROM frames WHERE asset=? AND ordinal=?',(hit['asset'],hit['ordinal'])).fetchone()
+                        if frame:
+                            hit['frame']=frame['frame']
+                            hit['crop']=json.loads(frame['crop'] or 'null')
                 spoken=[]
                 if mode!='visual':
-                    scoped=projection.allowed_paths(scope)
-                    speech_allowed=allowed if scoped is None else scoped if allowed is None else allowed & scoped
                     # Apply path scopes before the per-file result limit. This
                     # opt-in bridge uses the existing protocol while native
                     # structured camera/date filters are integrated separately.
-                    for hit in projection.speech(query,allowed_paths=speech_allowed):
+                    for hit in projection.speech(query,allowed_paths=allowed,scope=scope):
                         spoken.append(dict(path=hit['path'],kind=hit['kind'],timestamp=hit['timestamp'],
-                                           frame=hit['frame'] or '',evidence=hit['evidence'],score=1.0))
+                                           frame=hit['frame'] or '',crop=hit.get('crop'),evidence=hit['evidence'],score=1.0))
                 hits=visual if mode=='visual' else spoken if mode=='speech' else combine_hits(visual,spoken)
                 reply=dict(hits=hits,elapsed=time.monotonic()-started,indexed_samples=generation_state['index'].manifest['rows'])
             except Exception as error:

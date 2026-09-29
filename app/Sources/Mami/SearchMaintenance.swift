@@ -29,10 +29,14 @@ import MamiCore
         if FileManager.default.fileExists(atPath: URL(fileURLWithPath: vectors).appendingPathComponent("owner.json").path) {
             try launch(name: "vectors", script: "vector_sync.py", configuration: configuration,
                        arguments: ["--projection", projection, "--output", vectors])
-            reportActivity()
-            activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.reportActivity() }
-            }
+        }
+        if configuration.packPreviews {
+            try launch(name: "preview-cache", script: "preview_cache_worker.py", configuration: configuration,
+                       arguments: ["--database", Catalog.standard.database.path, "--artifacts", Catalog.standard.artifacts.path, "--projection", projection])
+        }
+        reportActivity()
+        activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.reportActivity() }
         }
     }
 
@@ -91,13 +95,14 @@ import MamiCore
     }
 
     private func reportActivity() {
-        guard let input = inputs["vectors"] else { return }
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
         let active = Indexing.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)
         do {
             var data = try JSONSerialization.data(withJSONObject: ["action": "editor-activity", "active": active])
             data.append(10)
-            try WorkerPipe.write(data, to: input)
+            for name in ["vectors", "preview-cache"] {
+                if let input = inputs[name] { try WorkerPipe.write(data, to: input) }
+            }
         } catch { self.error = "Could not update search maintenance scheduling: \(error.localizedDescription)" }
     }
 

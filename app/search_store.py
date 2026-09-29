@@ -6,7 +6,8 @@ No source media or personal data is modified. Vector-engine integration consumes
 the normalized embeddings table rather than opening the entire artifact tree.
 """
 import contextlib
-from datetime import datetime
+from datetime import datetime,date,timedelta
+import calendar
 import json
 from pathlib import Path
 import sqlite3
@@ -17,8 +18,9 @@ from index_store import connection as catalog_transaction
 from model_config import PIPELINE
 from search_logic import words
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 READ_BATCH_SIZE = 256
+QUERY_CACHE_KIB = 64 * 1024
 
 
 def camera_name(media):
@@ -39,6 +41,30 @@ def fts_expression(query):
     terms = words(query)
     return ' AND '.join('"'+term+'"'+('*' if index == len(terms)-1 else '')
                         for index, term in enumerate(terms))
+
+
+def date_scope_tokens(start,end):
+    """Cover an inclusive date range with disjoint year/month/day postings."""
+    first=datetime.strptime(start[:8],'%Y%m%d').date()
+    last=datetime.strptime(end[:8],'%Y%m%d').date()
+    result=[]
+    current=first
+    while current<=last:
+        year_end=date(current.year,12,31)
+        month_end=date(current.year,current.month,calendar.monthrange(current.year,current.month)[1])
+        if current.month==1 and current.day==1 and year_end<=last:
+            result.append(f'y{current.year:04d}')
+            if year_end==last:break
+            current=year_end+timedelta(days=1)
+        elif current.day==1 and month_end<=last:
+            result.append(f'm{current.year:04d}{current.month:02d}')
+            if month_end==last:break
+            current=month_end+timedelta(days=1)
+        else:
+            result.append(f'd{current.year:04d}{current.month:02d}{current.day:02d}')
+            if current==last:break
+            current+=timedelta(days=1)
+    return result
 
 
 def install_change_log(source):
@@ -68,6 +94,7 @@ class SearchStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path.resolve().as_uri()+'?mode=ro',uri=True) if read_only else sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
+        self.db.execute(f'PRAGMA cache_size=-{QUERY_CACHE_KIB}')
         if not read_only:
             self.db.execute('PRAGMA journal_mode=WAL')
             self.db.execute('PRAGMA synchronous=FULL')
@@ -85,13 +112,14 @@ class SearchStore:
                 CREATE TABLE checkpoint(id INTEGER PRIMARY KEY CHECK(id=1),identity TEXT NOT NULL,sequence INTEGER NOT NULL,seed_after TEXT,ready INTEGER NOT NULL,epoch TEXT NOT NULL,anchor TEXT);
                 CREATE TABLE files(asset TEXT PRIMARY KEY,path TEXT NOT NULL,source_url TEXT NOT NULL,kind TEXT NOT NULL,camera TEXT NOT NULL,captured TEXT NOT NULL,summary TEXT NOT NULL,shape TEXT NOT NULL,arrival INTEGER NOT NULL);
                 CREATE INDEX files_date ON files(captured DESC,asset);
+                CREATE INDEX files_oldest ON files((captured=''),captured,asset);
                 CREATE INDEX files_camera_date ON files(camera,captured DESC,asset);
                 CREATE INDEX files_path ON files(path);
                 CREATE INDEX files_arrival ON files(arrival);
                 CREATE INDEX files_shape_date ON files(shape,captured DESC,asset);
-                CREATE TABLE frames(asset TEXT NOT NULL REFERENCES files(asset) ON DELETE CASCADE,ordinal INTEGER NOT NULL,timestamp REAL,frame TEXT NOT NULL,PRIMARY KEY(asset,ordinal));
+                CREATE TABLE frames(asset TEXT NOT NULL REFERENCES files(asset) ON DELETE CASCADE,ordinal INTEGER NOT NULL,timestamp REAL,frame TEXT NOT NULL,crop TEXT,PRIMARY KEY(asset,ordinal));
                 CREATE INDEX frames_time ON frames(asset,timestamp);
-                CREATE TABLE embeddings(asset TEXT NOT NULL REFERENCES files(asset) ON DELETE CASCADE,ordinal INTEGER NOT NULL,vector_path TEXT NOT NULL,vector_row INTEGER,frame TEXT NOT NULL,timestamp REAL,PRIMARY KEY(asset,ordinal));
+                CREATE TABLE embeddings(asset TEXT NOT NULL REFERENCES files(asset) ON DELETE CASCADE,ordinal INTEGER NOT NULL,vector_path TEXT NOT NULL,vector_row INTEGER,frame TEXT NOT NULL,timestamp REAL,crop TEXT,PRIMARY KEY(asset,ordinal));
                 CREATE TABLE legacy_units(asset TEXT NOT NULL,stage TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(asset,stage,ordinal));
                 CREATE TABLE seeds(name TEXT PRIMARY KEY,digest TEXT NOT NULL);
                 CREATE TABLE vector_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,asset TEXT NOT NULL);
@@ -100,7 +128,7 @@ class SearchStore:
                 CREATE VIRTUAL TABLE speech_fts USING fts5(text,scope,content=speech,content_rowid=id,tokenize='unicode61 remove_diacritics 2',prefix='1 2 3 4');
                 CREATE TRIGGER speech_insert AFTER INSERT ON speech BEGIN INSERT INTO speech_fts(rowid,text,scope) VALUES(NEW.id,NEW.text,NEW.scope); END;
                 CREATE TRIGGER speech_delete AFTER DELETE ON speech BEGIN INSERT INTO speech_fts(speech_fts,rowid,text,scope) VALUES('delete',OLD.id,OLD.text,OLD.scope); END;
-                PRAGMA user_version=4;
+                PRAGMA user_version=5;
                 COMMIT;
             ''')
 
@@ -114,27 +142,36 @@ class SearchStore:
         self.close()
 
     def _replace_asset(self, source, asset):
-        self.db.execute('INSERT INTO vector_events(asset) VALUES(?)', (asset,))
-        previous = self.db.execute('SELECT arrival,shape FROM files WHERE asset=?',(asset,)).fetchone()
-        previous_frame = self.db.execute('SELECT frame FROM frames WHERE asset=? AND ordinal=0',(asset,)).fetchone()
+        previous = self.db.execute('SELECT arrival,shape,path,kind,camera,captured FROM files WHERE asset=?',(asset,)).fetchone()
+        previous_vectors = [tuple(row) for row in self.db.execute('SELECT ordinal,vector_path,vector_row,timestamp FROM embeddings WHERE asset=? ORDER BY ordinal',(asset,))]
+        previous_frame = self.db.execute('SELECT frame,crop FROM frames WHERE asset=? AND ordinal=0',(asset,)).fetchone()
         row = source.execute('SELECT payload FROM media WHERE asset=? ORDER BY path LIMIT 1', (asset,)).fetchone()
         self.db.execute('DELETE FROM files WHERE asset=?', (asset,))
         if row is None:
+            if previous is not None:self.db.execute('INSERT INTO vector_events(asset) VALUES(?)',(asset,))
             return
+        if previous is None:self.db.execute('INSERT INTO vector_events(asset) VALUES(?)',(asset,))
         media = json.loads(row[0])
         metadata = media.get('metadata') or {}
         camera = camera_name(media)
         captured = metadata.get('sortDate') or ''
         frames = media.get('frames', [])
-        shape='unknown'
+        shape=previous['shape'] if previous else 'unknown'
         first_frame=frames[0]['frame'] if frames else None
-        if previous and previous_frame and previous_frame[0]==first_frame:
+        if previous and previous_frame and previous_frame[0]==first_frame and previous_frame[1]==json.dumps(frames[0].get('crop')):
             shape=previous['shape']
+        elif frames and frames[0].get('sourceSize'):
+            width,height=frames[0]['sourceSize']
+            shape='square' if abs(width-height)<=1 else 'vertical' if height>width else 'horizontal'
         elif first_frame:
             try:
                 from PIL import Image
                 with Image.open(first_frame) as image:
                     width,height=image.size
+                    if frames[0].get('crop'):
+                        _,_,width,height=frames[0]['crop']
+                    if frames[0].get('sourceSize'):
+                        width,height=frames[0]['sourceSize']
                     shape='square' if abs(width-height)<=1 else 'vertical' if height>width else 'horizontal'
             except (ImportError,OSError):
                 pass  # Metadata projection still works with offline/missing preview files.
@@ -145,8 +182,8 @@ class SearchStore:
         summary['cachedFormat'] = shape
         self.db.execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?,?)',
                         (asset, media['path'], media['url'], media['kind'], camera, captured, json.dumps(summary),shape,arrival))
-        self.db.executemany('INSERT INTO frames VALUES(?,?,?,?)',
-                            [(asset, ordinal, frame.get('timestamp'), frame['frame']) for ordinal, frame in enumerate(frames)])
+        self.db.executemany('INSERT INTO frames VALUES(?,?,?,?,?)',
+                            [(asset, ordinal, frame.get('timestamp'), frame['frame'],json.dumps(frame.get('crop'))) for ordinal, frame in enumerate(frames)])
         import hashlib
         camera_key = hashlib.sha256(camera.encode()).hexdigest()
         scope = f'c{camera_key} d{captured[:8]} m{captured[:6]} y{captured[:4]}'
@@ -159,12 +196,18 @@ class SearchStore:
             value = json.loads(payload)
             if stage == 'embedding':
                 sample = value['sample']
-                self.db.execute('INSERT INTO embeddings VALUES(?,?,?,?,?,?)',
-                                (asset, ordinal, value['vector'], value.get('vector_row'), sample['frame'], sample.get('timestamp')))
+                self.db.execute('INSERT INTO embeddings VALUES(?,?,?,?,?,?,?)',
+                                (asset, ordinal, value['vector'], value.get('vector_row'), sample['frame'], sample.get('timestamp'),json.dumps(sample.get('crop'))))
             else:
                 self.db.executemany('INSERT INTO speech(asset,chunk,ordinal,start,text,scope) VALUES(?,?,?,?,?,?)',
                                     [(asset, ordinal, index, segment['start'], segment['text'], scope)
                                      for index, segment in enumerate(value['segments'])])
+        if previous is not None:
+            current_vectors=[tuple(row) for row in self.db.execute('SELECT ordinal,vector_path,vector_row,timestamp FROM embeddings WHERE asset=? ORDER BY ordinal',(asset,))]
+            old_scope=tuple(previous[key] for key in ('path','kind','camera','captured','shape'))
+            new_scope=(media['path'],media['kind'],camera,captured,shape)
+            if previous_vectors!=current_vectors or old_scope!=new_scope:
+                self.db.execute('INSERT INTO vector_events(asset) VALUES(?)',(asset,))
 
     def seed_legacy(self, catalog, index, speech=None):
         """Seed immutable experimental outputs once; use matrix-row references.
@@ -283,32 +326,48 @@ class SearchStore:
         sql='SELECT asset,path FROM files'+(' WHERE '+' AND '.join(clauses) if clauses else '')
         return {row['path'] for row in self.db.execute(sql,values) if assets is None or row['asset'] in assets}
 
-    def speech(self, query, limit=60, camera=None, day=None, allowed_paths=None):
+    def speech(self, query, limit=60, camera=None, day=None, allowed_paths=None, scope=None):
         if not 1 <= limit <= 1000:
             raise ValueError('Result limit must be between 1 and 1000')
         expression = fts_expression(query)
         if not expression:
             return []
         match = 'text : ('+expression+')'
+        scope=scope or {}
+        camera=scope.get('camera',camera)
         if camera is not None:
             import hashlib
             match += ' AND scope : "c'+hashlib.sha256(camera.encode()).hexdigest()+'"'
         if day is not None:
             datetime.strptime(day, '%Y%m%d')
             match += ' AND scope : "d'+day+'"'
+        elif scope.get('from') and scope.get('through'):
+            tokens=date_scope_tokens(scope['from'],scope['through'])
+            if not tokens:return []
+            match+=' AND scope : ('+' OR '.join('"'+token+'"' for token in tokens)+')'
+        clauses=[];parameters=[]
+        for key,column,operator in [('kind','kind','='),('shape','shape','='),('from','captured','>='),('through','captured','<='),('arrivalThrough','arrival','<=')]:
+            if scope.get(key) is not None:
+                clauses.append('f.'+column+operator+'?');parameters.append(scope[key])
+        assets=set(scope['assets']) if scope.get('assets') is not None else None
+        if assets is not None and not assets:return []
         hits, seen = [], set()
-        with contextlib.closing(self.db.execute('SELECT s.asset,s.start,s.text,f.path,f.kind FROM speech_fts JOIN speech s ON s.id=speech_fts.rowid JOIN files f ON f.asset=s.asset WHERE speech_fts MATCH ? ORDER BY speech_fts.rowid DESC', (match,))) as rows:
+        sql='SELECT s.asset,s.start,s.text,f.path,f.kind FROM speech_fts JOIN speech s ON s.id=speech_fts.rowid JOIN files f ON f.asset=s.asset WHERE speech_fts MATCH ?'
+        if clauses:sql+=' AND '+' AND '.join(clauses)
+        sql+=' ORDER BY speech_fts.rowid DESC'
+        with contextlib.closing(self.db.execute(sql, (match,*parameters))) as rows:
             for asset, start, text, path, kind in rows:
-                if asset in seen or (allowed_paths is not None and path not in allowed_paths):
+                if asset in seen or (allowed_paths is not None and path not in allowed_paths) or (assets is not None and asset not in assets):
                     continue
                 seen.add(asset)
                 candidates = []
                 for operator, direction in [('<=', 'DESC'), ('>', 'ASC')]:
-                    candidate = self.db.execute(f'SELECT timestamp,frame FROM frames WHERE asset=? AND timestamp{operator}? ORDER BY timestamp {direction} LIMIT 1', (asset, start)).fetchone()
+                    candidate = self.db.execute(f'SELECT timestamp,frame,crop FROM frames WHERE asset=? AND timestamp{operator}? ORDER BY timestamp {direction} LIMIT 1', (asset, start)).fetchone()
                     if candidate:
                         candidates.append(candidate)
                 frame = min(candidates, key=lambda row: abs(row['timestamp']-start)) if candidates else None
-                hits.append(dict(asset=asset,path=path,kind=kind,timestamp=start,evidence=text,frame=frame['frame'] if frame else None))
+                hits.append(dict(asset=asset,path=path,kind=kind,timestamp=start,evidence=text,frame=frame['frame'] if frame else None,
+                                 crop=json.loads(frame['crop'] or 'null') if frame else None))
                 if len(hits) >= limit:
                     break
         return hits

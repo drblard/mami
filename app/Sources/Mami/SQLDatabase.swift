@@ -4,9 +4,11 @@ import SQLite3
 /// A scoped SQLite connection. Catalog access owns the process/filesystem lock.
 final class SQLDatabase {
     private(set) var handle: OpaquePointer?
+    private let path: String
 
-    init(_ url: URL, readOnly: Bool = false) throws {
-        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+    init(_ url: URL, readOnly: Bool = false, createIfMissing: Bool = true) throws {
+        path = url.path
+        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | (createIfMissing ? SQLITE_OPEN_CREATE : 0)
         guard sqlite3_open_v2(url.path, &handle, flags, nil) == SQLITE_OK else {
             let failure = error()
             sqlite3_close(handle)
@@ -18,11 +20,14 @@ final class SQLDatabase {
 
     deinit { sqlite3_close(handle) }
 
-    func error() -> AppError { .message(String(cString: sqlite3_errmsg(handle))) }
+    func error(operation: String? = nil) -> AppError {
+        let context = operation.map { " while \($0)" } ?? ""
+        return .message("SQLite \(path)\(context): \(String(cString: sqlite3_errmsg(handle)))")
+    }
 
     func rows(_ sql: String, _ bindings: [String] = []) throws -> [[String]] {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw error() }
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw error(operation: "preparing \(sql.prefix(160))") }
         defer { sqlite3_finalize(statement) }
         for (index, value) in bindings.enumerated() {
             let result = value.withCString {
@@ -34,7 +39,7 @@ final class SQLDatabase {
         while true {
             let step = sqlite3_step(statement)
             if step == SQLITE_DONE { return result }
-            guard step == SQLITE_ROW else { throw error() }
+            guard step == SQLITE_ROW else { throw error(operation: "executing \(sql.prefix(160))") }
             result.append((0..<sqlite3_column_count(statement)).map {
                 sqlite3_column_text(statement, $0).map { String(cString: $0) } ?? ""
             })
@@ -49,6 +54,13 @@ final class SQLDatabase {
 
     func hasTable(_ name: String) throws -> Bool {
         try !rows("SELECT name FROM sqlite_master WHERE type='table' AND name=?", [name]).isEmpty
+    }
+
+    func preserveWALSidecars() throws {
+        var enabled: Int32 = 1
+        guard sqlite3_file_control(handle, "main", SQLITE_FCNTL_PERSIST_WAL, &enabled) == SQLITE_OK else {
+            throw error(operation: "preserving WAL reader sidecars")
+        }
     }
 
     func execute(_ sql: String, _ bindings: [String] = []) throws { _ = try rows(sql, bindings) }

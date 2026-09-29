@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from model_config import PIPELINE
-from search_store import SearchStore, install_change_log
+from search_store import SearchStore, install_change_log,date_scope_tokens
 
 
 class SearchStoreTests(unittest.TestCase):
@@ -177,6 +177,40 @@ class SearchStoreTests(unittest.TestCase):
         self.assertEqual(self.store.allowed_paths(dict(assets=[])),set())
         self.assertEqual(self.store.allowed_paths(dict(camera='DJI',assets=['b'])),{'b'})
         self.assertEqual([hit['asset'] for hit in self.store.speech('updated',allowed_paths=allowed)],['a'])
+
+    def test_date_postings_cover_year_month_and_leap_day_boundaries(self):
+        self.assertEqual(date_scope_tokens('20240101','20241231'),['y2024'])
+        self.assertEqual(date_scope_tokens('20240201','20240229'),['m202402'])
+        self.assertEqual(date_scope_tokens('20240228','20240302'),['d20240228','d20240229','d20240301','d20240302'])
+        self.assertEqual(date_scope_tokens('20250102','20250101'),[])
+
+    def test_structured_speech_scope_precedes_limit_without_global_path_materialization(self):
+        self.add('a',date='20240229120000');self.add('b',date='20240301120000');self.drain()
+        hits=self.store.speech('dun',limit=1,scope=dict(camera='DJI',kind='video',**{'from':'20240201','through':'20240229235959'}))
+        self.assertEqual([hit['asset'] for hit in hits],['a'])
+        self.assertEqual(self.store.speech('dun',scope=dict(assets=[])),[])
+
+    def test_atlas_metadata_changes_do_not_force_vector_reloads(self):
+        media=self.add('a')
+        media['frames'][0]['sourceSize']=[180,320]
+        with self.db() as db:
+            db.execute('UPDATE media SET payload=? WHERE asset=?',(json.dumps(media),'a'))
+            db.execute('INSERT INTO index_units VALUES(?,?,?,?,?)',('a',PIPELINE,'embedding',0,json.dumps(dict(vector='/offline/vector.npy',sample=media['frames'][0]))))
+        self.drain()
+        sequence=self.store.db.execute('SELECT max(sequence) FROM vector_events').fetchone()[0]
+        packed=dict(media['frames'][0],frame='/offline/atlas.jpg',crop=[0,0,144,256])
+        media.update(frames=[packed],match=packed)
+        with self.db() as db:
+            db.execute('UPDATE media SET payload=? WHERE asset=?',(json.dumps(media),'a'))
+            db.execute("UPDATE index_units SET payload=? WHERE asset=? AND stage='embedding'",(json.dumps(dict(vector='/offline/vector.npy',sample=packed)),'a'))
+        self.drain()
+        self.assertEqual(self.store.db.execute('SELECT max(sequence) FROM vector_events').fetchone()[0],sequence)
+        self.assertEqual(self.store.speech('dun')[0]['crop'],[0,0,144,256])
+
+    def test_both_browse_orders_have_an_indexed_query_plan(self):
+        for order in ("captured DESC,asset","(captured=''),captured,asset"):
+            plan=self.store.db.execute('EXPLAIN QUERY PLAN SELECT asset,captured,summary FROM files ORDER BY '+order+' LIMIT 100').fetchall()
+            self.assertFalse(any('TEMP B-TREE' in row[3] for row in plan),plan)
 
 
 if __name__ == '__main__':

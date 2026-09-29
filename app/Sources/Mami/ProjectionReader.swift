@@ -1,8 +1,9 @@
 import Foundation
+import SQLite3
 
 /// Read-only paged access to generated search data; no original-media I/O.
 struct ProjectionReader: Sendable {
-    static let schemaVersion = "4"
+    static let schemaVersion = "5"
     static let pageSize = 100
     let database: URL
     var sourceIdentity: String? = nil
@@ -23,6 +24,21 @@ struct ProjectionReader: Sendable {
 
     private func open() throws -> SQLDatabase {
         let db = try SQLDatabase(database, readOnly: true)
+        do { return try validate(db) }
+        catch {
+            guard sqlite3_errcode(db.handle) == SQLITE_CANTOPEN else { throw error }
+            // Apple SQLite needs initialized WAL/SHM files for a read-only WAL
+            // connection, even when the main DB was fully checkpointed. Bootstrap
+            // only those sidecars; never create a missing projection or edit rows.
+            let owner = try SQLDatabase(database, createIfMissing: false)
+            _ = try owner.scalar("PRAGMA user_version")
+            try owner.preserveWALSidecars()
+            let reader = try SQLDatabase(database, readOnly: true)
+            return try withExtendedLifetime(owner) { try validate(reader) }
+        }
+    }
+
+    private func validate(_ db: SQLDatabase) throws -> SQLDatabase {
         guard try db.scalar("PRAGMA user_version") == Self.schemaVersion,
               try db.scalar("SELECT ready FROM checkpoint WHERE id=1") == "1" else {
             throw AppError.message("Search catalog is still being prepared")
@@ -65,7 +81,10 @@ struct ProjectionReader: Sendable {
                 bindings += [after.captured, after.captured, after.asset]
             }
         }
-        let rows = try db.rows("SELECT asset,captured,summary FROM files WHERE \(whereClause) ORDER BY (captured=''),captured \(scope.oldestFirst ? "ASC" : "DESC"),asset LIMIT ?", bindings + [String(limit)])
+        // Empty capture dates already sort last in descending order. Adding an
+        // expression there defeats files_date and sorts the entire catalog.
+        let order = scope.oldestFirst ? "(captured=''),captured,asset" : "captured DESC,asset"
+        let rows = try db.rows("SELECT asset,captured,summary FROM files WHERE \(whereClause) ORDER BY \(order) LIMIT ?", bindings + [String(limit)])
         let items = try rows.map { try JSONDecoder().decode(Media.self, from: Data($0[2].utf8)) }
         return Page(items: items, cursor: rows.last.map { Cursor(captured: $0[1], asset: $0[0]) }, total: total)
     }
@@ -83,9 +102,25 @@ struct ProjectionReader: Sendable {
     }
 
     func frames(asset: String) throws -> [Sample] {
-        try open().rows("SELECT frame,timestamp FROM frames WHERE asset=? ORDER BY ordinal", [asset]).map {
-            Sample(path: "", kind: "video", timestamp: Double($0[1]), frame: $0[0], score: nil, evidence: nil)
+        try open().rows("SELECT frame,timestamp,crop FROM frames WHERE asset=? ORDER BY ordinal", [asset]).map {
+            let crop = $0[2].isEmpty ? nil : try JSONDecoder().decode([Int]?.self, from: Data($0[2].utf8))
+            return Sample(path: "", kind: "video", timestamp: Double($0[1]), frame: $0[0], score: nil, evidence: nil, crop: crop)
         }
+    }
+
+    func nearestFrame(asset: String, timestamp: Double?) throws -> Sample? {
+        let db = try open()
+        guard let file = try db.rows("SELECT path,kind FROM files WHERE asset=?", [asset]).first else { return nil }
+        var candidates: [[String]] = []
+        if let timestamp {
+            candidates += try db.rows("SELECT frame,timestamp,crop FROM frames WHERE asset=? AND timestamp<=? ORDER BY timestamp DESC LIMIT 1", [asset,String(timestamp)])
+            candidates += try db.rows("SELECT frame,timestamp,crop FROM frames WHERE asset=? AND timestamp>? ORDER BY timestamp LIMIT 1", [asset,String(timestamp)])
+        } else {
+            candidates = try db.rows("SELECT frame,timestamp,crop FROM frames WHERE asset=? ORDER BY ordinal LIMIT 1", [asset])
+        }
+        guard let row = candidates.min(by: { abs((Double($0[1]) ?? 0)-(timestamp ?? 0)) < abs((Double($1[1]) ?? 0)-(timestamp ?? 0)) }) else { return nil }
+        let crop = row[2].isEmpty ? nil : try JSONDecoder().decode([Int]?.self, from: Data(row[2].utf8))
+        return Sample(path: file[0], kind: file[1], timestamp: Double(row[1]), frame: row[0], score: nil, evidence: nil, crop: crop)
     }
 
     func facets() throws -> Facets {

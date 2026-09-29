@@ -7,15 +7,17 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
     let kind: String
     var url: URL
     var frame: String
+    var crop: [Int]? = nil
     let timestamp: Double?
     var id: String { assetID }
     init(_ media: Media, sample: Sample? = nil) {
         let sample = sample ?? media.match
         assetID = media.assetID; path = media.path; kind = media.kind
         url = media.url; frame = sample.frame; timestamp = sample.timestamp
+        crop = sample.crop
     }
     var media: Media {
-        let sample = Sample(path: path, kind: kind, timestamp: timestamp, frame: frame, score: nil, evidence: nil)
+        let sample = Sample(path: path, kind: kind, timestamp: timestamp, frame: frame, score: nil, evidence: nil, crop: crop)
         return Media(path: path, kind: kind, url: url, frames: [sample], match: sample, metadata: nil, assetID: assetID)
     }
 }
@@ -42,7 +44,7 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
         let updated = items.map { item in
             guard let live = byAsset[item.assetID] else { return item }
             var value = item; value.url = live.url
-            if !FileManager.default.fileExists(atPath: value.frame), let sample = live.frames.first { value.frame = sample.frame }
+            if !FileManager.default.fileExists(atPath: value.frame), let sample = live.frames.first { value.frame = sample.frame; value.crop = sample.crop }
             return value
         }
         // URLs and cached frames are derived. Reconnection should not create a
@@ -128,6 +130,7 @@ struct ClipDragHandle: NSViewRepresentable {
 
 struct SelectedClipRow: View {
     let clip: SelectedClip
+    var projection: ProjectionReader? = nil
     let open: () -> Void
     @ViewState private var image: NSImage?
     var body: some View {
@@ -144,12 +147,13 @@ struct SelectedClipRow: View {
                 Spacer(minLength: 0)
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
-            .task(id: clip.frame) { image = await FrameCache.shared.image(clip.frame, maxPixelSize: 120) }
+            .task(id: clip.media.match.cacheKey) { image = await FrameCache.shared.image(clip.media.match, assetID: clip.assetID, projection: projection, maxPixelSize: 120) }
     }
 }
 
 struct SelectionIsland: View {
     @ObservedObject var clips: ClipSelection
+    var projection: ProjectionReader? = nil
     let open: (SelectedClip) -> Void
     let collapse: () -> Void
     var body: some View {
@@ -171,7 +175,7 @@ struct SelectionIsland: View {
                     LazyVStack(spacing: 12) {
                         ForEach(clips.items) { clip in
                             HStack(spacing: 6) {
-                                SelectedClipRow(clip: clip) { open(clip) }
+                                SelectedClipRow(clip: clip, projection: projection) { open(clip) }
                                 Button { clips.remove(clip.id) } label: { Image(systemName: "xmark.circle.fill") }
                                     .buttonStyle(.plain).foregroundStyle(.secondary).help("Remove from selection")
                             }.contextMenu {

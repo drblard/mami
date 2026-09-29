@@ -21,6 +21,77 @@ Last updated: 2026-09-29. Status: **Persistent-search integration and remaining 
   review and deployment. Do not read historical "in progress" entries as the
   current deployment state.
 
+### 2026-09-29 — packed preview and UI validation checkpoint
+
+- Added immutable JPEG atlas packing for completed AI jobs, crop-aware native
+  rendering and bounded decoded-sheet caching. Cropped images are detached from
+  full-sheet storage so individual cache entries cannot retain unaccounted atlases.
+- Raw-frame retirement requires unchanged owned-cache signatures, verified sheet
+  checksums, current source references and projection visibility. Originals, numeric
+  embeddings, legacy experiment paths and modified files do not qualify.
+- Tests cover offline packing, exact timestamps/vector preservation, portrait
+  geometry, publication races, corrupt-sheet rejection and safe retirement.
+  Linux now has an isolated NumPy/Pillow check environment at
+  `/home/steevel/mami-lab/checks/.venv`; 108 tests run there with only 3 MLX skips.
+- Candidate `prototype-20260929T044434702777Z` passed 14 Swift / 108 Python tests,
+  signing and native catalog checks. The compiler flagged NSCache's missing
+  Sendable annotation; a narrowly scoped, documented thread-safe wrapper fixes
+  that warning in source, pending the next compile.
+- New native-scale fixture build: `~/mami-lab/benchmarks/native-50x-20260929/`.
+  It includes 5.83M vectors, 723,700 namespaced media summaries, 1.17M transcript
+  segments and references to cached frames. It is synthetic capacity data, not
+  evidence of relevance on unseen footage. Source originals remain untouched.
+- The crop-aware expanded native UI check and the 50× native Library check are
+  next. Packed previews and the new search path are still not activated live.
+- The 50× native fixture completed: 5,830,750 vectors, 723,700 media summaries,
+  1,174,650 transcript segments. The first expanded native run stopped in its
+  color fixture: AppKit rejected named NSColor values for the bitmap. Replaced
+  these with explicit device-RGB colors; a direct AppKit check confirms the fix.
+  No startup performance claim is taken from that failed run.
+- Crops now carry original preview dimensions to preserve shape classification.
+  Visual/speech replies and on-demand frame lookup retain crop metadata; stale
+  raw cache references reconnect through the projection after retirement.
+- Transcript scope filtering now uses date/camera FTS postings and SQL predicates,
+  avoiding construction of a whole-library path set on every filtered keystroke.
+- Derived schemas are projection v5 / packed generation v4. They remain candidate
+  formats; the live app still uses the earlier validated fast-preview build.
+- Explicit RGB native crop checks now pass (colors, dimensions, stale-reference
+  recovery and invalid bounds). The 50× Library run then reported a SQLite open
+  error. Query-plan inspection exposed a full-catalog temporary sort in descending
+  paging. Removed the redundant expression and added an indexed oldest-first order;
+  fixture timings: first 100 summaries **0.33 ms**, count **8.9 ms**, camera facets
+  **89.9 ms**. Added query-plan regression coverage and contextual SQLite errors.
+  The full native run must be repeated; this is not yet a passing startup result.
+- Contextual errors identified a separate Apple-SQLite behavior: `PRAGMA
+  user_version` on a read-only, clean WAL file fails with CANTOPEN/ENOENT when
+  WAL/SHM sidecars are absent. A temporary read-write connection can initialize
+  those files without changing rows. Added that specific recovery path (no creation
+  of missing main databases), persistent sidecar policy and a native clean-WAL
+  regression test. The paging-index fix remains independently necessary.
+- Candidate `prototype-20260929T052429315066Z` passes **14 Swift / 112 Python
+  tests**, signing, native crop/projection checks and the complete native 50×
+  Library/UI run. Readiness **4.377 s**, first page **100 items**; three combined
+  searches **132–178 ms**. Screenshot reviewed: correct paged grid/counts and
+  controls. Warm OS caches are possible; this is not a reboot measurement.
+- Startup is within the five-second target in that run. Combined-query latency
+  still needs tightening toward the 100 ms backend/100–200 ms typing target.
+- Active offline atlas check: `benchmarks/atlas-offline-20260929/`, using isolated
+  copies of real cached frames with an intentionally unavailable original URL.
+- Offline atlas check passed: **82 real cached frames → 3 sheets**, **4,635,693
+  bytes → 644,659 bytes**, packed in **0.297 s**. All 82 owned fixture raw frames
+  were retired only after projection/checksum validation; embedding references
+  stayed unchanged. The original URL is deliberately unmounted; the live cache
+  and originals were untouched. Native rendering/search on this fixture is next.
+- Native offline fixture now passes: ready **0.983 s**, three searches **15.6–17.5
+  ms**, packed-frame crop/reconnection checks and screenshot. Its only original
+  URL remains unavailable. Added explicit start/middle/end cached-frame decode
+  observations to the next native check for stronger scrub coverage.
+- Profiling the 50× path identified avoidable SQLite page churn alongside storage
+  cache effects. Added explicit bounded query caches (projection 64 MiB, row map
+  32 MiB). A same-process diagnostic measured visual scoring/reranking ~19–21 ms,
+  encoder ~13–16 ms and transcript lookup ~0.1–2.7 ms after warming; full native
+  validation must still be repeated and reported separately from this diagnostic.
+
 ### 2026-09-29 — native startup and lifecycle milestone
 
 - Results: `persistent-native-20260929/native-check/result.json` and the fixture's

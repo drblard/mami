@@ -388,7 +388,10 @@ class Queue:
             embedding = self.unit(asset, 'embedding', ordinal)
             if embedding is None:
                 target = self.target(asset, '.npy')
-                self.backend.embedding(Path(sample['frame']), target)
+                if sample.get('crop') is not None:
+                    self.backend.embedding(Path(sample['frame']), target, crop=sample['crop'])
+                else:
+                    self.backend.embedding(Path(sample['frame']), target)
                 self.valid_source(job)
                 self.store_unit(asset, 'embedding', ordinal, dict(sample=sample, vector=str(target)))
             elif embedding['sample'] != sample:

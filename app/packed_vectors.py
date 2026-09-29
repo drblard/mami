@@ -18,7 +18,7 @@ from model_config import VISUAL_MODEL
 from vector_selection import top_indices
 
 DIMENSIONS = 768
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 QUANTIZATION_BITS = 4
 QUANTIZATION_GROUP_SIZE = 64
 VECTOR_CACHE_BYTES = 64 * 1024 * 1024
@@ -27,6 +27,7 @@ FILTERED_RERANK_CANDIDATES = 4096
 NARROW_SCOPE_ROWS = 50000
 READ_THREADS = 8
 BUILD_BATCH_ROWS = 4096
+ROW_CACHE_KIB = 32 * 1024
 
 
 def build(projection, destination, owner=None, checkpoint=lambda: None):
@@ -52,7 +53,7 @@ def build(projection, destination, owner=None, checkpoint=lambda: None):
         with contextlib.closing(sqlite3.connect(destination/'rows.sqlite')) as rows:
             rows.executescript('CREATE TABLE files(id INTEGER PRIMARY KEY,asset TEXT UNIQUE,path TEXT,kind TEXT,camera TEXT,captured TEXT,shape TEXT,arrival INTEGER);'
                               'CREATE INDEX file_camera ON files(camera); CREATE INDEX file_date ON files(captured);'
-                              'CREATE TABLE vectors(id INTEGER PRIMARY KEY,file_id INTEGER,ordinal INTEGER,frame TEXT,timestamp REAL);')
+                              'CREATE TABLE vectors(id INTEGER PRIMARY KEY,file_id INTEGER,ordinal INTEGER,frame TEXT,timestamp REAL,crop TEXT);')
             file_ids = {}
             columns={row[1] for row in source.execute('PRAGMA table_info(files)')}
             shape_column='shape' if 'shape' in columns else "'unknown'"
@@ -62,13 +63,15 @@ def build(projection, destination, owner=None, checkpoint=lambda: None):
                 rows.execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,?)',(file_id,asset,path,kind,camera,captured,shape,arrival))
             row_files=np.empty(count,dtype=np.int32)
             mapped = {}
-            cursor=source.execute('SELECT asset,ordinal,vector_path,vector_row,frame,timestamp FROM embeddings ORDER BY asset,ordinal')
+            embedding_columns={row[1] for row in source.execute('PRAGMA table_info(embeddings)')}
+            crop_column='crop' if 'crop' in embedding_columns else 'NULL'
+            cursor=source.execute(f'SELECT asset,ordinal,vector_path,vector_row,frame,timestamp,{crop_column} FROM embeddings ORDER BY asset,ordinal')
             offset=0
             while True:
                 checkpoint()
                 batch=cursor.fetchmany(BUILD_BATCH_ROWS)
                 if not batch:break
-                for i,(asset,ordinal,path,matrix_row,frame,timestamp) in enumerate(batch,start=offset):
+                for i,(asset,ordinal,path,matrix_row,frame,timestamp,crop) in enumerate(batch,start=offset):
                     if matrix_row is None:
                         vector=np.load(path,allow_pickle=False)
                     else:
@@ -78,7 +81,7 @@ def build(projection, destination, owner=None, checkpoint=lambda: None):
                         raise ValueError('Invalid source embedding: '+path)
                     full[i]=vector
                     row_files[i]=file_ids[asset]
-                    rows.execute('INSERT INTO vectors VALUES(?,?,?,?,?)',(i,file_ids[asset],ordinal,frame,timestamp))
+                    rows.execute('INSERT INTO vectors VALUES(?,?,?,?,?,?)',(i,file_ids[asset],ordinal,frame,timestamp,crop))
                 q,s,b=mx.quantize(mx.array(full[offset:offset+len(batch)]),group_size=QUANTIZATION_GROUP_SIZE,bits=QUANTIZATION_BITS)
                 mx.eval(q,s,b)
                 packed[offset:offset+len(batch)]=np.array(q)
@@ -126,6 +129,7 @@ class PackedIndex:
             raise ValueError('Packed index row counts differ')
         self.rows=sqlite3.connect((directory/'rows.sqlite').resolve().as_uri()+'?mode=ro&immutable=1',uri=True,check_same_thread=False)
         self.rows.row_factory=sqlite3.Row
+        self.rows.execute(f'PRAGMA cache_size=-{ROW_CACHE_KIB}')
         self.pool=ThreadPoolExecutor(max_workers=READ_THREADS)
 
     @lru_cache(maxsize=8)
@@ -175,8 +179,10 @@ class PackedIndex:
             row_id=int(candidates[rank]);file_id=int(self.file_ids[row_id])
             if file_id in seen:continue
             seen.add(file_id)
-            row=self.rows.execute('SELECT f.asset,f.path,f.kind,v.frame,v.timestamp FROM vectors v JOIN files f ON f.id=v.file_id WHERE v.id=?',(row_id,)).fetchone()
-            hits.append(dict(row,score=float(exact[rank])))
+            row=self.rows.execute('SELECT f.asset,f.path,f.kind,v.ordinal,v.frame,v.timestamp,v.crop FROM vectors v JOIN files f ON f.id=v.file_id WHERE v.id=?',(row_id,)).fetchone()
+            hit=dict(row,score=float(exact[rank]))
+            hit['crop']=json.loads(hit['crop'] or 'null')
+            hits.append(hit)
             if len(hits)==limit:break
         return hits
 

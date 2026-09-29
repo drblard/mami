@@ -8,27 +8,90 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 actor FrameCache {
     static let shared = FrameCache()
+    private enum Limits {
+        static let imageBytes = 96 * 1024 * 1024
+        static let imageCount = 256
+        static let atlasBytes = 32 * 1024 * 1024
+        static let atlasCount = 4
+        static let maximumAtlasDimension = 4096
+    }
+    /// NSCache synchronizes access internally. Values are immutable CGImages,
+    /// and configuration is set before this wrapper crosses an executor boundary.
+    private final class AtlasCache: @unchecked Sendable {
+        private let storage = NSCache<NSString, CGImage>()
+        init() {
+            storage.totalCostLimit = Limits.atlasBytes
+            storage.countLimit = Limits.atlasCount
+        }
+        func image(for path: String) -> CGImage? { storage.object(forKey: path as NSString) }
+        func insert(_ image: CGImage, for path: String, cost: Int) {
+            storage.setObject(image, forKey: path as NSString, cost: cost)
+        }
+    }
     private var images: [String: (NSImage, Int)] = [:]
     private var order: [String] = []
     private var bytes = 0
     private var pending: [String: Task<NSImage?, Never>] = [:]
     private let queue = DispatchQueue(label: "mami.frames", qos: .userInitiated)
+    private let atlases = AtlasCache()
     var retainedCost: Int { bytes }
     var retainedCount: Int { images.count }
 
-    func image(_ path: String, maxPixelSize: Int = 640) async -> NSImage? {
+    func image(_ sample: Sample, assetID: String, projection: ProjectionReader?, maxPixelSize: Int = 640) async -> NSImage? {
+        if let cached = await image(sample.frame, maxPixelSize: maxPixelSize, crop: sample.crop) { return cached }
+        let timestamp = sample.timestamp
+        let replacement = try? await Task.detached(priority: .userInitiated) {
+            if let projection { return try projection.nearestFrame(asset: assetID, timestamp: timestamp) }
+            return try Catalog.standard.media(forAssetIDs: [assetID]).first?.frames.min {
+                abs(($0.timestamp ?? 0)-(timestamp ?? 0)) < abs(($1.timestamp ?? 0)-(timestamp ?? 0))
+            }
+        }.value
+        guard let replacement, replacement.cacheKey != sample.cacheKey else { return nil }
+        return await image(replacement.frame, maxPixelSize: maxPixelSize, crop: replacement.crop)
+    }
+
+    func image(_ path: String, maxPixelSize: Int = 640, crop: [Int]? = nil) async -> NSImage? {
         guard !path.isEmpty else { return nil }
-        let key = "\(maxPixelSize):\(path)"
+        let key = "\(maxPixelSize):\(path):\(crop ?? [])"
         if let cached = images[key] {
             order.removeAll { $0 == key }; order.append(key)
             return cached.0
         }
         if let task = pending[key] { return await task.value }
         guard !Task.isCancelled else { return nil }
-        let task = Task<NSImage?, Never> { [queue] in
+        let task = Task<NSImage?, Never> { [queue, atlases] in
         await withCheckedContinuation { continuation in
             queue.async {
                 autoreleasepool {
+                if let crop {
+                    guard crop.count == 4, crop[0] >= 0, crop[1] >= 0, crop[2] > 0, crop[3] > 0 else { continuation.resume(returning: nil); return }
+                    let atlas: CGImage
+                    if let cached = atlases.image(for: path) { atlas = cached }
+                    else {
+                        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+                              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+                              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+                              width.intValue > 0, height.intValue > 0,
+                              width.intValue <= Limits.maximumAtlasDimension, height.intValue <= Limits.maximumAtlasDimension,
+                              let decoded = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { continuation.resume(returning: nil); return }
+                        atlas = decoded
+                        let cost = decoded.bytesPerRow * decoded.height
+                        if cost <= Limits.atlasBytes { atlases.insert(decoded, for: path, cost: cost) }
+                    }
+                    guard crop[0] <= atlas.width - crop[2], crop[1] <= atlas.height - crop[3],
+                          let cg = atlas.cropping(to: CGRect(x: crop[0], y: crop[1], width: crop[2], height: crop[3])) else { continuation.resume(returning: nil); return }
+                    // Detach the crop's pixels: CGImage crops may otherwise keep
+                    // an entire sheet alive outside the atlas cache's budget.
+                    guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                          let context = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8,
+                                                  bytesPerRow: cg.width * 4, space: space,
+                                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { continuation.resume(returning: nil); return }
+                    context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+                    guard let detached = context.makeImage() else { continuation.resume(returning: nil); return }
+                    continuation.resume(returning: NSImage(cgImage: detached, size: NSSize(width: detached.width, height: detached.height)))
+                    return
+                }
                 guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
                       let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                         kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -46,12 +109,12 @@ actor FrameCache {
         let image = await task.value
         pending[key] = nil
         if let image {
-            let cost = maxPixelSize * maxPixelSize * 4
-            while !order.isEmpty && (bytes + cost > 96 * 1024 * 1024 || order.count >= 256) {
+            let cost = Int(image.size.width) * Int(image.size.height) * 4
+            while !order.isEmpty && (bytes + cost > Limits.imageBytes || order.count >= Limits.imageCount) {
                 let oldest = order.removeFirst()
                 if let removed = images.removeValue(forKey: oldest) { bytes -= removed.1 }
             }
-            if cost <= 96 * 1024 * 1024 { images[key] = (image, cost); order.append(key); bytes += cost }
+            if cost <= Limits.imageBytes { images[key] = (image, cost); order.append(key); bytes += cost }
         }
         return image
     }
@@ -167,7 +230,7 @@ struct MediaCard: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(focused ? Color.accentColor : pointerInside ? Color.accentColor.opacity(0.6) : .clear, lineWidth: 2))
         .contentShape(RoundedRectangle(cornerRadius: 10))
         .onHover { pointerInside = $0 }
-        .task(id: "\(pointerInside):\(media.frameCount ?? media.frames.count)") {
+        .task(id: "\(pointerInside):\(media.frameCount ?? media.frames.count):\(media.match.cacheKey)") {
             guard pointerInside, media.kind == "video", let projection else { return }
             let asset = media.assetID
             do {
@@ -179,11 +242,11 @@ struct MediaCard: View {
         }
         .background(MediaDragSurface(enabled: dragEnabled, items: dragItems))
         .onTapGesture { select() }
-        .task(id: sample.frame) {
+        .task(id: sample.cacheKey) {
             if hovered != nil { try? await Task.sleep(for: .milliseconds(35)) }
             guard !Task.isCancelled else { return }
             let path = sample.frame
-            let decoded = await FrameCache.shared.image(path)
+            let decoded = await FrameCache.shared.image(sample, assetID: media.assetID, projection: projection)
             guard !Task.isCancelled else { return }
             image = decoded
             unavailable = decoded == nil && !path.isEmpty
@@ -191,13 +254,13 @@ struct MediaCard: View {
                 for neighbor in [position + 1, position - 1, position + 2, position - 2] {
                     guard !Task.isCancelled else { return }
                     if scrubFrames.indices.contains(neighbor) {
-                        _ = await FrameCache.shared.image(scrubFrames[neighbor].frame)
+                        _ = await FrameCache.shared.image(scrubFrames[neighbor].frame, crop: scrubFrames[neighbor].crop)
                     }
                 }
             }
         }
         .onDisappear { image = nil; loadedFrames = nil; hovered = nil; pointerInside = false }
-        .onChange(of: media.match.frame) { _, _ in hovered = nil }
+        .onChange(of: media.match.cacheKey) { _, _ in hovered = nil }
         .onChange(of: media.frames.count) { _, _ in
             if let fraction = hoverFraction { hovered = scrubIndex(at: fraction) }
         }
@@ -628,12 +691,12 @@ struct LibraryView: View {
                             .onAppear {
                                 if media.id == library.items.last?.id { Task { await library.loadMore() } }
                             }
-                            .task(id: media.match.frame) {
+                            .task(id: media.match.cacheKey) {
                                 guard let position = positions[media.id] else { return }
                                 let margin = max(3, navigation.columns * 2)
                                 for index in max(0, position - margin)..<min(displayed.count, position + margin + 1) {
                                     guard !Task.isCancelled else { return }
-                                    _ = await FrameCache.shared.image(displayed[index].match.frame)
+                                    _ = await FrameCache.shared.image(displayed[index].match.frame, crop: displayed[index].match.crop)
                                 }
                             }
                     }
@@ -648,7 +711,7 @@ struct LibraryView: View {
                 }
             }
             if showClips {
-                SelectionIsland(clips: clips, open: { clip in
+                SelectionIsland(clips: clips, projection: library.projectionReader, open: { clip in
                     let media = library.catalogMedia.first { $0.assetID == clip.assetID } ?? clip.media
                     open(media, timestamp: clip.timestamp)
                 }, collapse: { showClips = false })
@@ -678,8 +741,8 @@ struct LibraryView: View {
         .task { await library.load() }
         .task { await annotations.load() }
         .task { await clips.load() }
-        .task { PhotosImporting.shared.startAutomatic() }
-        .task { Importing.shared.startAutomatic() }
+        .task { if !LaunchMode.isIntegrationCheck { PhotosImporting.shared.startAutomatic() } }
+        .task { if !LaunchMode.isIntegrationCheck { Importing.shared.startAutomatic() } }
         .task {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
@@ -1412,12 +1475,12 @@ struct MamiApp: App {
         var cold: [Double] = [], warm: [Double] = []
         for frame in frames {
             let start = CFAbsoluteTimeGetCurrent()
-            guard await FrameCache.shared.image(frame.frame) != nil else { throw AppError.message("Missing cached frame \(frame.frame)") }
+            guard await FrameCache.shared.image(frame.frame, crop: frame.crop) != nil else { throw AppError.message("Missing cached frame \(frame.frame)") }
             cold.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
         }
         for frame in frames {
             let start = CFAbsoluteTimeGetCurrent()
-            _ = await FrameCache.shared.image(frame.frame)
+            _ = await FrameCache.shared.image(frame.frame, crop: frame.crop)
             warm.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
         }
         func percentile(_ values: [Double]) -> Double { values.sorted()[min(values.count - 1, Int(Double(values.count) * 0.95))] }

@@ -13,6 +13,13 @@ func checkCatalog(at root: URL) throws {
     try require(configured.backups == isolatedDirectory.appendingPathComponent("backups"), "Catalog override leaked backups into the live library")
     try require(configured.legacyAnnotationsDirectory == isolatedDirectory.appendingPathComponent("legacy-annotations"), "Catalog override reads live legacy annotations")
     try require(configured.artifacts == isolatedDirectory.appendingPathComponent("index-artifacts"), "Catalog override writes live indexing artifacts")
+    let configurationRoot = root.appendingPathComponent("configuration-fixture")
+    try FileManager.default.createDirectory(at: configurationRoot, withIntermediateDirectories: true)
+    let configuration: [String: String] = ["index": "/unused/index", "packed_index": "/live/vectors", "search_projection": "/live/search.sqlite", "pack_previews": "1"]
+    try JSONEncoder().encode(configuration).write(to: configurationRoot.appendingPathComponent("configuration.json"))
+    let isolatedConfiguration = try Configuration.load(environment: ["MAMI_CATALOG": isolatedDirectory.path], resourceDirectory: configurationRoot)
+    try require(isolatedConfiguration.packedIndex == nil && isolatedConfiguration.searchProjection == nil && !isolatedConfiguration.packPreviews,
+                "Isolated catalog inherited writable production search/cache paths")
     let pendingPayload: [String: Any] = [
         "path": "library:sha256:pending", "kind": "video", "url": "file:///original/pending.mp4",
         "frames": [], "match": ["path": "library:sha256:pending", "kind": "video", "timestamp": 0, "frame": ""],
