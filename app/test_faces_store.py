@@ -144,7 +144,7 @@ class FacesStoreTests(unittest.TestCase):
             self.assertIn("'moment'", db.execute("SELECT sql FROM sqlite_master WHERE name='face_assignments'").fetchone()[0])
             self.assertIn('typical', {row[1] for row in db.execute('PRAGMA table_info(face_groups)')})
             self.assertEqual(db.execute("SELECT origin,state FROM face_jobs").fetchone()[:], ('other', 'complete'))
-            self.assertTrue(faces_store.grouping_stale(db))
+            self.assertTrue(faces_store.grouping_stale(db, faces_store.labels_token({}, [])))
 
     def test_weak_embeddings_do_not_seed_groups_or_suggestions(self):
         with faces_store.connection(self.path) as db:
@@ -178,7 +178,7 @@ class FacesStoreTests(unittest.TestCase):
             box = (0.1, 0.1, 0.3, 0.4)
             labels = [('a1', None, *box, 'son', 'confirmed'), ('a3', None, *box, 'son', 'rejected'),
                       ('a2', None, *box, 'removed-person', 'confirmed')]
-            self.assertTrue(faces_store.grouping_stale(db))
+            self.assertTrue(faces_store.grouping_stale(db, faces_store.labels_token({'son': 'Our son'}, labels)))
             face_assignments.recompute(db, {'son': 'Our son'}, labels)
             assigned = {row['face']: (row['person'], row['source']) for row in db.execute('SELECT * FROM face_assignments')}
             self.assertEqual(assigned, {ids['a101']: ('son', 'confirmed'), ids['a201']: ('son', 'suggested'),
@@ -190,7 +190,10 @@ class FacesStoreTests(unittest.TestCase):
             self.assertAlmostEqual(typical[ids['b101']], typical[ids['b201']], places=5)
             self.assertLess(typical[ids['b101']], 1.0)
             self.assertEqual(groups, {ids['a301']: ids['a301'], ids['b101']: ids['b101'], ids['b201']: ids['b101'], ids['v11']: ids['v11']})
-            self.assertFalse(faces_store.grouping_stale(db))
+            token = faces_store.labels_token({'son': 'Our son'}, labels)
+            self.assertFalse(faces_store.grouping_stale(db, token))
+            # A label change made while no worker ran makes grouping stale again.
+            self.assertTrue(faces_store.grouping_stale(db, faces_store.labels_token({'son': 'Our son'}, labels[:1])))
 
 
 if __name__ == '__main__':

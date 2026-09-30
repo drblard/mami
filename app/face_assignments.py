@@ -126,5 +126,6 @@ def recompute(db, people, labels):
     db.executemany('INSERT INTO face_groups VALUES(?,?,?)',
                    [(int(ids[unassigned[offset]]), first[label], float(grouped[offset] @ centres[label]))
                     for offset, label in enumerate(labels_by_face)])
-    db.execute('UPDATE face_state SET grouped=? WHERE id=1', (faces_store.face_set(db),))
+    # Record the labels too: edits made while no worker ran are recomputed later.
+    db.execute('UPDATE face_state SET grouped=? WHERE id=1', (faces_store.face_set(db, faces_store.labels_token(people, labels)),))
     return len(assignments), len(labels_by_face)

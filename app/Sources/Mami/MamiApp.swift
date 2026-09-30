@@ -921,6 +921,7 @@ struct MamiApp: App {
             }
             NSApplication.shared.run()
         } else {
+            AppDiagnostics.captureAppErrors()
             MamiApp.main()
         }
     }

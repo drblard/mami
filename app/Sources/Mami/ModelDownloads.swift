@@ -18,7 +18,7 @@ import Darwin
             task.arguments = ["-B", configuration.worker.deletingLastPathComponent().appendingPathComponent("download_models.py").path]
             task.qualityOfService = .utility
             task.standardOutput = output
-            task.standardError = FileHandle.standardError
+            task.standardError = AppDiagnostics.workerErrorOutput
             try task.run()
             process = task; running = true; status = "Downloading pinned indexing models…"
             Task.detached { [weak self] in

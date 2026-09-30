@@ -243,6 +243,16 @@ Progress appears as a third footer lane (“Faces”).
       Face index schema v4 (`moment` source). Live-copy dry run: Lucia's To check
       1,048 → 789 (88 same-moment matches plus settled-track frames), 1.6 s recompute.
       Person pages show what each edit changed once the worker has recomputed.
+- [ ] **Crash, 5 times on 2026-09-30** (09:13, 09:26, 10:25, 11:48, 14:18 local), all
+      `EXC_BREAKPOINT` in SwiftUI `ButtonAction` → `MainActor.assumeIsolated` on the
+      main thread, from a mouse click; no app frame and no message in the reports or
+      unified log. A click that crashes saves nothing (the check precedes the
+      action). Not reproduced by programmatic presses. The app now writes its own
+      fatal-error text to `~/Library/Caches/Mami/app-errors.log` (workers excluded)
+      so the next occurrence names the assertion.
+- [x] Edits made while no worker ran (e.g. the app quit or crashed right after an
+      edit) were not recomputed until the next edit. Grouping staleness now includes
+      a digest of people and labels, and each launch runs the face check once.
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.

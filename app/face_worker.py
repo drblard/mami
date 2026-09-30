@@ -232,8 +232,9 @@ class FaceQueue:
             try:
                 self.checkpoint()
                 processed, upstream = self.work()
+                people, labels = personal_labels(self.catalog)
                 with self.store.connection(self.faces) as db:
-                    stale = self.store.grouping_stale(db)
+                    stale = self.store.grouping_stale(db, self.store.labels_token(people, labels))
                 if processed or stale or self.recompute.is_set():
                     self.regroup()
                 failed = self.counts.get('failed', 0)

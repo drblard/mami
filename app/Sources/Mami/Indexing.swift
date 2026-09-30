@@ -59,7 +59,9 @@ enum LaneLog {
         faces.schedule()
         previews.wakeWork()
         shared.start(force: true)
-        faces.start()
+        // Once per launch: recomputes if people edits were made while no worker ran
+        // (e.g. the app quit right after an edit). Idle workers exit within seconds.
+        faces.start(force: true)
     }
 
     static func publishedImport() {
@@ -196,7 +198,7 @@ enum LaneLog {
             let stdin = Pipe(), stdout = Pipe()
             task.standardInput = stdin
             task.standardOutput = stdout
-            task.standardError = FileHandle.standardError
+            task.standardError = AppDiagnostics.workerErrorOutput
             // Utility QoS avoids macOS's severe background disk throttling;
             // the worker uses nice(10), bounded CPU threads and active-editor signals.
             task.qualityOfService = .utility

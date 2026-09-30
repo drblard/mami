@@ -206,7 +206,7 @@ actor SearchWorker {
         let stdin = Pipe(), stdout = Pipe()
         task.standardInput = stdin
         task.standardOutput = stdout
-        task.standardError = FileHandle.standardError
+        task.standardError = AppDiagnostics.workerErrorOutput
         try task.run()
         process = task
         input = stdin.fileHandleForWriting

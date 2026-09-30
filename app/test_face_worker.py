@@ -88,7 +88,7 @@ class FaceWorkerTests(unittest.TestCase):
         self.assertEqual(self.events[-1]['queue_counts'], dict(remaining=0, completed=3, failed=0))
         with faces_store.connection(self.faces) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM face_groups').fetchone()[0], 3)
-            self.assertFalse(faces_store.grouping_stale(db))
+            self.assertFalse(faces_store.grouping_stale(db, faces_store.labels_token({}, [])))
 
     def test_waits_for_previews_and_ai_search_without_extracting(self):
         with contextlib.closing(sqlite3.connect(self.catalog)) as db, db:

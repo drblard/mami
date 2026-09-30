@@ -210,7 +210,7 @@ import OSLog
             }
             task.standardInput = stdin
             task.standardOutput = stdout
-            task.standardError = FileHandle.standardError
+            task.standardError = AppDiagnostics.workerErrorOutput
             task.qualityOfService = .utility
             buffer = Data(); progress = nil; error = nil; lastCopyCount = 0
             try task.run()

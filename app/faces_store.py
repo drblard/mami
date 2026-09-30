@@ -201,11 +201,18 @@ def match_label(db, asset, timestamp, box):
     return best[1] if best[0] >= LABEL_MATCH_OVERLAP else None
 
 
-def face_set(db):
-    """Identifies the current set of faces; grouping is stale when it changes."""
+def labels_token(people, labels):
+    """Digest of the user's people and labels that grouping was computed from."""
+    import hashlib
+    digest = hashlib.sha256(repr((sorted(people.items()), sorted(tuple(label) for label in labels))).encode())
+    return digest.hexdigest()[:16]
+
+
+def face_set(db, token=''):
+    """Identifies the faces and labels grouping used; it is stale when either changes."""
     count, highest = db.execute('SELECT count(*),coalesce(max(id),0) FROM faces').fetchone()
-    return f'{GROUPING_VERSION}:{count}:{highest}'
+    return f'{GROUPING_VERSION}:{count}:{highest}:{token}'
 
 
-def grouping_stale(db):
-    return db.execute('SELECT grouped FROM face_state WHERE id=1').fetchone()[0] != face_set(db)
+def grouping_stale(db, token):
+    return db.execute('SELECT grouped FROM face_state WHERE id=1').fetchone()[0] != face_set(db, token)
