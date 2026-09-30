@@ -32,6 +32,9 @@ TRACK_REPRESENTATIVES = 3
 # a clear margin over every other person.
 SUGGEST_SIMILARITY = 0.45
 SUGGEST_MARGIN = 0.08
+# Suggestions at least this similar count without review (FaceIndex.automaticSimilarity
+# in the app must match). Chosen from a banded review of the live library.
+AUTOMATIC_SIMILARITY = 0.65
 SIMILARITY_BLOCK = 4096
 
 

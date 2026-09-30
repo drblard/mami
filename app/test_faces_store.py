@@ -73,6 +73,24 @@ class FacesStoreTests(unittest.TestCase):
             self.assertIsNone(faces_store.next_job(db))
             self.assertEqual(faces_store.counts(db), dict(remaining=1, completed=0, failed=1))
 
+    def test_weak_frames_of_a_settled_track_stay_accepted(self):
+        with faces_store.connection(self.path) as db:
+            self.catalog = []
+            self.publish(db, 'photo', [self.face(0)])
+            confirmed_face = self.face(0, timestamp=0.5, track=0)
+            weak = self.face(0, box=(0.1, 0.1, 0.3, 0.4), timestamp=1.5, track=0)
+            # Make the second frame only moderately similar to the confirmed photo.
+            import numpy as np
+            mix = self.people[0] * 0.55 + self.people[1] * 0.83
+            weak['embedding'] = mix / np.linalg.norm(mix)
+            self.publish(db, 'v', [confirmed_face, weak], kind='video')
+            rows = {(r['asset'], r['timestamp']): r['id'] for r in db.execute('SELECT id,asset,timestamp FROM faces')}
+            box = (0.1, 0.1, 0.3, 0.4)
+            labels = [('photo', None, *box, 'son', 'confirmed'), ('v', 0.5, *box, 'son', 'confirmed')]
+            face_assignments.recompute(db, {'son': 'Our son'}, labels)
+            assigned = {row['face']: row['source'] for row in db.execute('SELECT * FROM face_assignments')}
+            self.assertEqual(assigned[rows[('v', 1.5)]], 'track')
+
     def test_version_one_index_migrates_in_place_and_regroups(self):
         import sqlite3
         self.path.parent.mkdir(parents=True)

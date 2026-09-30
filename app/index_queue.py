@@ -19,6 +19,9 @@ from model_config import PIPELINE
 from index_store import connection, ensure_schema, signature, MEDIA_EXTENSIONS, MAX_JOB_ATTEMPTS, PENDING_PREVIEW_PREDICATE
 
 EXTENSIONS = MEDIA_EXTENSIONS
+# Re-verifying ~140k stored frame/vector files takes seconds; missing files are
+# rare (manual deletion), so the audit runs at most hourly, not on every scan.
+ARTIFACT_AUDIT_INTERVAL_SECONDS = 3600
 
 
 class Stopped(Exception):
@@ -62,6 +65,7 @@ class Queue:
         self.scan_errors = 0
         self.scan_requested = threading.Event()
         self.last_scan = time.monotonic()
+        self.last_artifact_audit = float('-inf')
         self.active_job = False
         self.allow_gpu_defer = False
         self.initialize()
@@ -220,11 +224,23 @@ class Queue:
                     self.status()
         self.phase, self.done, self.total = 'Checking media', 0, len(files)
         self.status(force=True)
+        # One read of what is already known lets unchanged files be recognized
+        # without a write transaction each; only new or changed files take the
+        # full path below.
+        with self.db() as db:
+            saved_files = {row['path']: (row['signature'], row['asset']) for row in db.execute('SELECT path,signature,asset FROM scan_files')}
+            known_paths = {row['asset']: row['path'] for row in db.execute('SELECT asset,path FROM media')}
+            known_jobs = {row['asset']: dict(row) for row in db.execute('SELECT asset,path,signature,state,capture_time FROM index_jobs')}
         for path in sorted(files):
             self.checkpoint()
             self.current = path.name
             try:
                 signature = self.signature(path)
+                saved_file = saved_files.get(str(path))
+                if saved_file and saved_file[0] == signature and self.unchanged(str(path), signature, saved_file[1], known_paths, known_jobs, imported_times):
+                    self.done += 1
+                    self.status()
+                    continue
                 with self.db() as db:
                     saved = db.execute('SELECT signature,asset FROM scan_files WHERE path=?', (str(path),)).fetchone()
                 if saved and saved['signature'] == signature:
@@ -277,13 +293,28 @@ class Queue:
                 self.status(error=f'{path.name}: {error}')
             self.done += 1
             self.status()
-        self.repair_missing_artifacts()
+        if time.monotonic() - self.last_artifact_audit >= ARTIFACT_AUDIT_INTERVAL_SECONDS:
+            self.repair_missing_artifacts()
+            self.last_artifact_audit = time.monotonic()
         version = getattr(self.backend, 'metadata_version', 0)
         if version:
             with self.db() as db:
                 for row in db.execute("SELECT asset,payload FROM index_units WHERE pipeline=? AND stage='metadata' AND ordinal=0", (PIPELINE,)).fetchall():
                     if json.loads(row['payload']).get('metadataVersion', 0) < version:
                         db.execute("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state IN ('complete','error')", (row['asset'],))
+
+    @staticmethod
+    def unchanged(path, signature, asset, known_paths, known_jobs, imported_times):
+        """True when the full scan step would change nothing for this file."""
+        known_path, job = known_paths.get(asset), known_jobs.get(asset)
+        if known_path is not None and known_path != path:
+            return False
+        if job is None:
+            return known_path == path  # Seeded media without a queue job.
+        if job['path'] != path or job['signature'] != signature:
+            return False
+        imported = imported_times.get(asset)
+        return job['state'] == 'complete' or (job['capture_time'] is not None and (imported is None or job['capture_time'] == imported))
 
     def repair_missing_artifacts(self):
         # Completed jobs still need a lightweight artifact audit. Do no inference

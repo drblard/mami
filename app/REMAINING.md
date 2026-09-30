@@ -41,6 +41,11 @@ synthetic grid-arrival row, and correctly failed the relocation check.
       the later scan re-verified content but kept the failure. Scans now requeue such
       failures (regression test), and failed items keep their progress row and Retry
       visible when no worker is running.
+- [x] Routine library check (every 5 min, "AI search · Checking media") no longer
+      moves the screen: it shows only when requested (Scan now) or when it finds
+      work. Measured on a copy of the live catalog (17,422 files, warm cache):
+      21.6 s → 1.4 s per routine check (one preload read instead of two write
+      transactions per file); the ~140k-file artifact audit now runs hourly (4.9 s).
 - [x] Face detection, people tagging and a people filter: installed; backfill and acceptance in [FACES.md](FACES.md).
 
 ## Verified foundations

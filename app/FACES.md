@@ -229,6 +229,10 @@ Progress appears as a third footer lane (“Faces”).
       Native checks assert the navigation and exact per-tab counts. Installed
       `prototype-20260930T064702762470Z`: face index migrated to v3 and regrouped,
       personal digests unchanged, worker launched and retired normally.
+- [x] "To check" grew after confirming (1,046 → 1,048, reproduced exactly by replay):
+      6 confirmed, 5 new candidates surfaced by the new examples (expected), and 3
+      frames of already-settled video tracks were pulled back into review (bug).
+      Frames of a confirmed or automatically matched track now stay accepted.
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.

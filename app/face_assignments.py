@@ -63,8 +63,16 @@ def recompute(db, people, labels):
             continue
         confirmed_people = [person for person, source, _ in decided if source == 'confirmed']
         person = confirmed_people[0] if confirmed_people else max(decided, key=lambda item: item[2] or 0)[0]
+        # A track that is confirmed or automatically matched settles its other
+        # frames: they are not sent back for review as weaker suggestions.
+        settled = bool(confirmed_people) or any(source == 'suggested' and who == person and (similarity or 0) >= face_people.AUTOMATIC_SIMILARITY
+                                               for who, source, similarity in decided)
         for face in members:
-            if face not in assignments and person not in rejected_by_face.get(face, ()):
+            if person in rejected_by_face.get(face, ()):
+                continue
+            current = assignments.get(face)
+            if current is None or (settled and current[1] == 'suggested' and current[0] == person
+                                   and (current[2] or 0) < face_people.AUTOMATIC_SIMILARITY):
                 assignments[face] = (person, 'track', None)
     unassigned = [index for index, face in enumerate(ids) if int(face) not in assignments]
     position = {int(ids[index]): offset for offset, index in enumerate(unassigned)}

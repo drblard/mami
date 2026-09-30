@@ -336,6 +336,27 @@ q.work()
         with q.db() as db:
             self.assertEqual(db.execute('SELECT revision FROM state').fetchone()[0], revision)
 
+    def test_unchanged_rescan_transactions_do_not_grow_with_files_and_audit_is_hourly(self):
+        for name in ('b.mp4', 'c.mp4', 'd.mp4', 'e.mp4'):
+            (self.root / name).write_bytes(name.encode())
+        q = self.queue()
+        q.scan(); q.work()
+        opened = []
+        original = q.db
+        def counted():
+            opened.append(1)
+            return original()
+        with patch.object(q, 'db', side_effect=counted), patch.object(q, 'fingerprint', side_effect=AssertionError('rehashed')), \
+             patch.object(q, 'repair_missing_artifacts', side_effect=AssertionError('audit ran within the hour')):
+            q.scan()
+        # Preload, metadata-version check and a status count; per-file work would add 2 per file.
+        self.assertEqual(len(opened), 3, 'unchanged files must not open per-file transactions')
+        q.last_artifact_audit -= 3600
+        audited = []
+        with patch.object(q, 'repair_missing_artifacts', side_effect=lambda: audited.append(1)):
+            q.scan()
+        self.assertEqual(audited, [1])
+
     def test_completed_job_repairs_preview_without_repeating_inference(self):
         q = self.queue()
         q.scan()
@@ -344,6 +365,7 @@ q.work()
             asset = db.execute('SELECT asset FROM index_jobs').fetchone()[0]
         old = q.unit(asset, 'frame', 0)['frame']
         Path(old).unlink()  # Isolated Linux test fixture, never a Mac artifact.
+        q.last_artifact_audit = float('-inf')  # audit due (hourly in production)
         q.scan()
         q.work()
         repaired = q.unit(asset, 'frame', 0)['frame']
@@ -361,6 +383,7 @@ q.work()
         with q.db() as db:
             asset = db.execute('SELECT asset FROM index_jobs').fetchone()[0]
         Path(q.unit(asset, 'embedding', 1)['vector']).unlink()
+        q.last_artifact_audit = float('-inf')  # audit due (hourly in production)
         q.scan()
         q.work()
         self.assertEqual(len(self.backend.frames), 3)

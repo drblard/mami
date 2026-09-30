@@ -43,6 +43,9 @@ enum LaneLog {
     static let previews = Indexing(lane: .previews)
     static let faces = Indexing(lane: .faces)
     static var all: [Indexing] { [previews, shared, faces] }
+    /// Routine library checks: shown only when the user asked for them. Work they
+    /// discover (new or changed media) shows progress as usual.
+    static let backgroundPhases: Set<String> = ["Discovering files", "Checking media"]
     /// Phases in which a worker has nothing to do; it is released after a grace period.
     static let idlePhases: Set<String> = ["Up to date", "Needs attention", "Scan needs attention", "Previews ready", "Preview needs attention",
                                           "Waiting for previews", "Faces ready", "Faces need attention", "Waiting for previews and AI search",
@@ -93,6 +96,8 @@ enum LaneLog {
     @Published private(set) var catalogGeneration = 0
     @Published private(set) var gpuUtilization: Double?
     @Published private(set) var queueCounts: Progress.Counts?
+    /// Set by Scan now until the worker reports an idle phase.
+    @Published private(set) var userRequestedScan = false
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -286,6 +291,7 @@ enum LaneLog {
                     }
                 }
                 let idle = paused || waiting || Self.idlePhases.contains(phase)
+                if Self.idlePhases.contains(phase) { userRequestedScan = false }
                 if idle && idleTask == nil {
                     let currentProcess = process
                     idleTask = Task { [weak self] in
@@ -325,7 +331,9 @@ enum LaneLog {
         if !running { launch() }
         send(["action": paused ? "resume" : "pause"])
     }
-    func scanNow() { if !running { retries = 0; launch() }; send(["action": "scan"]) }
+    func scanNow() { userRequestedScan = true; if !running { retries = 0; launch() }; send(["action": "scan"]) }
+    /// True while the lane only performs a routine check nobody asked to watch.
+    var quietlyChecking: Bool { Self.backgroundPhases.contains(phase) && !userRequestedScan }
     func wakeWork() { if !running { start() }; send(["action": "work"]) }
     func retry() { error = nil; if !running { retries = 0; launch() }; send(["action": "retry"]) }
     /// Regroup faces and refresh suggestions after the user's people edits.
@@ -407,6 +415,8 @@ struct IndexingBar: View {
         .opacity(shown ? 1 : 0).allowsHitTesting(shown).accessibilityHidden(!shown)
         .animation(.easeInOut(duration: 0.25), value: shown)
         .task(id: progressKey) {
+            // Routine checks never move the screen; only real work or problems do.
+            if indexing.quietlyChecking { shown = needsAttention; return }
             shown = true
             guard !indexing.active, !needsAttention else { return }
             do { try await Task.sleep(for: ProgressVisibility.idleHideDelay) } catch { return }
