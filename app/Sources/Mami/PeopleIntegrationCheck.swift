@@ -76,3 +76,60 @@ extension Optional {
         return value
     }
 }
+
+/// Names several groups in succession, spaced to land in the worker's idle
+/// retirement window, and clicks other groups in between (reported by the user:
+/// a named group stayed listed and every group then showed 0 faces).
+@MainActor func checkPeopleSequence(at directory: URL) async throws {
+    guard ProcessInfo.processInfo.environment["MAMI_CATALOG"] != nil else {
+        throw AppError.message("People checks require an isolated MAMI_CATALOG")
+    }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+        if try !condition() { throw AppError.message("PEOPLE SEQUENCE: " + message) }
+    }
+    func wait(_ description: String, seconds: Double, _ predicate: () throws -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(Int(seconds * 1000)))
+        while !(try predicate()) {
+            try require(ContinuousClock.now < deadline, "timed out: \(description); faces lane \(Indexing.faces.phase) running=\(Indexing.faces.running) error=\(Indexing.faces.error ?? "none")")
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+    let catalog = Catalog.standard
+    try require(try catalog.people().isEmpty, "fixture must start without people")
+    let model = PeopleLibrary(catalog: catalog)
+    // Host the real views: their own change handlers drive reloads, as in the app.
+    let host = NSHostingView(rootView: VStack {
+        PeopleFilterPicker(model: model, selected: .constant([]), manage: {})
+        PeopleView(model: model, close: {})
+    })
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760), styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = host
+    window.orderFrontRegardless()
+    defer { window.orderOut(nil) }
+    await model.reload()
+    var named = 0
+    for (step, pause) in [16.0, 18.0, 20.0].enumerated() {
+        guard model.groups.count >= 2 else { break }
+        let group = model.groups[0], next = model.groups[1]
+        model.show(.group(group.id))
+        try await wait("group \(step) loads", seconds: 5) { model.faces.count == min(group.count, FaceIndex.faceLimit) }
+        model.assign(Set(model.faces.map(\.id)), toNew: "Sequence \(step)")
+        named += 1
+        model.show(.group(next.id))
+        try await wait("next group \(step) shows its faces", seconds: 5) { model.faces.count == min(next.count, FaceIndex.faceLimit) }
+        try await wait("named group \(step) leaves the list", seconds: 60) {
+            model.focus == .group(next.id) && !model.groups.contains(where: { $0.id == group.id })
+        }
+        print("PEOPLE SEQUENCE step \(step): named \(group.count) faces; next group loaded; list updated"); fflush(stdout)
+        try await Task.sleep(for: .milliseconds(Int(pause * 1000)))
+    }
+    try require(named >= 2, "fixture has too few groups for a sequence")
+    try await wait("worker is released after the sequence", seconds: 45) { !Indexing.faces.running }
+    try require(Indexing.faces.error == nil, "faces lane error: \(Indexing.faces.error ?? "")")
+    while !model.edits.isEmpty { model.undo() }
+    let remaining = try catalog.userAccess { db in Int(try db.scalar("SELECT count(*) FROM face_labels")) ?? -1 }
+    try require(remaining == 0 && (try catalog.people()).isEmpty, "undo left labels behind")
+    Indexing.faces.stop()
+    print("PEOPLE SEQUENCE PASSED: \(named) groups named in succession")
+}

@@ -856,6 +856,15 @@ struct MamiApp: App {
             NSApplication.shared.run()
             return
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--people-sequence-test"), CommandLine.arguments.indices.contains(index + 1) {
+            NSApplication.shared.setActivationPolicy(.accessory)
+            Task {
+                do { try await checkPeopleSequence(at: URL(fileURLWithPath: CommandLine.arguments[index+1])); exit(0) }
+                catch { Indexing.faces.stop(); print("PEOPLE SEQUENCE TEST FAILED: \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--face-lifecycle-test"), CommandLine.arguments.indices.contains(index + 1) {
             NSApplication.shared.setActivationPolicy(.accessory)
             Task {

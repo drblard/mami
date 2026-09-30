@@ -188,6 +188,19 @@ Progress appears as a third footer lane (“Faces”).
 - [x] Live backfill of the current library: 6.6 h, 16,805 assets, zero face failures.
 - [x] Grouping revision after user review (above), installed as
       `prototype-20260930T052835652908Z`; personal digests unchanged.
+- [ ] Reported 2026-09-30 08:48: after naming four groups ~20–40 s apart the fourth
+      stayed listed and every group then showed 0 faces. Her labels (4 people, 328
+      confirmations) and the worker's recompute were correct on disk; the app kept the
+      worker alive ~20 min without acting on it (same symptom as the first night).
+  - [x] Fixed two real races: commands sent while an idle worker is retiring were
+        lost (now deferred and replayed); People reloads could discard each other
+        (now serialized with one follow-up pass).
+  - [x] A native `--people-sequence-test` replaying rapid naming passes, but it also
+        passes on the old code, so it does not reproduce the live failure.
+  - [ ] Bounded `~/Library/Caches/Mami/lane-events.log` records launches, exits,
+        dropped/unreadable messages and failed commands; install and read it after
+        the next occurrence. Build `prototype-20260930T060015094166Z` awaits install
+        (quit refused while a sheet was open).
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.

@@ -19,15 +19,36 @@ import SwiftUI
     @Published var includeSavedMedia = false { didSet { if includeSavedMedia != oldValue { Task { await reload() } } } }
     private(set) var filterPeople = Set<String>()
     private let catalog: Catalog
-    private var generation = 0
+    private var reloading = false
+    private var reloadAgain = false
+    private var selectAllOnReload = false
 
     init(catalog: Catalog = .standard) { self.catalog = catalog }
 
     func name(of id: String) -> String { people.first { $0.id == id }?.name ?? "Unknown person" }
 
+    /// One reload at a time; a request during a reload schedules exactly one more
+    /// pass with the latest state, so results are never starved or lost.
     func reload(selectAll: Bool = false) async {
-        generation += 1
-        let current = generation, catalog = catalog, focus = focus, filter = filterPeople, includeSaved = includeSavedMedia
+        selectAllOnReload = selectAllOnReload || selectAll
+        if reloading { reloadAgain = true; return }
+        reloading = true
+        defer { reloading = false }
+        repeat {
+            reloadAgain = false
+            let selectAll = selectAllOnReload
+            selectAllOnReload = false
+            await loadOnce(selectAll: selectAll)
+        } while reloadAgain
+    }
+
+    private func loadOnce(selectAll: Bool) async {
+        let catalog = catalog, focus = focus, filter = filterPeople, includeSaved = includeSavedMedia
+        let started = ContinuousClock.now
+        defer {
+            let elapsed = started.duration(to: ContinuousClock.now)
+            if elapsed > .seconds(2) { LaneLog.record("people", "slow reload \(elapsed) focus \(String(describing: focus))") }
+        }
         do {
             let result = try await Task.detached(priority: .userInitiated) {
                 let faces: [FaceItem]
@@ -39,13 +60,19 @@ import SwiftUI
                 return (try catalog.people(), try FaceIndex.counts(catalog), try FaceIndex.groups(includeSavedMedia: includeSaved, catalog), faces,
                         try FaceIndex.assets(withAll: filter, catalog))
             }.value
-            guard current == generation else { return }
-            people = result.0; counts = result.1; groups = result.2; faces = result.3; filterAssets = result.4
-            let ids = Set(faces.map(\.id))
-            selected = selectAll ? ids : selected.intersection(ids)
+            people = result.0; counts = result.1; groups = result.2; filterAssets = result.4
+            // Faces belong to the focus they were loaded for; a newer focus reloads again.
+            if focus == self.focus {
+                faces = result.3
+                let ids = Set(faces.map(\.id))
+                selected = selectAll ? ids : selected.intersection(ids)
+            } else { reloadAgain = true; selectAllOnReload = selectAllOnReload || { if case .group = self.focus { return true }; return false }() }
             if case .person(let id) = focus, !people.contains(where: { $0.id == id }) { self.focus = nil }
             loaded = true
-        } catch { self.error = "Could not load people: \(error.localizedDescription)" }
+        } catch {
+            LaneLog.record("people", "reload failed: \(error.localizedDescription)")
+            self.error = "Could not load people: \(error.localizedDescription)"
+        }
     }
 
     func show(_ focus: Focus) {
@@ -169,6 +196,7 @@ struct PeopleView: View {
     @ViewState private var naming = false
     @ViewState private var renaming = false
     @ViewState private var showSuggestions = true
+    @FocusState private var nameFieldFocused: Bool
 
     private var focusBinding: Binding<PeopleLibrary.Focus?> {
         Binding(get: { model.focus }, set: { if let focus = $0 { model.show(focus) } })
@@ -258,9 +286,11 @@ struct PeopleView: View {
                     Button("Rename…") { newName = model.name(of: id); renaming = true }
                         .popover(isPresented: $renaming) {
                             VStack(alignment: .leading) {
-                                TextField("Name", text: $newName).frame(width: 220).onSubmit { model.rename(id, to: newName); renaming = false }
+                                TextField("Name", text: $newName).frame(width: 220).focused($nameFieldFocused)
+                                    .onSubmit { model.rename(id, to: newName); renaming = false }
                                 HStack { Spacer(); Button("Rename") { model.rename(id, to: newName); renaming = false }.buttonStyle(.borderedProminent) }
                             }.padding()
+                                .onAppear { DispatchQueue.main.async { nameFieldFocused = true } }
                         }
                     Menu("More") {
                         Menu("Merge into") {
@@ -315,6 +345,7 @@ struct PeopleView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Who is this?").font(.headline)
                     TextField("New person’s name", text: $newName).frame(width: 240)
+                        .focused($nameFieldFocused)
                         .onSubmit { model.assign(model.selected, toNew: newName); naming = false }
                     Button("Create “\(newName.trimmingCharacters(in: .whitespaces))”") { model.assign(model.selected, toNew: newName); naming = false }
                         .buttonStyle(.borderedProminent).disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -331,6 +362,8 @@ struct PeopleView: View {
                         }.frame(maxHeight: 200)
                     }
                 }.padding(16)
+                // Popovers become key after appearing; focus the field on the next turn.
+                .onAppear { DispatchQueue.main.async { nameFieldFocused = true } }
             }
     }
 

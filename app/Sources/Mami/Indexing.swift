@@ -4,6 +4,26 @@ import MamiCore
 
 /// The worker owns durable checkpoints. This object only controls it and renders
 /// progress; neither file hashing nor inference runs on the UI thread.
+/// Bounded diagnostic trail of lane lifecycle events (launch, exit, dropped or
+/// unreadable messages, failed commands) for problems seen only in the live app.
+enum LaneLog {
+    static let limit = 1024 * 1024
+    static var file: URL { AppPaths().caches.appendingPathComponent("lane-events.log") }
+    static func record(_ lane: String, _ event: String) {
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(lane) \(event)\n"
+        let url = file
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int, size >= limit {
+            try? FileManager.default.removeItem(at: url.appendingPathExtension("1"))
+            try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("1"))
+        }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data(line.utf8))
+        } else { try? Data(line.utf8).write(to: url) }
+    }
+}
+
 @MainActor final class Indexing: ObservableObject {
     enum Lane: String, Sendable {
         case search = "index"
@@ -84,6 +104,9 @@ import MamiCore
     private var idleTask: Task<Void, Never>?
     private var checking = false
     private var retiring = false
+    /// Commands that arrived after a retiring worker's input was closed; they are
+    /// replayed to a fresh worker once the old one has exited.
+    private var deferredActions: [[String: Any]] = []
     private var lastToken: String?
     private var workPending = false
     private var lastScan = Date.distantPast
@@ -177,13 +200,19 @@ import MamiCore
                 let data = handle.availableData
                 if data.isEmpty { handle.readabilityHandler = nil; return }
                 Task { @MainActor in
-                    guard let self, self.process === task else { return }
+                    guard let self else { return }
+                    guard self.process === task else {
+                        LaneLog.record(self.lane.rawValue, "dropped \(data.count) bytes from pid \(task?.processIdentifier ?? -1); current pid \(self.process?.processIdentifier ?? -1)")
+                        return
+                    }
                     self.receive(data)
                 }
             }
             task.terminationHandler = { [weak self] ended in
                 Task { @MainActor in
-                    guard let self, self.process === ended else { return }
+                    guard let self else { return }
+                    LaneLog.record(self.lane.rawValue, "exit pid \(ended.processIdentifier) status \(ended.terminationStatus) current \(self.process?.processIdentifier ?? -1) retiring \(self.retiring)")
+                    guard self.process === ended else { return }
                     self.running = false
                     self.editorTimer?.invalidate(); self.editorTimer = nil
                     self.output?.readabilityHandler = nil
@@ -192,7 +221,16 @@ import MamiCore
                     self.idleTask?.cancel(); self.idleTask = nil
                     self.lastToken = nil
                     if !self.quitting {
-                        if self.retiring { self.retiring = false; return }
+                        if self.retiring {
+                            self.retiring = false
+                            let actions = self.deferredActions
+                            self.deferredActions = []
+                            if !actions.isEmpty {
+                                self.launch()
+                                actions.forEach { self.send($0) }
+                            }
+                            return
+                        }
                         self.error = "Background worker stopped; completed checkpoints are saved."
                         if ended.terminationStatus != 0 && self.retries < 3 {
                             self.retries += 1
@@ -203,6 +241,7 @@ import MamiCore
                 }
             }
             try task.run()
+            LaneLog.record(lane.rawValue, "launch pid \(task.processIdentifier)")
             retiring = false
             if lane == .search { lastScan = Date() }
             process = task
@@ -252,24 +291,35 @@ import MamiCore
                     idleTask = Task { [weak self] in
                         do { try await Task.sleep(for: Self.workerIdleGrace) } catch { return }
                         guard let self, self.process === currentProcess else { return }
-                        self.retiring = true
+                        LaneLog.record(self.lane.rawValue, "retire idle pid \(currentProcess?.processIdentifier ?? -1)")
                         self.send(["action": "stop"])
+                        self.retiring = true
                         try? self.input?.close()
                         do { try await Task.sleep(for: .seconds(2)) } catch { return }
                         if let currentProcess, currentProcess.isRunning { currentProcess.terminate() }
                     }
                 } else if !idle { idleTask?.cancel(); idleTask = nil }
-            } catch { self.error = "Could not read indexing progress: \(error.localizedDescription)" }
+            } catch {
+                LaneLog.record(lane.rawValue, "unreadable progress (\(line.count) bytes): \(String(decoding: line.prefix(200), as: UTF8.self))")
+                self.error = "Could not read indexing progress: \(error.localizedDescription)"
+            }
         }
     }
 
     private func send(_ value: [String: Any]) {
+        if retiring {
+            if value["action"] as? String != "stop" { deferredActions.append(value) }
+            return
+        }
         guard let input else { return }
         do {
             var data = try JSONSerialization.data(withJSONObject: value)
             data.append(10)
             try WorkerPipe.write(data, to: input)
-        } catch { self.error = "Could not control indexing: \(error.localizedDescription)" }
+        } catch {
+            LaneLog.record(lane.rawValue, "command \(value["action"] ?? "?") failed: \(error.localizedDescription)")
+            self.error = "Could not control indexing: \(error.localizedDescription)"
+        }
     }
     func togglePause() {
         if !running { launch() }
