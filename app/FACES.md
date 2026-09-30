@@ -205,8 +205,8 @@ Progress appears as a third footer lane (“Faces”).
 - [x] Name/Rename fields focus automatically. The first attempt (SwiftUI focus state)
       did not work inside popovers, as the user reported; replaced by an AppKit field
       that becomes first responder, verified in a real `NSPopover` by the native
-      people check (focus and typed text). Build `prototype-20260930T061801173802Z`
-      awaits install (quit refused while a window was open).
+      people check (focus and typed text). Installed `prototype-20260930T061801173802Z`;
+      personal digests unchanged.
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.

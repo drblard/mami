@@ -1,9 +1,9 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Active build: `prototype-20260930T060015094166Z`
-(worker-retirement and People-reload fixes, lane diagnostics, name autofocus).
-Previous: `prototype-20260930T053517517152Z` at
-`~/Applications/.Mami-install-cf84d001452d4de6aa8be2ac319db036.app`.
+Status: **deployed and verified**. Active build: `prototype-20260930T061801173802Z`
+(AppKit autofocus for people names, plus the worker-retirement/People-reload fixes
+and lane diagnostics). Previous: `prototype-20260930T060015094166Z` at
+`~/Applications/.Mami-install-43f257cf046944eaa65c754822171496.app`.
 Face index schema v2 (origin column) is migrated in place; older face builds refuse
 v2 and rebuild into a new directory, so roll back by moving `Derived/Faces` aside.
 Personal store: additive `people`, `face_labels`, `people_history` tables (older
