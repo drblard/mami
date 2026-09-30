@@ -199,8 +199,9 @@ Progress appears as a third footer lane (“Faces”).
         passes on the old code, so it does not reproduce the live failure.
   - [ ] Bounded `~/Library/Caches/Mami/lane-events.log` records launches, exits,
         dropped/unreadable messages and failed commands; install and read it after
-        the next occurrence. Build `prototype-20260930T060015094166Z` awaits install
-        (quit refused while a sheet was open).
+        the next occurrence. Installed `prototype-20260930T060015094166Z` after the
+        user quit Mami; personal digests unchanged. The stuck worker exited on quit,
+        which is inconclusive (input EOF stops even an untracked worker).
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.
