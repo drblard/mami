@@ -1,9 +1,9 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Active build: `prototype-20260930T064702762470Z`
-(automatic matches ≥ 0.65, three-tab person review, outliers-first groups; face
-index schema v3). Previous: `prototype-20260930T061801173802Z` at
-`~/Applications/.Mami-install-56cc1c6f6f304644b6145c48c0fd7201.app`.
+Status: **deployed and verified**. Active build: `prototype-20260930T084759361362Z`
+(fast, quiet routine library checks; settled video frames stay accepted). Previous:
+`prototype-20260930T064702762470Z` at
+`~/Applications/.Mami-install-9dbb18679a0a4c1486c19a555d57c64f.app`.
 Face index schema v2 (origin column) is migrated in place; older face builds refuse
 v2 and rebuild into a new directory, so roll back by moving `Derived/Faces` aside.
 Personal store: additive `people`, `face_labels`, `people_history` tables (older
