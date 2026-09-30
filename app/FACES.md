@@ -236,9 +236,13 @@ Progress appears as a third footer lane (“Faces”).
 - [x] Faster review (user: one click per face is tedious): Shift-click selects or
       clears a range (anchor state, `RangeSelection` unit tests + native model check),
       ⌘A selects all, ⌘↩ confirms, ⌘⌫ marks as not this person.
-- [ ] Proposed, awaiting decision: confirming a face also accepts that person's
-      suggestions from the same video or photos within 60 s (user expectation; the
-      trace showed same-clip frames at 0.45–0.61 staying in To check).
+- [x] Same moment (user approved): a user confirmation also accepts that person's
+      suggestions from the same video or photos within 60 s when they resemble the
+      confirmed face itself ≥ 0.5 (same-clip frames traced 0.51–0.61). Anchors are
+      only confirmations; a second face in one photo is excluded; rejections win.
+      Face index schema v4 (`moment` source). Live-copy dry run: Lucia's To check
+      1,048 → 789 (88 same-moment matches plus settled-track frames), 1.6 s recompute.
+      Person pages show what each edit changed once the worker has recomputed.
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.

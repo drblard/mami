@@ -73,6 +73,41 @@ class FacesStoreTests(unittest.TestCase):
             self.assertIsNone(faces_store.next_job(db))
             self.assertEqual(faces_store.counts(db), dict(remaining=1, completed=0, failed=1))
 
+    def test_same_moment_as_a_confirmation_is_accepted_but_nothing_else(self):
+        axis = iter(range(1, DIMENSIONS))
+        def vector(similarity):
+            value = np.zeros(DIMENSIONS, np.float32); value[0] = similarity; value[next(axis)] = np.sqrt(1 - similarity ** 2)
+            return value
+        def face(similarity, box, timestamp=None, track=0):
+            return dict(timestamp=timestamp, box=box, score=0.9, eye_distance=40, frontalness=0.9, sharpness=100, norm=20,
+                        track=track, representative=True, reliable=True, embedding=vector(similarity))
+        left, right, middle = (0.1, 0.1, 0.3, 0.4), (0.6, 0.1, 0.8, 0.4), (0.35, 0.5, 0.55, 0.8)
+        with faces_store.connection(self.path) as db:
+            self.catalog = []
+            def publish(asset, faces, kind, capture_time):
+                row = (asset, f'/media/{asset}', kind, 'sig', capture_time, 'camera')
+                faces_store.sync_jobs(db, self.catalog + [row], 'p1'); self.catalog.append(row)
+                self.assertTrue(faces_store.publish_faces(db, asset, 'sig', faces))
+            publish('clip', [face(1.0, left, 0.5, 0), face(0.55, right, 3.5, 1), face(0.47, middle, 6.5, 2), face(0.55, left, 9.5, 3)], 'video', 500)
+            publish('other-clip', [face(0.55, left, 0.5, 0)], 'video', 5000)
+            publish('auto-clip', [face(0.7, left, 0.5, 0), face(0.55, right, 3.5, 1)], 'video', 9000)
+            publish('photo', [face(1.0, left, track=0), face(0.55, right, track=1)], 'image', 1000)
+            publish('burst', [face(0.55, left)], 'image', 1030)
+            publish('later', [face(0.55, left)], 'image', 1200)
+            labels = [('clip', 0.5, *left, 'son', 'confirmed'), ('photo', None, *left, 'son', 'confirmed'),
+                      ('clip', 9.5, *left, 'son', 'rejected')]
+            face_assignments.recompute(db, {'son': 'Our son'}, labels)
+            rows = db.execute('SELECT f.asset, f.timestamp, f.x1, a.source FROM faces f LEFT JOIN face_assignments a ON a.face=f.id').fetchall()
+            source = {(r['asset'], r['timestamp'], r['x1']): r['source'] for r in rows}
+            self.assertEqual(source[('clip', 3.5, 0.6)], 'moment')
+            self.assertEqual(source[('clip', 6.5, 0.35)], 'suggested', 'below the moment similarity')
+            self.assertIsNone(source[('clip', 9.5, 0.1)], 'rejected faces are never assigned')
+            self.assertEqual(source[('other-clip', 0.5, 0.1)], 'suggested')
+            self.assertEqual(source[('auto-clip', 3.5, 0.6)], 'suggested', 'automatic matches do not spread')
+            self.assertEqual(source[('burst', None, 0.1)], 'moment')
+            self.assertEqual(source[('later', None, 0.1)], 'suggested')
+            self.assertEqual(source[('photo', None, 0.6)], 'suggested', 'a second face in one photo is someone else')
+
     def test_weak_frames_of_a_settled_track_stay_accepted(self):
         with faces_store.connection(self.path) as db:
             self.catalog = []
@@ -102,9 +137,11 @@ class FacesStoreTests(unittest.TestCase):
                     pipeline TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued', error TEXT, attempts INTEGER NOT NULL DEFAULT 0, capture_time REAL);
                 INSERT INTO face_jobs(asset,path,kind,signature,pipeline,state) VALUES('a','/m/a.jpg','image','s','p1','complete');
                 CREATE TABLE faces(id INTEGER PRIMARY KEY AUTOINCREMENT, asset TEXT NOT NULL);
-                CREATE TABLE face_groups(face INTEGER PRIMARY KEY, grp INTEGER NOT NULL);""")
+                CREATE TABLE face_groups(face INTEGER PRIMARY KEY, grp INTEGER NOT NULL);
+                CREATE TABLE face_assignments(face INTEGER PRIMARY KEY, person TEXT NOT NULL, source TEXT NOT NULL, similarity REAL);""")
         with faces_store.connection(self.path) as db:
-            self.assertEqual(db.execute('SELECT version FROM faces_schema').fetchone()[0], 3)
+            self.assertEqual(db.execute('SELECT version FROM faces_schema').fetchone()[0], 4)
+            self.assertIn("'moment'", db.execute("SELECT sql FROM sqlite_master WHERE name='face_assignments'").fetchone()[0])
             self.assertIn('typical', {row[1] for row in db.execute('PRAGMA table_info(face_groups)')})
             self.assertEqual(db.execute("SELECT origin,state FROM face_jobs").fetchone()[:], ('other', 'complete'))
             self.assertTrue(faces_store.grouping_stale(db))

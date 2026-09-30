@@ -35,6 +35,11 @@ SUGGEST_MARGIN = 0.08
 # Suggestions at least this similar count without review (FaceIndex.automaticSimilarity
 # in the app must match). Chosen from a banded review of the live library.
 AUTOMATIC_SIMILARITY = 0.65
+# Same moment: the user's confirmation also accepts that person's suggestions from
+# the same video, or photos taken this close in time, when they resemble the
+# confirmed face itself at least this much (frames of one clip traced 0.51-0.61).
+SAME_MOMENT_SECONDS = 60
+MOMENT_SIMILARITY = 0.5
 SIMILARITY_BLOCK = 4096
 
 

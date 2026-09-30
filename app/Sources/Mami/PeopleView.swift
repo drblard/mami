@@ -20,6 +20,9 @@ import MamiCore
     @Published private(set) var loaded = false
     /// The person just named from a group, so their page can explain what Mami found.
     @Published private(set) var justNamed: (person: String, faces: Int)?
+    /// The last edit on a person's page and their counts before it, so the page can
+    /// say what the edit did once the worker has recomputed.
+    @Published private(set) var lastChange: (person: String, action: String, before: PersonCounts)?
     /// Which kind of faces the person page shows; changing it reloads them.
     @Published var personTab: PersonFaces = .toCheck {
         didSet { if personTab != oldValue { selected = []; faces = []; Task { await reload() } } }
@@ -95,6 +98,7 @@ import MamiCore
     func show(_ focus: Focus) {
         guard focus != self.focus else { return }
         if case .person(let id) = focus, justNamed?.person == id {} else { justNamed = nil }
+        if case .person(let id) = focus, lastChange?.person == id {} else { lastChange = nil }
         self.focus = focus; faces = []; selected = []
         if case .group = focus { Task { await reload(selectAll: true) } } else { Task { await reload() } }
     }
@@ -152,8 +156,13 @@ import MamiCore
     func assign(_ ids: Set<Int64>, to person: String) {
         guard !ids.isEmpty else { return }
         let fromGroup = isGroupFocused
+        if !fromGroup { noteChange(person, "Confirmed \(ids.count)") }
         perform("Add \(ids.count) faces to \(name(of: person))", [.confirm(refs(ids), as: person)], hiding: hidden(ids, keptFor: person))
         if fromGroup { showNamed(person, faces: ids.count) }
+    }
+
+    private func noteChange(_ person: String, _ action: String) {
+        lastChange = (person, action, counts[person] ?? PersonCounts())
     }
 
     private var isGroupFocused: Bool { if case .group = focus { return true }; return false }
@@ -167,6 +176,7 @@ import MamiCore
 
     func reject(_ ids: Set<Int64>, from person: String) {
         guard !ids.isEmpty else { return }
+        noteChange(person, "Marked \(ids.count) as not \(name(of: person))")
         perform("Not \(name(of: person)): \(ids.count) faces", [.reject(refs(ids), from: person)], hiding: ids)
     }
 
@@ -342,6 +352,10 @@ struct PeopleView: View {
                         .font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
                 }
+                if let change = model.lastChange, change.person == id, model.justNamed?.person != id,
+                   let summary = PeopleView.changeSummary(change.action, before: change.before, after: counts) {
+                    Label(summary, systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
+                }
                 HStack {
                     Text({
                         switch model.personTab {
@@ -374,6 +388,19 @@ struct PeopleView: View {
                      : "Name a group once; Mami then suggests more media with that person for you to confirm.")
             }
         }
+    }
+
+    /// "Confirmed 6 · +4 matched automatically · To check: 1,048 (+2)", or nil until
+    /// the worker's recomputed counts differ from those before the edit.
+    static func changeSummary(_ action: String, before: PersonCounts, after: PersonCounts) -> String? {
+        guard after != before else { return nil }
+        func signed(_ value: Int) -> String { value > 0 ? "+\(value)" : "\(value)" }
+        var parts = [action]
+        let automatic = after.automaticFaces - before.automaticFaces
+        if automatic != 0 { parts.append("\(signed(automatic)) matched automatically") }
+        let toCheck = after.toCheckFaces - before.toCheckFaces
+        parts.append("To check: \(after.toCheckFaces.formatted())" + (toCheck == 0 ? "" : " (\(signed(toCheck)))"))
+        return parts.joined(separator: " · ")
     }
 
     static func faces(_ count: Int) -> String { count == 1 ? "1 more face" : "\(count) more faces" }

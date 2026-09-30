@@ -12,10 +12,23 @@ import numpy as np
 
 from face_people import MINIMUM_EMBEDDING_NORM
 
-FACES_SCHEMA_VERSION = 3
+FACES_SCHEMA_VERSION = 4
 # Bump when grouping or reliability rules change: every library regroups once.
-GROUPING_VERSION = 3
+GROUPING_VERSION = 4
 ORIGINS = ('camera', 'screen', 'other')
+# confirmed: the user's label; suggested: similar to a confirmed face; track: another
+# frame of a matched video track; moment: suggested and from the same video or photo
+# moment as one of the user's confirmations.
+ASSIGNMENT_SOURCES = ('confirmed', 'suggested', 'track', 'moment')
+ASSIGNMENTS_TABLE = f'''CREATE TABLE face_assignments(face INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
+            person TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN {ASSIGNMENT_SOURCES}), similarity REAL);
+        CREATE INDEX face_assignments_person ON face_assignments(person, source);'''
+
+
+def change_triggers(db, table):
+    for operation in ('INSERT', 'UPDATE', 'DELETE'):
+        db.execute(f"CREATE TRIGGER {table}_{operation} AFTER {operation} ON {table} "
+                   "BEGIN UPDATE face_state SET change_token=lower(hex(randomblob(16))) WHERE id=1; END")
 MAX_FACE_JOB_ATTEMPTS = 3
 PENDING_FACE_PREDICATE = f"state='queued' OR state='running' OR (state='error' AND attempts<{MAX_FACE_JOB_ATTEMPTS})"
 EMBEDDING_DTYPE = np.float32
@@ -53,12 +66,18 @@ def ensure_schema(db):
     version = db.execute('SELECT version FROM faces_schema').fetchone()[0] if present else 0
     if version == FACES_SCHEMA_VERSION:
         return
-    if version in (1, 2):
-        if version == 1:
+    if version in (1, 2, 3):
+        if version < 2:
             # v2: where each asset came from, so review can favour the user's own camera.
             db.execute(f"ALTER TABLE face_jobs ADD COLUMN origin TEXT NOT NULL DEFAULT 'other' CHECK(origin IN {ORIGINS})")
-        # v3: how typical each face is of its group, so review shows outliers first.
-        db.execute('ALTER TABLE face_groups ADD COLUMN typical REAL NOT NULL DEFAULT 1')
+        if version < 3:
+            # v3: how typical each face is of its group, so review shows outliers first.
+            db.execute('ALTER TABLE face_groups ADD COLUMN typical REAL NOT NULL DEFAULT 1')
+        # v4: 'moment' assignments. Assignments are fully recomputed (GROUPING_VERSION
+        # changes too), so the table is rebuilt rather than copied.
+        db.execute('DROP TABLE face_assignments')
+        db.executescript(ASSIGNMENTS_TABLE)
+        change_triggers(db, 'face_assignments')
         db.execute('UPDATE faces_schema SET version=?', (FACES_SCHEMA_VERSION,))
         return
     if version != 0:
@@ -84,15 +103,10 @@ def ensure_schema(db):
         CREATE TABLE face_groups(face INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE, grp INTEGER NOT NULL,
             typical REAL NOT NULL DEFAULT 1);
         CREATE INDEX face_groups_group ON face_groups(grp);
-        CREATE TABLE face_assignments(face INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
-            person TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('confirmed','suggested','track')),
-            similarity REAL);
-        CREATE INDEX face_assignments_person ON face_assignments(person, source);
+        {ASSIGNMENTS_TABLE}
     ''')
     for table in ('face_jobs', 'faces', 'face_groups', 'face_assignments'):
-        for operation in ('INSERT', 'UPDATE', 'DELETE'):
-            db.execute(f"CREATE TRIGGER {table}_{operation} AFTER {operation} ON {table} "
-                       "BEGIN UPDATE face_state SET change_token=lower(hex(randomblob(16))) WHERE id=1; END")
+        change_triggers(db, table)
 
 
 def sync_jobs(db, catalog_rows, pipeline):

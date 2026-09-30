@@ -1,7 +1,7 @@
 import Foundation
 
 struct FaceItem: Identifiable, Hashable, Sendable {
-    enum Source: String, Sendable { case confirmed, suggested, track }
+    enum Source: String, Sendable { case confirmed, suggested, track, moment }
     let id: Int64
     let ref: FaceRef
     let crop: String
@@ -38,7 +38,7 @@ enum FaceIndex {
     /// stay out of review (naming someone still finds them through suggestions).
     static let minimumGroupMedia = 2
     /// Must equal faces_store.FACES_SCHEMA_VERSION; older indexes are migrated by the worker.
-    static let schemaVersion = 3
+    static let schemaVersion = 4
     /// Suggestions at least this similar to a confirmed face are accepted without
     /// review (a rejection still removes them). Chosen from a banded review of the
     /// live library: every sampled face at >= 0.65 was the right person, while
@@ -142,7 +142,8 @@ enum FaceIndex {
         switch kind {
         case .confirmed: filter = "a.source='confirmed'"
         case .toCheck: filter = "a.source='suggested' AND a.similarity < CAST(?2 AS REAL)"
-        case .automatic: filter = "a.source='suggested' AND a.similarity >= CAST(?2 AS REAL)"
+        // Same-moment matches (from the user's confirmations) count as automatic.
+        case .automatic: filter = "((a.source='suggested' AND a.similarity >= CAST(?2 AS REAL)) OR a.source='moment')"
         }
         // To check: least certain first. Automatic: also least certain first, so a
         // glance at the top shows the matches most worth a second look.
@@ -161,8 +162,8 @@ enum FaceIndex {
         }
         for row in try db.rows("""
             SELECT person, sum(source='confirmed'), sum(source='suggested' AND similarity < CAST(? AS REAL)),
-                   sum(source='suggested' AND similarity >= CAST(? AS REAL))
-            FROM face_assignments WHERE source IN ('confirmed','suggested') GROUP BY person
+                   sum((source='suggested' AND similarity >= CAST(? AS REAL)) OR source='moment')
+            FROM face_assignments WHERE source IN ('confirmed','suggested','moment') GROUP BY person
             """, [String(automaticSimilarity), String(automaticSimilarity)]) {
             result[row[0], default: PersonCounts()].confirmedFaces = Int(row[1]) ?? 0
             result[row[0], default: PersonCounts()].toCheckFaces = Int(row[2]) ?? 0
