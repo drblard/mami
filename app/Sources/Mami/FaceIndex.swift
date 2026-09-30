@@ -12,6 +12,7 @@ struct FaceItem: Identifiable, Hashable, Sendable {
 struct FaceGroup: Identifiable, Hashable, Sendable {
     let id: Int64
     let count: Int
+    let media: Int
     let cover: String
 }
 
@@ -24,8 +25,11 @@ struct PersonCounts: Hashable, Sendable {
 enum FaceIndex {
     static let modelName = "antelopev2"
     static let modelFiles = ["scrfd_10g_bnkps.onnx", "glintr100.onnx"]
-    /// Groups smaller than this are usually one-off strangers and stay out of review.
-    static let minimumGroupSize = 2
+    /// A person seen in a single photo or clip is usually a passer-by; such groups
+    /// stay out of review (naming someone still finds them through suggestions).
+    static let minimumGroupMedia = 2
+    /// Must equal faces_store.FACES_SCHEMA_VERSION; older indexes are migrated by the worker.
+    static let schemaVersion = 2
     static let groupLimit = 300
     static let faceLimit = 2000
     /// Must equal faces_store.MAX_FACE_JOB_ATTEMPTS.
@@ -48,7 +52,8 @@ enum FaceIndex {
         // closes cleanly; a read-only handle cannot recreate it. Open without
         // create permission and only ever query.
         let db = try SQLDatabase(url, readOnly: false, createIfMissing: false)
-        guard try db.hasTable("face_assignments") else { return nil }
+        guard try db.hasTable("face_assignments"),
+              Int(try db.scalar("SELECT version FROM faces_schema")) ?? 0 >= schemaVersion else { return nil }
         return db
     }
 
@@ -58,6 +63,8 @@ enum FaceIndex {
         let source = try SQLDatabase(catalog.database, readOnly: true)
         guard try source.hasTable("preview_jobs") else { return nil }
         let faces = try open(catalog)
+        // An index from an older build needs the worker to migrate and regroup it.
+        let outdated = FileManager.default.fileExists(atPath: catalog.facesDatabase.path) && faces == nil
         let facesToken = try faces?.scalar("SELECT change_token FROM face_state WHERE id=1") ?? "none"
         let token = try source.scalar("SELECT change_token FROM state WHERE id=1") + ":" + facesToken
         guard token != previousToken else { return nil }
@@ -78,7 +85,7 @@ enum FaceIndex {
             paused = try faces.scalar("SELECT paused FROM face_state WHERE id=1") == "1"
         }
         let unsynced = eligible != total
-        return BackgroundWork(token: token, pending: !upstream && (queued || unsynced), paused: paused,
+        return BackgroundWork(token: token, pending: outdated || (!upstream && (queued || unsynced)), paused: paused,
                               remaining: max(eligible - complete, total - complete), completed: complete, failed: failed)
     }
 
@@ -92,14 +99,19 @@ enum FaceIndex {
     }
     private static let faceColumns = "f.id,f.asset,f.timestamp,f.x1,f.y1,f.x2,f.y2,f.crop"
 
-    static func groups(_ catalog: Catalog = .standard) throws -> [FaceGroup] {
+    /// Unnamed groups, most-seen first. By default only groups mostly from the
+    /// user's own camera; screenshots and saved media are full of strangers.
+    static func groups(includeSavedMedia: Bool = false, _ catalog: Catalog = .standard) throws -> [FaceGroup] {
         guard let db = try open(catalog) else { return [] }
         return try db.rows("""
-            SELECT g.grp, count(*) AS size, (SELECT crop FROM faces WHERE id=g.grp) FROM face_groups g
-            GROUP BY g.grp HAVING size >= CAST(? AS INTEGER) ORDER BY size DESC, g.grp LIMIT ?
-            """, [String(minimumGroupSize), String(groupLimit)]).compactMap { row in
-            guard let id = Int64(row[0]), let count = Int(row[1]) else { return nil }
-            return FaceGroup(id: id, count: count, cover: row[2])
+            SELECT g.grp, count(*) AS size, count(DISTINCT f.asset) AS media, sum(j.origin='camera') AS own,
+                   (SELECT crop FROM faces WHERE id=g.grp)
+            FROM face_groups g JOIN faces f ON f.id=g.face JOIN face_jobs j ON j.asset=f.asset
+            GROUP BY g.grp HAVING media >= CAST(? AS INTEGER) AND (CAST(? AS INTEGER)=1 OR own*2 >= size)
+            ORDER BY media DESC, size DESC, g.grp LIMIT ?
+            """, [String(minimumGroupMedia), includeSavedMedia ? "1" : "0", String(groupLimit)]).compactMap { row in
+            guard let id = Int64(row[0]), let count = Int(row[1]), let media = Int(row[2]) else { return nil }
+            return FaceGroup(id: id, count: count, media: media, cover: row[4])
         }
     }
 

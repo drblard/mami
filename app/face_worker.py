@@ -39,11 +39,22 @@ def catalog_rows(catalog):
         present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
         if not {'index_jobs', 'preview_jobs'} <= present:
             return [], False
-        rows = db.execute("SELECT j.asset,j.path,j.kind,j.signature,j.capture_time FROM index_jobs j "
-                          "JOIN preview_jobs p ON p.asset=j.asset WHERE p.state='complete'").fetchall()
+        rows = [(*row[:5], media_origin(row[1], row[5])) for row in db.execute(
+            "SELECT j.asset,j.path,j.kind,j.signature,j.capture_time,json_extract(m.payload,'$.metadata.camera') "
+            "FROM index_jobs j JOIN preview_jobs p ON p.asset=j.asset LEFT JOIN media m ON m.path=j.path "
+            "WHERE p.state='complete'")]
         upstream = any(db.execute(f'SELECT 1 FROM {view} LIMIT 1').fetchone()
                        for view in ('mami_preview_work', 'mami_index_work') if view in present)
         return rows, upstream
+
+
+def media_origin(path, camera):
+    """camera: the user's own capture; screen: screenshots; other: saved or shared media."""
+    if Path(path).suffix.lower() == '.png':
+        return 'screen'
+    if camera or '/DJI-' in path:
+        return 'camera'
+    return 'other'
 
 
 def personal_labels(catalog):

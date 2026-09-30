@@ -15,6 +15,8 @@ import SwiftUI
     @Published var error: String?
     @Published private(set) var filterAssets = Set<String>()
     @Published private(set) var loaded = false
+    /// Screenshots and saved/shared media mostly show strangers; off by default.
+    @Published var includeSavedMedia = false { didSet { if includeSavedMedia != oldValue { Task { await reload() } } } }
     private(set) var filterPeople = Set<String>()
     private let catalog: Catalog
     private var generation = 0
@@ -25,7 +27,7 @@ import SwiftUI
 
     func reload(selectAll: Bool = false) async {
         generation += 1
-        let current = generation, catalog = catalog, focus = focus, filter = filterPeople
+        let current = generation, catalog = catalog, focus = focus, filter = filterPeople, includeSaved = includeSavedMedia
         do {
             let result = try await Task.detached(priority: .userInitiated) {
                 let faces: [FaceItem]
@@ -34,7 +36,7 @@ import SwiftUI
                 case .person(let id): faces = try FaceIndex.faces(person: id, catalog)
                 case nil: faces = []
                 }
-                return (try catalog.people(), try FaceIndex.counts(catalog), try FaceIndex.groups(catalog), faces,
+                return (try catalog.people(), try FaceIndex.counts(catalog), try FaceIndex.groups(includeSavedMedia: includeSaved, catalog), faces,
                         try FaceIndex.assets(withAll: filter, catalog))
             }.value
             guard current == generation else { return }
@@ -205,12 +207,16 @@ struct PeopleView: View {
                         }
                     }
                     Section("Unnamed groups") {
+                        Toggle("Show screenshots and saved media", isOn: $model.includeSavedMedia)
+                            .toggleStyle(.checkbox).font(.caption)
+                            .help("Screenshots, screen recordings and saved or shared media often show strangers. Named people are still found there.")
                         if model.groups.isEmpty { Text(model.loaded ? "No unnamed groups yet" : "Loading…").foregroundStyle(.secondary) }
                         ForEach(model.groups) { group in
                             HStack(spacing: 8) {
                                 FaceThumbnail(path: group.cover, size: 30)
-                                Text("\(group.count) faces").monospacedDigit()
+                                Text("In \(group.media) media").monospacedDigit()
                             }.tag(PeopleLibrary.Focus.group(group.id))
+                                .help("\(group.count) faces in \(group.media) photos and videos")
                         }
                     }
                 }.listStyle(.sidebar).frame(width: 250)

@@ -13,10 +13,18 @@ import numpy as np
 MINIMUM_EYE_DISTANCE = 16.0
 MINIMUM_DETECTION_SCORE = 0.6
 MINIMUM_FRONTALNESS = 0.25
+# ArcFace embedding strength tracks face quality. On the live library, faces
+# below this were mostly false detections (animals, objects, backs of heads).
+MINIMUM_EMBEDDING_NORM = 17.0
 # Grouping links two faces only when they are mutual close neighbours above
 # this similarity, which avoids chaining different people through lookalikes.
 GROUP_SIMILARITY = 0.5
 GROUP_NEIGHBOURS = 10
+# Second pass: whole groups whose size-weighted average faces are this similar
+# are one person (live review: ~0.55 pairs matched, ~0.45 pairs were strangers).
+# Averages are recomputed after every merge, so lookalikes cannot chain.
+GROUP_MERGE_SIMILARITY = 0.55
+GROUP_MERGE_ROUNDS = 3
 # Consecutive faces of one person within a single video are one track.
 TRACK_SIMILARITY = 0.55
 TRACK_REPRESENTATIVES = 3
@@ -32,11 +40,12 @@ class Quality:
     score: float
     eye_distance: float
     frontalness: float
+    norm: float = MINIMUM_EMBEDDING_NORM
 
     @property
     def reliable(self):
         return (self.score >= MINIMUM_DETECTION_SCORE and self.eye_distance >= MINIMUM_EYE_DISTANCE
-                and self.frontalness >= MINIMUM_FRONTALNESS)
+                and self.frontalness >= MINIMUM_FRONTALNESS and self.norm >= MINIMUM_EMBEDDING_NORM)
 
     @property
     def rank(self):
@@ -104,6 +113,65 @@ def mutual_neighbours(embeddings, similarity=GROUP_SIMILARITY, neighbours=GROUP_
     return {(i, j) for i, row in enumerate(neighbour_sets) for j in row if i < j and i in neighbour_sets[j]}
 
 
+def merge_groups(embeddings, labels, similarity=GROUP_MERGE_SIMILARITY, neighbours=GROUP_NEIGHBOURS,
+                 rounds=GROUP_MERGE_ROUNDS, block=SIMILARITY_BLOCK, forbidden=None):
+    """Average-linkage merge of existing groups; returns new labels (first-member order).
+
+    Candidate pairs come from each group's nearest neighbours, so this scales to
+    many groups; each merge is re-checked against the current averages.
+    `forbidden(a_members, b_members)` may veto a merge (user rejections).
+    """
+    embeddings = _check(embeddings)
+    labels = list(labels)
+    for _ in range(rounds):
+        names = sorted(set(labels), key=labels.index)
+        index = {name: position for position, name in enumerate(names)}
+        members = [[] for _ in names]
+        for face, label in enumerate(labels):
+            members[index[label]].append(face)
+        sums = np.stack([embeddings[faces].sum(axis=0) for faces in members]).astype(np.float64)
+        centres = (sums / np.linalg.norm(sums, axis=1, keepdims=True)).astype(np.float32)
+        k = min(neighbours, len(names) - 1)
+        if k <= 0:
+            break
+        candidates = []
+        for start in range(0, len(names), block):
+            scores = centres[start:start + block] @ centres.T
+            rows = np.arange(scores.shape[0])
+            scores[rows, rows + start] = -np.inf
+            nearest = np.argpartition(-scores, k - 1, axis=1)[:, :k]
+            for row, columns in enumerate(nearest):
+                for column in columns:
+                    if scores[row, column] >= similarity:
+                        candidates.append((float(scores[row, column]), start + row, int(column)))
+        candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+        parent = list(range(len(names)))
+        def root(group):
+            while parent[group] != group:
+                parent[group] = parent[parent[group]]
+                group = parent[group]
+            return group
+        merged = 0
+        for _, a, b in candidates:
+            a, b = root(a), root(b)
+            if a == b:
+                continue
+            current = float(sums[a] @ sums[b] / (np.linalg.norm(sums[a]) * np.linalg.norm(sums[b])))
+            if current < similarity or (forbidden and forbidden(members[a], members[b])):
+                continue
+            if len(members[a]) < len(members[b]):
+                a, b = b, a
+            parent[b] = a
+            sums[a] += sums[b]
+            members[a] += members[b]
+            merged += 1
+        labels = [root(index[label]) for label in labels]
+        if not merged:
+            break
+    numbers = {}
+    return [numbers.setdefault(label, len(numbers)) for label in labels]
+
+
 def groups(embeddings, cannot_link=(), must_link=()):
     """Connected components of mutual-neighbour edges, respecting user constraints.
 
@@ -137,10 +205,12 @@ def groups(embeddings, cannot_link=(), must_link=()):
     edges = mutual_neighbours(embeddings)
     for a, b in sorted(edges, key=lambda edge: -float(embeddings[edge[0]] @ embeddings[edge[1]])):
         join(a, b, False)
-    labels, numbers = [], {}
-    for index in range(len(embeddings)):
-        labels.append(numbers.setdefault(root(index), len(numbers)))
-    return labels
+    labels = [root(index) for index in range(len(embeddings))]
+    def conflict(first, second):
+        """True if any face in `first` may never share a group with a face in `second`."""
+        blocked = set().union(*(forbidden.get(group, set()) for group in {root(face) for face in first}))
+        return not blocked.isdisjoint(second)
+    return merge_groups(embeddings, labels, forbidden=conflict if cannot_link else None)
 
 
 def suggestions(faces, examples, rejected=()):

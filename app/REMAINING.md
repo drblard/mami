@@ -23,7 +23,7 @@ A first attempt reused `ui-latest-catalog`, which retains the previous run's
 synthetic grid-arrival row, and correctly failed the relocation check.
 
 - [x] Drag grid media onto Selected clips (in-app drags only; appends without duplicates).
-  - [ ] Physical drag onto the panel on the Mac (not automatable in the locked session).
+  - [x] Physical drag onto the panel on the Mac (user confirmed it works).
 - [x] Second plain click on the only selected card deselects it; double-click and
       keyboard focus keep the selection (`GridClickSelection` unit + native UI checks).
 - [x] Progress lanes compacted to one row each (footer ~70 pt, previously ~160 pt).
@@ -36,6 +36,11 @@ synthetic grid-arrival row, and correctly failed the relocation check.
       at every step (`Mami --kind-switch-test`, `MamiMigration/kind-switch-20260929/`); the user
       could not reproduce it after quitting/reopening. Unexplained; live workers and preview
       maintenance were not part of the check.
+- [x] One DJI clip stuck at "needs attention": metadata-only changes (xattrs/hard link)
+      altered ctime during preview work, failing 3 attempts against a stale signature;
+      the later scan re-verified content but kept the failure. Scans now requeue such
+      failures (regression test), and failed items keep their progress row and Retry
+      visible when no worker is running.
 - [x] Face detection, people tagging and a people filter: installed; backfill and acceptance in [FACES.md](FACES.md).
 
 ## Verified foundations

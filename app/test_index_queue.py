@@ -118,6 +118,34 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(events[-1]['event'], 'speech_wait_ended')
         self.assertGreaterEqual(events[-1]['seconds'], 0)
 
+    def test_metadata_only_change_clears_failures_from_the_stale_signature(self):
+        q = self.queue()
+        q.scan()
+        failed = "state='error',attempts=3,error='Original changed during indexing; rescan required'"
+        with q.db() as db:
+            db.execute(f'UPDATE preview_jobs SET {failed}')
+            db.execute(f'UPDATE index_jobs SET {failed}')
+        q.scan()  # Unchanged file: genuine failures stay failed.
+        with q.db() as db:
+            self.assertEqual(db.execute('SELECT state,attempts FROM preview_jobs').fetchone()[:], ('error', 3))
+        os.chmod(self.source, 0o600)  # Changes ctime, not content.
+        q.scan()
+        with q.db() as db:
+            self.assertEqual(db.execute('SELECT state,attempts,error FROM preview_jobs').fetchone()[:], ('queued', 0, None))
+            self.assertEqual(db.execute('SELECT state,attempts,error FROM index_jobs').fetchone()[:], ('queued', 0, None))
+            self.assertEqual(db.execute('SELECT signature FROM index_jobs').fetchone()[0], q.signature(self.source))
+        q.work()
+        with q.db() as db:
+            self.assertEqual(db.execute('SELECT state FROM preview_jobs').fetchone()[0], 'complete')
+            self.assertEqual(db.execute('SELECT state FROM index_jobs').fetchone()[0], 'complete')
+        frames = len(self.backend.frames)
+        os.chmod(self.source, 0o644)
+        q.scan()
+        with q.db() as db:
+            self.assertEqual(db.execute('SELECT state FROM preview_jobs').fetchone()[0], 'complete')
+        q.work()
+        self.assertEqual(len(self.backend.frames), frames, 'completed previews must not be regenerated')
+
     def test_queue_counts_include_active_and_failed_until_complete(self):
         events = []
         q = self.queue(emit=events.append)

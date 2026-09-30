@@ -45,6 +45,34 @@ class FacePeopleTests(unittest.TestCase):
         embeddings = np.concatenate([self.faces(0, 5), self.faces(1, 5), self.faces(2, 1)])
         self.assertEqual(face_people.groups(embeddings), [0] * 5 + [1] * 5 + [2])
 
+    def test_split_groups_of_one_person_merge_but_strangers_do_not(self):
+        # Two halves of one identity that the mutual-neighbour pass left apart,
+        # plus a different person: only the halves merge.
+        a, b, other = self.faces(0, 3, noise=0.9), self.faces(0, 3, noise=0.9), self.faces(1, 3, noise=0.9)
+        labels = face_people.merge_groups(np.concatenate([a, b, other]), [0, 0, 0, 1, 1, 1, 2, 2, 2])
+        self.assertEqual(labels, [0, 0, 0, 0, 0, 0, 1, 1, 1])
+
+    def test_group_merge_uses_current_averages_so_lookalikes_do_not_chain(self):
+        # A~B and B~C are 0.6, A~C is 0.2: after A+B merge, (A+B)~C is ~0.45 < 0.55.
+        a = np.zeros(DIMENSIONS, np.float32); a[0] = 1
+        c = np.zeros(DIMENSIONS, np.float32); c[0] = 0.2; c[1] = np.sqrt(1 - 0.04)
+        # b is the unit vector with b.a = b.c = 0.6 in the a/c plane plus one extra axis.
+        x = 0.6; y = (0.6 - 0.2 * x) / c[1]
+        b = np.zeros(DIMENSIONS, np.float32); b[0] = x; b[1] = y; b[2] = np.sqrt(1 - x * x - y * y)
+        self.assertAlmostEqual(float(a @ b), 0.6, places=5); self.assertAlmostEqual(float(b @ c), 0.6, places=5)
+        labels = face_people.merge_groups(np.stack([a, b, c]), [0, 1, 2])
+        self.assertEqual(sorted(labels).count(labels[1]), 2, labels)
+        self.assertEqual(len(set(labels)), 2)
+
+    def test_group_merge_respects_user_rejections(self):
+        halves = np.concatenate([self.faces(0, 3, noise=0.9), self.faces(0, 3, noise=0.9)])
+        vetoed = face_people.merge_groups(halves, [0, 0, 0, 1, 1, 1], forbidden=lambda first, second: True)
+        self.assertEqual(vetoed, [0, 0, 0, 1, 1, 1])
+
+    def test_embedding_strength_gates_reliability(self):
+        self.assertTrue(Quality(0.9, 40, 0.8, face_people.MINIMUM_EMBEDDING_NORM).reliable)
+        self.assertFalse(Quality(0.9, 40, 0.8, face_people.MINIMUM_EMBEDDING_NORM - 0.1).reliable)
+
     def test_rejected_face_is_never_regrouped_with_its_person(self):
         embeddings = self.faces(0, 6)
         cannot = [(5, index) for index in range(5)]

@@ -1,9 +1,12 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Active build: `prototype-20260929T204729959318Z`
-(face recognition, revision `56ce062`; see [FACES.md](FACES.md)). Previous:
-`prototype-20260929T185222406970Z`, retained at
-`~/Applications/.Mami-install-eb63285b24a34e4195fa8a03b155f745.app`.
+Status: **deployed and verified**. Active build: `prototype-20260930T053517517152Z`
+(face grouping revision, visible Retry for failed items, rescan clears stale-signature
+failures). Previous: `prototype-20260930T052835652908Z` at
+`~/Applications/.Mami-install-ed3862f5888a49bfbe736319901c522d.app`; the first face
+release is at `~/Applications/.Mami-install-942e3382cd564a6eb448c5b9530d584c.app`.
+Face index schema v2 (origin column) is migrated in place; older face builds refuse
+v2 and rebuild into a new directory, so roll back by moving `Derived/Faces` aside.
 Personal store: additive `people`, `face_labels`, `people_history` tables (older
 builds ignore them; do not delete them when rolling back). Generated face index:
 `Derived/Faces/` (rebuildable, excluded from backup). Face model:

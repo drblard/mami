@@ -64,7 +64,8 @@ class FaceExtractor:
         embeddings, norms = self.engine.embed(crops)
         results = []
         for face, crop, embedding, norm in zip(faces, crops, embeddings, norms):
-            quality = face_people.Quality(face.score, face_engine.eye_distance(face.keypoints), face_engine.frontalness(face.keypoints))
+            quality = face_people.Quality(face.score, face_engine.eye_distance(face.keypoints),
+                                          face_engine.frontalness(face.keypoints), float(norm))
             results.append(dict(timestamp=timestamp, box=normalized_box(face.box, image.width, image.height),
                                 score=face.score, eye_distance=quality.eye_distance, frontalness=quality.frontalness,
                                 sharpness=face_engine.sharpness(crop), norm=float(norm), reliable=quality.reliable,

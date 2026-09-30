@@ -10,7 +10,12 @@ import sqlite3
 
 import numpy as np
 
-FACES_SCHEMA_VERSION = 1
+from face_people import MINIMUM_EMBEDDING_NORM
+
+FACES_SCHEMA_VERSION = 2
+# Bump when grouping or reliability rules change: every library regroups once.
+GROUPING_VERSION = 2
+ORIGINS = ('camera', 'screen', 'other')
 MAX_FACE_JOB_ATTEMPTS = 3
 PENDING_FACE_PREDICATE = f"state='queued' OR state='running' OR (state='error' AND attempts<{MAX_FACE_JOB_ATTEMPTS})"
 EMBEDDING_DTYPE = np.float32
@@ -48,6 +53,11 @@ def ensure_schema(db):
     version = db.execute('SELECT version FROM faces_schema').fetchone()[0] if present else 0
     if version == FACES_SCHEMA_VERSION:
         return
+    if version == 1:
+        # v2: where each asset came from, so review can favour the user's own camera.
+        db.execute(f"ALTER TABLE face_jobs ADD COLUMN origin TEXT NOT NULL DEFAULT 'other' CHECK(origin IN {ORIGINS})")
+        db.execute('UPDATE faces_schema SET version=?', (FACES_SCHEMA_VERSION,))
+        return
     if version != 0:
         raise ValueError('Unsupported face index version; rebuild it into a new directory')
     db.executescript(f'''
@@ -58,7 +68,8 @@ def ensure_schema(db):
         INSERT INTO face_state(id,change_token) VALUES(1,lower(hex(randomblob(16))));
         CREATE TABLE face_jobs(asset TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL,
             signature TEXT NOT NULL, pipeline TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
-            error TEXT, attempts INTEGER NOT NULL DEFAULT 0, capture_time REAL);
+            error TEXT, attempts INTEGER NOT NULL DEFAULT 0, capture_time REAL,
+            origin TEXT NOT NULL DEFAULT 'other' CHECK(origin IN {ORIGINS}));
         CREATE INDEX face_jobs_pending ON face_jobs(capture_time DESC, asset) WHERE {PENDING_FACE_PREDICATE};
         CREATE TABLE faces(id INTEGER PRIMARY KEY AUTOINCREMENT, asset TEXT NOT NULL, timestamp REAL,
             x1 REAL NOT NULL, y1 REAL NOT NULL, x2 REAL NOT NULL, y2 REAL NOT NULL,
@@ -83,19 +94,22 @@ def ensure_schema(db):
 def sync_jobs(db, catalog_rows, pipeline):
     """Mirror catalog assets whose previews are complete; requeue changed originals.
 
-    catalog_rows: iterable of (asset, path, kind, signature, capture_time).
+    catalog_rows: iterable of (asset, path, kind, signature, capture_time, origin).
     Returns (added, requeued, removed) counts.
     """
-    current = {row['asset']: row for row in db.execute('SELECT asset,path,signature,pipeline FROM face_jobs')}
+    current = {row['asset']: row for row in db.execute('SELECT asset,path,signature,pipeline,origin FROM face_jobs')}
     seen = set()
     added = requeued = 0
-    for asset, path, kind, signature, capture_time in catalog_rows:
+    for asset, path, kind, signature, capture_time, origin in catalog_rows:
         seen.add(asset)
         existing = current.get(asset)
         if existing is None:
-            db.execute('INSERT INTO face_jobs(asset,path,kind,signature,pipeline,capture_time) VALUES(?,?,?,?,?,?)',
-                       (asset, path, kind, signature, pipeline, capture_time))
+            db.execute('INSERT INTO face_jobs(asset,path,kind,signature,pipeline,capture_time,origin) VALUES(?,?,?,?,?,?,?)',
+                       (asset, path, kind, signature, pipeline, capture_time, origin))
             added += 1
+            continue
+        if existing['origin'] != origin:
+            db.execute('UPDATE face_jobs SET origin=? WHERE asset=?', (origin, asset))
         elif existing['signature'] != signature or existing['pipeline'] != pipeline:
             db.execute('DELETE FROM faces WHERE asset=?', (asset,))
             db.execute("UPDATE face_jobs SET path=?,kind=?,signature=?,pipeline=?,state='queued',attempts=0,error=NULL,capture_time=? WHERE asset=?",
@@ -141,8 +155,10 @@ def fail_job(db, asset, error):
     db.execute("UPDATE face_jobs SET state='error',attempts=attempts+1,error=? WHERE asset=?", (str(error)[-1000:], asset))
 
 
-def embeddings(db, where='representative=1 AND reliable=1'):
-    rows = db.execute(f'SELECT id,embedding FROM faces WHERE {where} ORDER BY id').fetchall()
+def embeddings(db):
+    """Reliable representative faces: the only faces that seed groups and suggestions."""
+    rows = db.execute('SELECT id,embedding FROM faces WHERE representative=1 AND reliable=1 AND norm>=? ORDER BY id',
+                      (MINIMUM_EMBEDDING_NORM,)).fetchall()
     ids = np.array([row['id'] for row in rows], dtype=np.int64)
     matrix = np.frombuffer(b''.join(row['embedding'] for row in rows), dtype=EMBEDDING_DTYPE)
     return ids, matrix.reshape(len(rows), -1) if len(rows) else np.zeros((0, 512), EMBEDDING_DTYPE)
@@ -170,7 +186,7 @@ def match_label(db, asset, timestamp, box):
 def face_set(db):
     """Identifies the current set of faces; grouping is stale when it changes."""
     count, highest = db.execute('SELECT count(*),coalesce(max(id),0) FROM faces').fetchone()
-    return f'{count}:{highest}'
+    return f'{GROUPING_VERSION}:{count}:{highest}'
 
 
 def grouping_stale(db):

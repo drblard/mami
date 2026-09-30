@@ -313,15 +313,18 @@ struct IndexingBar: View {
     @ViewState private var shown = true
     private struct ProgressKey: Hashable {
         let phase: String, current: String, done: Int, total: Int
-        let running: Bool, paused: Bool, error: String?
+        let running: Bool, paused: Bool, error: String?, failed: Int
     }
     private var progressKey: ProgressKey {
         ProgressKey(phase: indexing.phase, current: indexing.current, done: indexing.done, total: indexing.total,
-                    running: indexing.running, paused: indexing.paused, error: indexing.error)
+                    running: indexing.running, paused: indexing.paused, error: indexing.error, failed: indexing.queueCounts?.failed ?? 0)
     }
-    private var needsAttention: Bool { indexing.paused || indexing.error != nil }
+    private var failed: Int { indexing.queueCounts?.failed ?? 0 }
+    /// Failed items keep the row (and its Retry) visible even when no worker is running.
+    private var needsAttention: Bool { indexing.paused || indexing.error != nil || failed > 0 }
     private var detail: String {
         if let error = indexing.error { return error }
+        if failed > 0 { return "\(failed) file\(failed == 1 ? "" : "s") need attention. Retry keeps completed work." }
         if indexing.phase.contains("GPU"), let usage = indexing.gpuUtilization {
             return "Graphics activity: \(Int(usage))% · Transcription resumes after a quiet interval."
         }
@@ -333,7 +336,7 @@ struct IndexingBar: View {
             Label("\(indexing.lane.title) · \(indexing.label)", systemImage: indexing.paused ? "pause.circle" : "arrow.triangle.2.circlepath")
                 .lineLimit(1).layoutPriority(1)
             if !detail.isEmpty {
-                Text(detail).foregroundStyle(indexing.error == nil ? Color.secondary : Color.orange)
+                Text(detail).foregroundStyle(indexing.error == nil && failed == 0 ? Color.secondary : Color.orange)
                     .lineLimit(1).truncationMode(.tail).help(detail)
             } else if !indexing.current.isEmpty {
                 Text(indexing.current).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
@@ -344,7 +347,7 @@ struct IndexingBar: View {
                 if indexing.total > 0 { ProgressView(value: Double(indexing.done), total: Double(max(indexing.total, indexing.done))) }
                 else { ProgressView().progressViewStyle(.linear) }
             }.frame(width: 120).opacity(indexing.active ? 1 : 0)
-            if indexing.error != nil { Button("Retry") { indexing.retry() } }
+            if indexing.error != nil || failed > 0 { Button("Retry") { indexing.retry() } }
             Button(indexing.paused ? "Resume" : "Pause") { indexing.togglePause() }.disabled(indexing.queueCounts == nil)
             if indexing.lane == .search { Button("Scan now") { indexing.scanNow() } }
         }

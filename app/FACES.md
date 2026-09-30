@@ -67,6 +67,28 @@ splitting (e.g. one video's track forming its own group); naming a person then
 suggests the rest. This is a small sample of mostly one family, not a benchmark
 of recognition accuracy across ages; confirmation remains the user's decision.
 
+### Live grouping review and revision (2026-09-30, measured)
+
+The completed live backfill took **6.6 h** for 16,805 assets (93,833 faces, 24,743
+representatives, zero failures). Its review list offered 851 groups; the user
+rightly doubted that many people. Analysis of a copy of the live index:
+
+- 1,363 of 2,384 groups came mainly from screenshots (PNG), screen recordings or
+  saved/shared media without camera metadata: social-media faces, not her footage.
+  Near-identical 0.97–0.98 matches were the same avatar/overlay across screenshots.
+- 252 groups came from a single clip or photo.
+- One person was split across groups; whole-group average similarity ≥ 0.55 joined
+  the same person in different looks, while 0.45 pairs were different people.
+- A cluster of false detections (goats, chickens, objects, backs of heads) had low
+  ArcFace embedding norms: below 15 nearly all non-faces, 15–17 mixed, ≥ 17 faces.
+
+Changes: embedding norm ≥ 17 for grouping/suggestion seeds; a second average-linkage
+merge pass (0.55, recomputed averages, rejection veto); per-asset origin (camera /
+screen / other, face schema v2 migrated in place); review list limited to groups in
+≥ 2 media and mostly from her own camera by default (toggle for saved media),
+sorted by media count. Named people are still suggested in all media. Live result:
+**133** review groups (was 851); regroup of 11,652 faces takes 2.5 s.
+
 ### Data ownership
 
 - **Generated (catalog/Derived):** face detections, boxes, keypoints, quality,
@@ -163,5 +185,10 @@ Progress appears as a third footer lane (“Faces”).
 - [x] Installed; personal-table digests unchanged; people tables added (empty).
       Face model installed through the verified installer. Previous app retained
       at `~/Applications/.Mami-install-eb63285b24a34e4195fa8a03b155f745.app`.
-- [ ] Live backfill of the current library completes; record measured duration.
+- [x] Live backfill of the current library: 6.6 h, 16,805 assets, zero face failures.
+- [x] Grouping revision after user review (above), installed as
+      `prototype-20260930T052835652908Z`; personal digests unchanged.
+- [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
+      after finishing and the footer kept showing early counts ("441"). A native
+      `--face-lifecycle-test` passes and the worker retired normally after reinstall.
 - [ ] User acceptance: name people, correct groups, People filter (physical use).

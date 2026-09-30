@@ -247,7 +247,14 @@ class Queue:
                     if not known and not job:
                         db.execute("INSERT INTO index_jobs(asset,path,kind,signature,logical,state) VALUES(?,?,?,?,?,'queued')", (asset, str(path), EXTENSIONS[path.suffix.lower()], signature, 'library:' + asset))
                     elif job:
+                        before = db.total_changes
                         db.execute('UPDATE index_jobs SET path=?,signature=? WHERE asset=? AND (path != ? OR signature != ?)', (str(path), signature, asset, str(path), signature))
+                        if db.total_changes != before:
+                            # The content was re-verified under its new signature (metadata-only
+                            # changes such as xattrs or hard links alter ctime). Failures against
+                            # the old signature are obsolete; completed work is kept.
+                            db.execute("UPDATE preview_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state='error'", (asset,))
+                            db.execute("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state='error'", (asset,))
                 imported_time = imported_times.get(asset)
                 if (not known and not job) or (job and job['state'] != 'complete' and (job['capture_time'] is None or (imported_time is not None and job['capture_time'] != imported_time))):
                     queued = dict(asset=asset, path=str(path), kind=EXTENSIONS[path.suffix.lower()], signature=signature)

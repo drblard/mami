@@ -1,3 +1,4 @@
+import contextlib
 import sqlite3
 import subprocess
 import sys
@@ -31,6 +32,15 @@ class FakeExtractor:
                      norm=20, track=0, representative=True, reliable=True, embedding=vector)]
 
 
+class MediaOriginTests(unittest.TestCase):
+    def test_origin_distinguishes_own_camera_screenshots_and_saved_media(self):
+        self.assertEqual(face_worker.media_origin('/o/iCloud/2026/IMG_1.HEIC', 'Apple iPhone 15'), 'camera')
+        self.assertEqual(face_worker.media_origin('/o/DJI-Pocket-4P/2026/DJI_1.MP4', None), 'camera')
+        self.assertEqual(face_worker.media_origin('/o/iCloud/2026/IMG_2.PNG', 'Apple iPhone 15'), 'screen')
+        self.assertEqual(face_worker.media_origin('/o/iCloud/2026/copy_3.mov', None), 'other')
+        self.assertEqual(face_worker.media_origin('/o/iCloud/2026/IMG_4.JPG', ''), 'other')
+
+
 class ProtocolIsolationTests(unittest.TestCase):
     def test_native_writes_to_stdout_descriptor_do_not_reach_the_protocol(self):
         script = ("import os, face_worker; protocol = face_worker.isolate_protocol(); "
@@ -49,12 +59,13 @@ class FaceWorkerTests(unittest.TestCase):
         root = Path(self.directory.name)
         self.catalog, self.faces = root / 'Catalog' / 'catalog.sqlite', root / 'Faces' / 'faces.sqlite'
         self.catalog.parent.mkdir()
-        with sqlite3.connect(self.catalog) as db:
+        with contextlib.closing(sqlite3.connect(self.catalog)) as db, db:
             db.executescript('''
                 CREATE TABLE state(id INTEGER PRIMARY KEY, identity TEXT, revision INTEGER, change_token TEXT);
                 INSERT INTO state VALUES(1,'library',0,'t');
                 CREATE TABLE index_jobs(asset TEXT PRIMARY KEY, path TEXT, kind TEXT, signature TEXT, state TEXT, capture_time REAL);
                 CREATE TABLE preview_jobs(asset TEXT PRIMARY KEY, state TEXT);
+                CREATE TABLE media(path TEXT PRIMARY KEY, asset TEXT, payload TEXT);
                 CREATE VIEW mami_preview_work AS SELECT asset FROM preview_jobs WHERE state='queued';
                 CREATE VIEW mami_index_work AS SELECT asset FROM index_jobs WHERE state='queued';
             ''')
@@ -80,7 +91,7 @@ class FaceWorkerTests(unittest.TestCase):
             self.assertFalse(faces_store.grouping_stale(db))
 
     def test_waits_for_previews_and_ai_search_without_extracting(self):
-        with sqlite3.connect(self.catalog) as db:
+        with contextlib.closing(sqlite3.connect(self.catalog)) as db, db:
             db.execute("INSERT INTO index_jobs VALUES('d','/m/d.mov','video','s','queued',9)")
             db.execute("INSERT INTO preview_jobs VALUES('d','complete')")
         extractor = FakeExtractor()
