@@ -196,7 +196,6 @@ struct PeopleView: View {
     @ViewState private var naming = false
     @ViewState private var renaming = false
     @ViewState private var showSuggestions = true
-    @FocusState private var nameFieldFocused: Bool
 
     private var focusBinding: Binding<PeopleLibrary.Focus?> {
         Binding(get: { model.focus }, set: { if let focus = $0 { model.show(focus) } })
@@ -286,11 +285,10 @@ struct PeopleView: View {
                     Button("Rename…") { newName = model.name(of: id); renaming = true }
                         .popover(isPresented: $renaming) {
                             VStack(alignment: .leading) {
-                                TextField("Name", text: $newName).frame(width: 220).focused($nameFieldFocused)
-                                    .onSubmit { model.rename(id, to: newName); renaming = false }
+                                AutofocusTextField(placeholder: "Name", text: $newName) { model.rename(id, to: newName); renaming = false }
+                                    .frame(width: 220)
                                 HStack { Spacer(); Button("Rename") { model.rename(id, to: newName); renaming = false }.buttonStyle(.borderedProminent) }
                             }.padding()
-                                .onAppear { DispatchQueue.main.async { nameFieldFocused = true } }
                         }
                     Menu("More") {
                         Menu("Merge into") {
@@ -344,9 +342,8 @@ struct PeopleView: View {
             .popover(isPresented: $naming) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Who is this?").font(.headline)
-                    TextField("New person’s name", text: $newName).frame(width: 240)
-                        .focused($nameFieldFocused)
-                        .onSubmit { model.assign(model.selected, toNew: newName); naming = false }
+                    AutofocusTextField(placeholder: "New person’s name", text: $newName) { model.assign(model.selected, toNew: newName); naming = false }
+                        .frame(width: 240)
                     Button("Create “\(newName.trimmingCharacters(in: .whitespaces))”") { model.assign(model.selected, toNew: newName); naming = false }
                         .buttonStyle(.borderedProminent).disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
                     let others = model.people.filter { $0.id != excluding }
@@ -362,8 +359,6 @@ struct PeopleView: View {
                         }.frame(maxHeight: 200)
                     }
                 }.padding(16)
-                // Popovers become key after appearing; focus the field on the next turn.
-                .onAppear { DispatchQueue.main.async { nameFieldFocused = true } }
             }
     }
 
@@ -427,5 +422,54 @@ struct PeopleFilterPicker: View {
         .task { await model.reload() }
         // New worker results refresh counts and, when filtering, the matching media.
         .onChange(of: faces.catalogGeneration) { _, _ in Task { await model.reload() } }
+    }
+}
+
+/// A text field that becomes the active input when its window appears. SwiftUI
+/// focus state does not reliably reach into popovers, which are separate windows.
+struct AutofocusTextField: NSViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+    var submit: () -> Void = {}
+
+    final class Field: NSTextField {
+        var focusOnAppear = true
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard focusOnAppear, let window else { return }
+            focusOnAppear = false
+            // The popover window becomes key after insertion; focus on the next turn.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window === window else { return }
+                window.makeKey()
+                window.makeFirstResponder(self)
+            }
+        }
+    }
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: AutofocusTextField
+        init(_ parent: AutofocusTextField) { self.parent = parent }
+        func controlTextDidChange(_ notification: Notification) {
+            if let field = notification.object as? NSTextField { parent.text = field.stringValue }
+        }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            parent.text = control.stringValue
+            parent.submit()
+            return true
+        }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> Field {
+        let field = Field(string: text)
+        field.placeholderString = placeholder
+        field.delegate = context.coordinator
+        field.bezelStyle = .roundedBezel
+        return field
+    }
+    func updateNSView(_ field: Field, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+        field.placeholderString = placeholder
     }
 }

@@ -11,6 +11,7 @@ import SwiftUI
     func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
         if try !condition() { throw AppError.message("PEOPLE WORKFLOW: " + message) }
     }
+    try await checkNameFieldAutofocus()
     let catalog = Catalog.standard
     try require(try catalog.people().isEmpty, "fixture must start without people; rebuild it after a failed run")
     let model = PeopleLibrary(catalog: catalog)
@@ -132,4 +133,36 @@ extension Optional {
     try require(remaining == 0 && (try catalog.people()).isEmpty, "undo left labels behind")
     Indexing.faces.stop()
     print("PEOPLE SEQUENCE PASSED: \(named) groups named in succession")
+}
+
+/// The name field in a real popover must accept typing without a click.
+@MainActor func checkNameFieldAutofocus() async throws {
+    let anchorWindow = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+    let anchor = NSView(frame: NSRect(x: 150, y: 80, width: 100, height: 30))
+    anchorWindow.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+    anchorWindow.contentView?.addSubview(anchor)
+    anchorWindow.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    var typed = ""
+    let popover = NSPopover()
+    popover.contentViewController = NSHostingController(rootView: AutofocusTextField(placeholder: "New person’s name",
+        text: Binding(get: { typed }, set: { typed = $0 })).frame(width: 240).padding(16))
+    popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+    defer { popover.close(); anchorWindow.orderOut(nil) }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+    func focusedField() -> AutofocusTextField.Field? {
+        guard let editor = popover.contentViewController?.view.window?.firstResponder as? NSTextView else { return nil }
+        return editor.delegate as? AutofocusTextField.Field
+    }
+    while focusedField() == nil {
+        guard ContinuousClock.now < deadline else {
+            throw AppError.message("Name field was not focused in its popover; first responder \(String(describing: popover.contentViewController?.view.window?.firstResponder))")
+        }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    // Typing goes into the focused field and reaches the binding.
+    focusedField()?.currentEditor()?.insertText("Ana")
+    try await Task.sleep(for: .milliseconds(100))
+    guard typed == "Ana" else { throw AppError.message("Typing into the focused name field did not update the name (\(typed))") }
+    print("PEOPLE name field is focused in a real popover and typing updates the name")
 }
