@@ -226,8 +226,9 @@ Progress appears as a third footer lane (“Faces”).
       personal digests unchanged.
 - [x] Review flow: naming opens the person with an explanation; To check /
       Matched automatically (≥ 0.65) / Confirmed tabs; groups show outliers first.
-      Native checks assert the navigation and exact per-tab counts. Build
-      `prototype-20260930T064702762470Z` awaits install (quit refused: window open).
+      Native checks assert the navigation and exact per-tab counts. Installed
+      `prototype-20260930T064702762470Z`: face index migrated to v3 and regrouped,
+      personal digests unchanged, worker launched and retired normally.
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.
