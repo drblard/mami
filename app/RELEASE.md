@@ -1,9 +1,10 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Active build: `prototype-20260930T085920147360Z`
-(Shift-click ranges and review shortcuts). Previous:
-`prototype-20260930T084759361362Z` at
-`~/Applications/.Mami-install-a366f035abc7480fa0522eed79f28122.app`.
+Status: **deployed and verified**. Active build: `prototype-20260930T113445153565Z`
+(same-moment matches, face index schema v4, per-edit summaries, fatal-error capture
+in `~/Library/Caches/Mami/app-errors.log`, launch-time face recheck). Previous:
+`prototype-20260930T112112445817Z` at
+`~/Applications/.Mami-install-0d0a140571484523b1c149eef2272bca.app`.
 Face index schema v2 (origin column) is migrated in place; older face builds refuse
 v2 and rebuild into a new directory, so roll back by moving `Derived/Faces` aside.
 Personal store: additive `people`, `face_labels`, `people_history` tables (older
