@@ -23,6 +23,18 @@ import SwiftUI
     while model.faces.isEmpty && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(50)) }
     try require(model.faces.count == min(group.count, FaceIndex.faceLimit), "expected \(group.count) group faces, loaded \(model.faces.count)")
     try require(model.selected == Set(model.faces.map(\.id)), "a group should start fully selected")
+    if model.faces.count >= 4 {
+        let order = model.faces.map(\.id)
+        model.selected = []
+        model.click(order[0], extending: false)
+        model.click(order[3], extending: true)
+        try require(model.selected == Set(order[0...3]), "Shift-click did not select the range")
+        model.click(order[1], extending: false)
+        model.click(order[3], extending: true)
+        try require(model.selected == [order[0]], "Shift-click after deselecting did not clear the range")
+        model.selected = Set(order)
+        print("PEOPLE Shift-click selects and clears ranges")
+    }
     // Leave one face out, as the user would for a wrong match.
     let named = model.faces.count > 1 ? Set(model.faces.dropLast().map(\.id)) : Set(model.faces.map(\.id))
     let expectedAssets = Set(model.faces.filter { named.contains($0.id) }.map(\.ref.asset))

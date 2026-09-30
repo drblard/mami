@@ -1,4 +1,5 @@
 import SwiftUI
+import MamiCore
 
 /// People review state. Edits go to the personal store first; the face worker
 /// then recomputes suggestions and groups, and the view reloads its results.
@@ -10,7 +11,9 @@ import SwiftUI
     @Published private(set) var groups: [FaceGroup] = []
     @Published private(set) var focus: Focus?
     @Published private(set) var faces: [FaceItem] = []
-    @Published var selected = Set<Int64>()
+    @Published var selected = Set<Int64>() { didSet { if selected.isEmpty { selectionAnchor = nil } } }
+    /// Last face clicked; Shift-click extends from here.
+    private(set) var selectionAnchor: Int64?
     @Published private(set) var edits: [Edit] = []
     @Published var error: String?
     @Published private(set) var filterAssets = Set<String>()
@@ -30,6 +33,14 @@ import SwiftUI
     private var selectAllOnReload = false
 
     init(catalog: Catalog = .standard) { self.catalog = catalog }
+
+    /// Click toggles one face; Shift-click gives the whole range the anchor's state.
+    func click(_ face: Int64, extending: Bool) {
+        if extending, selectionAnchor != nil {
+            selected = RangeSelection.extend(selected, order: faces.map(\.id), anchor: selectionAnchor, target: face)
+        } else if selected.contains(face) { selected.remove(face) } else { selected.insert(face) }
+        selectionAnchor = face
+    }
 
     func name(of id: String) -> String { people.first { $0.id == id }?.name ?? "Unknown person" }
 
@@ -343,8 +354,10 @@ struct PeopleView: View {
                     selectionButtons
                     if model.personTab != .confirmed {
                         Button("Confirm \(model.selected.count)") { model.assign(model.selected, to: id) }.disabled(model.selected.isEmpty)
+                            .keyboardShortcut(.return, modifiers: .command).help("Confirm selected faces (⌘↩)")
                     }
                     Button("Not \(name)") { model.reject(model.selected, from: id) }.disabled(model.selected.isEmpty)
+                        .keyboardShortcut(.delete, modifiers: .command).help("Mark selected faces as not \(name) (⌘⌫)")
                     nameButton(title: "Move to…", excluding: id)
                 }
                 if model.faces.isEmpty && model.loaded {
@@ -367,7 +380,7 @@ struct PeopleView: View {
 
     private var selectionButtons: some View {
         HStack {
-            Button("Select all") { model.selected = Set(model.faces.map(\.id)) }
+            Button("Select all") { model.selected = Set(model.faces.map(\.id)) }.keyboardShortcut("a", modifiers: .command)
             Button("None") { model.selected = [] }.disabled(model.selected.isEmpty)
         }.controlSize(.small)
     }
@@ -399,6 +412,16 @@ struct PeopleView: View {
     }
 
     private func faceGrid(_ faces: [FaceItem]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Click to select · Shift-click to select or clear a range · ⌘A selects all\(isPersonPage ? " · ⌘↩ confirms · ⌘⌫ marks as not this person" : "")")
+                .font(.caption2).foregroundStyle(.secondary)
+            faceScroll(faces)
+        }
+    }
+
+    private var isPersonPage: Bool { if case .person = model.focus { return true }; return false }
+
+    private func faceScroll(_ faces: [FaceItem]) -> some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 120), spacing: 10)], spacing: 10) {
                 ForEach(faces) { face in
@@ -411,7 +434,7 @@ struct PeopleView: View {
                         }
                         .opacity(selected ? 1 : 0.55)
                         .contentShape(Rectangle())
-                        .onTapGesture { if selected { model.selected.remove(face.id) } else { model.selected.insert(face.id) } }
+                        .onTapGesture { model.click(face.id, extending: NSEvent.modifierFlags.contains(.shift)) }
                         .help(face.similarity.map { String(format: "Similarity %.2f", $0) } ?? "")
                         .accessibilityLabel(selected ? "Selected face" : "Face")
                 }

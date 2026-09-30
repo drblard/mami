@@ -233,6 +233,12 @@ Progress appears as a third footer lane (“Faces”).
       6 confirmed, 5 new candidates surfaced by the new examples (expected), and 3
       frames of already-settled video tracks were pulled back into review (bug).
       Frames of a confirmed or automatically matched track now stay accepted.
+- [x] Faster review (user: one click per face is tedious): Shift-click selects or
+      clears a range (anchor state, `RangeSelection` unit tests + native model check),
+      ⌘A selects all, ⌘↩ confirms, ⌘⌫ marks as not this person.
+- [ ] Proposed, awaiting decision: confirming a face also accepts that person's
+      suggestions from the same video or photos within 60 s (user expectation; the
+      trace showed same-clip frames at 0.45–0.61 staying in To check).
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.

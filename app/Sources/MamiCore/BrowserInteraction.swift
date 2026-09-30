@@ -24,3 +24,15 @@ public enum ProgressVisibility {
         active || needsAttention || sinceLastProgress < hideDelay
     }
 }
+
+public enum RangeSelection {
+    /// Shift-click: give every item between the anchor and the target (inclusive,
+    /// in display order) the anchor's state, so a range can be selected or cleared.
+    /// Without a usable anchor, only the target is selected.
+    public static func extend<ID: Hashable>(_ selected: Set<ID>, order: [ID], anchor: ID?, target: ID) -> Set<ID> {
+        guard let end = order.firstIndex(of: target) else { return selected }
+        guard let anchor, let start = order.firstIndex(of: anchor) else { return selected.union([target]) }
+        let range = order[min(start, end)...max(start, end)]
+        return selected.contains(anchor) ? selected.union(range) : selected.subtracting(range)
+    }
+}
