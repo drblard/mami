@@ -18,7 +18,16 @@ struct FaceGroup: Identifiable, Hashable, Sendable {
 
 struct PersonCounts: Hashable, Sendable {
     var media = 0
-    var suggestedFaces = 0
+    var confirmedFaces = 0
+    /// Suggestions below `FaceIndex.automaticSimilarity`: shown for review.
+    var toCheckFaces = 0
+    /// Suggestions at or above it: accepted without review unless rejected.
+    var automaticFaces = 0
+}
+
+/// The three kinds of faces on a person's page.
+enum PersonFaces: String, CaseIterable, Sendable {
+    case toCheck, automatic, confirmed
 }
 
 /// Read-only queries over the generated face index written by face_worker.py.
@@ -29,7 +38,12 @@ enum FaceIndex {
     /// stay out of review (naming someone still finds them through suggestions).
     static let minimumGroupMedia = 2
     /// Must equal faces_store.FACES_SCHEMA_VERSION; older indexes are migrated by the worker.
-    static let schemaVersion = 2
+    static let schemaVersion = 3
+    /// Suggestions at least this similar to a confirmed face are accepted without
+    /// review (a rejection still removes them). Chosen from a banded review of the
+    /// live library: every sampled face at >= 0.65 was the right person, while
+    /// doubtful matches began below 0.65 and clear mistakes below 0.55.
+    static let automaticSimilarity = 0.65
     static let groupLimit = 300
     static let faceLimit = 2000
     /// Must equal faces_store.MAX_FACE_JOB_ATTEMPTS.
@@ -117,17 +131,26 @@ enum FaceIndex {
 
     static func faces(group: Int64, _ catalog: Catalog = .standard) throws -> [FaceItem] {
         guard let db = try open(catalog) else { return [] }
-        return try db.rows("SELECT \(faceColumns) FROM face_groups g JOIN faces f ON f.id=g.face WHERE g.grp=? AND f.crop IS NOT NULL ORDER BY f.score DESC, f.id LIMIT ?",
+        // Least typical first: outliers (possibly someone else) are seen before the obvious matches.
+        return try db.rows("SELECT \(faceColumns) FROM face_groups g JOIN faces f ON f.id=g.face WHERE g.grp=? AND f.crop IS NOT NULL ORDER BY g.typical, f.id LIMIT ?",
                            [String(group), String(faceLimit)]).compactMap { face($0) }
     }
 
-    static func faces(person: String, _ catalog: Catalog = .standard) throws -> [FaceItem] {
+    static func faces(person: String, kind: PersonFaces, _ catalog: Catalog = .standard) throws -> [FaceItem] {
         guard let db = try open(catalog) else { return [] }
+        let filter: String
+        switch kind {
+        case .confirmed: filter = "a.source='confirmed'"
+        case .toCheck: filter = "a.source='suggested' AND a.similarity < CAST(?2 AS REAL)"
+        case .automatic: filter = "a.source='suggested' AND a.similarity >= CAST(?2 AS REAL)"
+        }
+        // To check: least certain first. Automatic: also least certain first, so a
+        // glance at the top shows the matches most worth a second look.
         return try db.rows("""
             SELECT \(faceColumns), a.source, a.similarity FROM face_assignments a JOIN faces f ON f.id=a.face
-            WHERE a.person=? AND f.crop IS NOT NULL AND a.source IN ('confirmed','suggested')
-            ORDER BY a.source='suggested', a.similarity, f.id LIMIT ?
-            """, [person, String(faceLimit)]).compactMap { face($0, source: 8) }
+            WHERE a.person=?1 AND f.crop IS NOT NULL AND \(filter)
+            ORDER BY a.similarity, f.id LIMIT ?3
+            """, [person, String(automaticSimilarity), String(faceLimit)]).compactMap { face($0, source: 8) }
     }
 
     static func counts(_ catalog: Catalog = .standard) throws -> [String: PersonCounts] {
@@ -136,8 +159,14 @@ enum FaceIndex {
         for row in try db.rows("SELECT a.person, count(DISTINCT f.asset) FROM face_assignments a JOIN faces f ON f.id=a.face GROUP BY a.person") {
             result[row[0], default: PersonCounts()].media = Int(row[1]) ?? 0
         }
-        for row in try db.rows("SELECT person, count(*) FROM face_assignments WHERE source='suggested' GROUP BY person") {
-            result[row[0], default: PersonCounts()].suggestedFaces = Int(row[1]) ?? 0
+        for row in try db.rows("""
+            SELECT person, sum(source='confirmed'), sum(source='suggested' AND similarity < CAST(? AS REAL)),
+                   sum(source='suggested' AND similarity >= CAST(? AS REAL))
+            FROM face_assignments WHERE source IN ('confirmed','suggested') GROUP BY person
+            """, [String(automaticSimilarity), String(automaticSimilarity)]) {
+            result[row[0], default: PersonCounts()].confirmedFaces = Int(row[1]) ?? 0
+            result[row[0], default: PersonCounts()].toCheckFaces = Int(row[2]) ?? 0
+            result[row[0], default: PersonCounts()].automaticFaces = Int(row[3]) ?? 0
         }
         return result
     }

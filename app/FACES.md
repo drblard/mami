@@ -89,6 +89,23 @@ screen / other, face schema v2 migrated in place); review list limited to groups
 sorted by media count. Named people are still suggested in all media. Live result:
 **133** review groups (was 851); regroup of 11,652 faces takes 2.5 s.
 
+### Review flow and automatic matches (2026-09-30)
+
+User feedback: naming ~35 faces of a group of thousands made the whole group vanish
+without explanation (its other faces had become suggestions for that person), and
+two places to "approve" felt confusing. Now naming from a group opens the person's
+page with an explanation, groups list their least typical faces first (face schema
+v3 stores each face's similarity to its group average), and a person's page has
+three tabs: **To check**, **Matched automatically** and **Confirmed**.
+
+`FaceIndex.automaticSimilarity = 0.65`: suggestions at least this similar to a
+confirmed face count without review. Banded visual review of Lucia's 7,642
+suggestions (20 random faces per band): all sampled faces ≥ 0.65 were her (6,779
+faces, 89%); 0.60–0.65 had one or two doubtful faces; below 0.55 clear mistakes
+appeared (partial faces, a screenshot, a dog). A 20-face sample cannot exclude a
+~2% error rate, so rejection stays available on automatic matches. Automatic matches
+are derived, not written to the personal store: they follow new confirmations.
+
 ### Data ownership
 
 - **Generated (catalog/Derived):** face detections, boxes, keypoints, quality,
@@ -207,6 +224,10 @@ Progress appears as a third footer lane (“Faces”).
       that becomes first responder, verified in a real `NSPopover` by the native
       people check (focus and typed text). Installed `prototype-20260930T061801173802Z`;
       personal digests unchanged.
+- [x] Review flow: naming opens the person with an explanation; To check /
+      Matched automatically (≥ 0.65) / Confirmed tabs; groups show outliers first.
+      Native checks assert the navigation and exact per-tab counts. Build
+      `prototype-20260930T064702762470Z` awaits install (quit refused: window open).
 - [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
       after finishing and the footer kept showing early counts ("441"). A native
       `--face-lifecycle-test` passes and the worker retired normally after reinstall.

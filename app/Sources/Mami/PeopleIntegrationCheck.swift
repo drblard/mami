@@ -30,6 +30,7 @@ import SwiftUI
     model.selected = named
     model.assign(named, toNew: "Check person")
     let person = try (try catalog.people()).first { $0.name == "Check person" }.unwrap("named person was not saved")
+    try require(model.focus == .person(person.id) && model.justNamed?.person == person.id, "naming a group should open the person's page")
     let saved = try catalog.userAccess { db in
         Int(try db.scalar("SELECT count(*) FROM face_labels WHERE person=? AND verdict='confirmed'", [person.id])) ?? -1
     }
@@ -45,7 +46,16 @@ import SwiftUI
     try require(expectedAssets.isSubset(of: assets), "filter lost confirmed media")
     try require((model.counts[person.id]?.media ?? 0) == assets.count, "person media count disagrees with the filter")
     try require(!model.groups.contains { $0.id == group.id && $0.count == group.count }, "named group is still offered unchanged")
-    model.show(.person(person.id))
+    let counts = model.counts[person.id] ?? PersonCounts()
+    for kind in PersonFaces.allCases {
+        let expected = min(FaceIndex.faceLimit, kind == .confirmed ? counts.confirmedFaces : kind == .toCheck ? counts.toCheckFaces : counts.automaticFaces)
+        let loaded = try FaceIndex.faces(person: person.id, kind: kind, catalog)
+        try require(loaded.count == expected, "\(kind) tab loads \(loaded.count) faces, count says \(expected)")
+        try require(kind == .confirmed || loaded.allSatisfy { ($0.similarity ?? 0) < FaceIndex.automaticSimilarity } == (kind == .toCheck),
+                    "\(kind) tab crosses the automatic threshold")
+    }
+    try require(counts.confirmedFaces == named.count, "confirmed count \(counts.confirmedFaces) != named \(named.count)")
+    model.personTab = .toCheck
     try await Task.sleep(for: .milliseconds(500))
     let host = NSHostingView(rootView: PeopleView(model: model, close: {}))
     host.appearance = NSAppearance(named: .darkAqua)

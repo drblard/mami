@@ -83,9 +83,11 @@ class FacesStoreTests(unittest.TestCase):
                 CREATE TABLE face_jobs(asset TEXT PRIMARY KEY, path TEXT NOT NULL, kind TEXT NOT NULL, signature TEXT NOT NULL,
                     pipeline TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued', error TEXT, attempts INTEGER NOT NULL DEFAULT 0, capture_time REAL);
                 INSERT INTO face_jobs(asset,path,kind,signature,pipeline,state) VALUES('a','/m/a.jpg','image','s','p1','complete');
-                CREATE TABLE faces(id INTEGER PRIMARY KEY AUTOINCREMENT, asset TEXT NOT NULL);""")
+                CREATE TABLE faces(id INTEGER PRIMARY KEY AUTOINCREMENT, asset TEXT NOT NULL);
+                CREATE TABLE face_groups(face INTEGER PRIMARY KEY, grp INTEGER NOT NULL);""")
         with faces_store.connection(self.path) as db:
-            self.assertEqual(db.execute('SELECT version FROM faces_schema').fetchone()[0], 2)
+            self.assertEqual(db.execute('SELECT version FROM faces_schema').fetchone()[0], 3)
+            self.assertIn('typical', {row[1] for row in db.execute('PRAGMA table_info(face_groups)')})
             self.assertEqual(db.execute("SELECT origin,state FROM face_jobs").fetchone()[:], ('other', 'complete'))
             self.assertTrue(faces_store.grouping_stale(db))
 
@@ -127,6 +129,11 @@ class FacesStoreTests(unittest.TestCase):
             self.assertEqual(assigned, {ids['a101']: ('son', 'confirmed'), ids['a201']: ('son', 'suggested'),
                                         ids['v01']: ('son', 'suggested'), ids['v00']: ('son', 'track')})
             groups = dict(db.execute('SELECT face,grp FROM face_groups').fetchall())
+            typical = dict(db.execute('SELECT face,typical FROM face_groups').fetchall())
+            # One-face groups are their own average; pair members share one average.
+            self.assertAlmostEqual(typical[ids['a301']], 1.0, places=5)
+            self.assertAlmostEqual(typical[ids['b101']], typical[ids['b201']], places=5)
+            self.assertLess(typical[ids['b101']], 1.0)
             self.assertEqual(groups, {ids['a301']: ids['a301'], ids['b101']: ids['b101'], ids['b201']: ids['b101'], ids['v11']: ids['v11']})
             self.assertFalse(faces_store.grouping_stale(db))
 

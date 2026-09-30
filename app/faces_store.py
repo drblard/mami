@@ -12,9 +12,9 @@ import numpy as np
 
 from face_people import MINIMUM_EMBEDDING_NORM
 
-FACES_SCHEMA_VERSION = 2
+FACES_SCHEMA_VERSION = 3
 # Bump when grouping or reliability rules change: every library regroups once.
-GROUPING_VERSION = 2
+GROUPING_VERSION = 3
 ORIGINS = ('camera', 'screen', 'other')
 MAX_FACE_JOB_ATTEMPTS = 3
 PENDING_FACE_PREDICATE = f"state='queued' OR state='running' OR (state='error' AND attempts<{MAX_FACE_JOB_ATTEMPTS})"
@@ -53,9 +53,12 @@ def ensure_schema(db):
     version = db.execute('SELECT version FROM faces_schema').fetchone()[0] if present else 0
     if version == FACES_SCHEMA_VERSION:
         return
-    if version == 1:
-        # v2: where each asset came from, so review can favour the user's own camera.
-        db.execute(f"ALTER TABLE face_jobs ADD COLUMN origin TEXT NOT NULL DEFAULT 'other' CHECK(origin IN {ORIGINS})")
+    if version in (1, 2):
+        if version == 1:
+            # v2: where each asset came from, so review can favour the user's own camera.
+            db.execute(f"ALTER TABLE face_jobs ADD COLUMN origin TEXT NOT NULL DEFAULT 'other' CHECK(origin IN {ORIGINS})")
+        # v3: how typical each face is of its group, so review shows outliers first.
+        db.execute('ALTER TABLE face_groups ADD COLUMN typical REAL NOT NULL DEFAULT 1')
         db.execute('UPDATE faces_schema SET version=?', (FACES_SCHEMA_VERSION,))
         return
     if version != 0:
@@ -78,7 +81,8 @@ def ensure_schema(db):
             representative INTEGER NOT NULL, reliable INTEGER NOT NULL, crop TEXT, embedding BLOB NOT NULL);
         CREATE INDEX faces_asset ON faces(asset);
         CREATE INDEX faces_representatives ON faces(id) WHERE representative=1 AND reliable=1;
-        CREATE TABLE face_groups(face INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE, grp INTEGER NOT NULL);
+        CREATE TABLE face_groups(face INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE, grp INTEGER NOT NULL,
+            typical REAL NOT NULL DEFAULT 1);
         CREATE INDEX face_groups_group ON face_groups(grp);
         CREATE TABLE face_assignments(face INTEGER PRIMARY KEY REFERENCES faces(id) ON DELETE CASCADE,
             person TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('confirmed','suggested','track')),

@@ -80,7 +80,14 @@ def recompute(db, people, labels):
     db.execute('DELETE FROM face_groups')
     db.executemany('INSERT INTO face_assignments VALUES(?,?,?,?)',
                    [(face, person, source, similarity) for face, (person, source, similarity) in sorted(assignments.items())])
-    db.executemany('INSERT INTO face_groups VALUES(?,?)',
-                   [(int(ids[unassigned[offset]]), first[label]) for offset, label in enumerate(labels_by_face)])
+    # Typicality: similarity to the group's average face (outliers are least typical).
+    grouped = matrix[unassigned] if unassigned else matrix[:0]
+    sums = {}
+    for offset, label in enumerate(labels_by_face):
+        sums[label] = sums.get(label, 0) + grouped[offset].astype(np.float64)
+    centres = {label: total / np.linalg.norm(total) for label, total in sums.items()}
+    db.executemany('INSERT INTO face_groups VALUES(?,?,?)',
+                   [(int(ids[unassigned[offset]]), first[label], float(grouped[offset] @ centres[label]))
+                    for offset, label in enumerate(labels_by_face)])
     db.execute('UPDATE face_state SET grouped=? WHERE id=1', (faces_store.face_set(db),))
     return len(assignments), len(labels_by_face)

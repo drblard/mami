@@ -15,6 +15,12 @@ import SwiftUI
     @Published var error: String?
     @Published private(set) var filterAssets = Set<String>()
     @Published private(set) var loaded = false
+    /// The person just named from a group, so their page can explain what Mami found.
+    @Published private(set) var justNamed: (person: String, faces: Int)?
+    /// Which kind of faces the person page shows; changing it reloads them.
+    @Published var personTab: PersonFaces = .toCheck {
+        didSet { if personTab != oldValue { selected = []; faces = []; Task { await reload() } } }
+    }
     /// Screenshots and saved/shared media mostly show strangers; off by default.
     @Published var includeSavedMedia = false { didSet { if includeSavedMedia != oldValue { Task { await reload() } } } }
     private(set) var filterPeople = Set<String>()
@@ -43,7 +49,7 @@ import SwiftUI
     }
 
     private func loadOnce(selectAll: Bool) async {
-        let catalog = catalog, focus = focus, filter = filterPeople, includeSaved = includeSavedMedia
+        let catalog = catalog, focus = focus, filter = filterPeople, includeSaved = includeSavedMedia, tab = personTab
         let started = ContinuousClock.now
         defer {
             let elapsed = started.duration(to: ContinuousClock.now)
@@ -54,7 +60,7 @@ import SwiftUI
                 let faces: [FaceItem]
                 switch focus {
                 case .group(let id): faces = try FaceIndex.faces(group: id, catalog)
-                case .person(let id): faces = try FaceIndex.faces(person: id, catalog)
+                case .person(let id): faces = try FaceIndex.faces(person: id, kind: tab, catalog)
                 case nil: faces = []
                 }
                 return (try catalog.people(), try FaceIndex.counts(catalog), try FaceIndex.groups(includeSavedMedia: includeSaved, catalog), faces,
@@ -62,7 +68,7 @@ import SwiftUI
             }.value
             people = result.0; counts = result.1; groups = result.2; filterAssets = result.4
             // Faces belong to the focus they were loaded for; a newer focus reloads again.
-            if focus == self.focus {
+            if focus == self.focus && tab == personTab {
                 faces = result.3
                 let ids = Set(faces.map(\.id))
                 selected = selectAll ? ids : selected.intersection(ids)
@@ -77,6 +83,7 @@ import SwiftUI
 
     func show(_ focus: Focus) {
         guard focus != self.focus else { return }
+        if case .person(let id) = focus, justNamed?.person == id {} else { justNamed = nil }
         self.focus = focus; faces = []; selected = []
         if case .group = focus { Task { await reload(selectAll: true) } } else { Task { await reload() } }
     }
@@ -126,12 +133,25 @@ import SwiftUI
             assign(ids, to: existing.id); return
         }
         let person = newPerson(trimmed)
+        let fromGroup = isGroupFocused
         perform("Name \(ids.count) faces “\(trimmed)”", [.create(person), .confirm(refs(ids), as: person.id)], hiding: hidden(ids, keptFor: person.id))
+        if fromGroup { showNamed(person.id, faces: ids.count) }
     }
 
     func assign(_ ids: Set<Int64>, to person: String) {
         guard !ids.isEmpty else { return }
+        let fromGroup = isGroupFocused
         perform("Add \(ids.count) faces to \(name(of: person))", [.confirm(refs(ids), as: person)], hiding: hidden(ids, keptFor: person))
+        if fromGroup { showNamed(person, faces: ids.count) }
+    }
+
+    private var isGroupFocused: Bool { if case .group = focus { return true }; return false }
+
+    /// After naming from a group, go to the person: their matches appear there.
+    private func showNamed(_ person: String, faces: Int) {
+        justNamed = (person, faces)
+        personTab = .toCheck
+        show(.person(person))
     }
 
     func reject(_ ids: Set<Int64>, from person: String) {
@@ -195,7 +215,6 @@ struct PeopleView: View {
     @ViewState private var newName = ""
     @ViewState private var naming = false
     @ViewState private var renaming = false
-    @ViewState private var showSuggestions = true
 
     private var focusBinding: Binding<PeopleLibrary.Focus?> {
         Binding(get: { model.focus }, set: { if let focus = $0 { model.show(focus) } })
@@ -225,8 +244,8 @@ struct PeopleView: View {
                                 Text(person.name).lineLimit(1)
                                 Spacer()
                                 let counts = model.counts[person.id] ?? PersonCounts()
-                                if counts.suggestedFaces > 0 {
-                                    Text("\(counts.suggestedFaces)").font(.caption2.monospacedDigit()).padding(.horizontal, 5)
+                                if counts.toCheckFaces > 0 {
+                                    Text("\(counts.toCheckFaces)").font(.caption2.monospacedDigit()).padding(.horizontal, 5)
                                         .background(Color.accentColor.opacity(0.35), in: Capsule()).help("Suggestions to review")
                                 }
                                 Text("\(counts.media)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).help("Media with this person")
@@ -272,13 +291,13 @@ struct PeopleView: View {
                     selectionButtons
                     nameButton(title: "Name \(model.selected.count) selected…")
                 }
-                Text("Click faces that belong to someone else to deselect them, then name the rest. Deselected faces stay unnamed.")
+                Text("Faces that look least like the rest come first. You don't need to check them all: deselect any that aren't this person, then name the group.")
                     .font(.caption).foregroundStyle(.secondary)
                 faceGrid(model.faces)
             }.padding(14)
         case .person(let id):
-            let suggestions = model.faces.filter { $0.source == .suggested }
-            let confirmed = model.faces.filter { $0.source == .confirmed }
+            let counts = model.counts[id] ?? PersonCounts()
+            let name = model.name(of: id)
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text(model.name(of: id)).font(.headline)
@@ -298,25 +317,40 @@ struct PeopleView: View {
                         Button("Remove person and their labels", role: .destructive) { model.delete(id) }
                     }.fixedSize()
                     Spacer()
-                    Picker("", selection: $showSuggestions) {
-                        Text("Suggestions (\(suggestions.count))").tag(true)
-                        Text("Confirmed (\(confirmed.count))").tag(false)
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 280)
-                        .onChange(of: showSuggestions) { _, _ in model.selected = [] }
+                    Picker("", selection: $model.personTab) {
+                        Text("To check (\(counts.toCheckFaces))").tag(PersonFaces.toCheck)
+                        Text("Matched automatically (\(counts.automaticFaces))").tag(PersonFaces.automatic)
+                        Text("Confirmed (\(counts.confirmedFaces))").tag(PersonFaces.confirmed)
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 460)
+                }
+                if let named = model.justNamed, named.person == id {
+                    Label(counts.toCheckFaces + counts.automaticFaces > 0
+                          ? "Named \(named.faces) faces as \(name). Mami found \(name) in \(counts.media) photos and videos: \(PeopleView.faces(counts.automaticFaces)) matched automatically, and \(PeopleView.faces(counts.toCheckFaces)) less certain \(counts.toCheckFaces == 1 ? "is" : "are") waiting under To check. All of them are already included in the People filter."
+                          : "Named \(named.faces) faces as \(name). Mami is looking for more photos and videos of \(name)…",
+                          systemImage: "sparkles")
+                        .font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.accentColor.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
                 }
                 HStack {
-                    Text(showSuggestions ? "Least certain suggestions first. Confirm the right ones and mark wrong ones as not \(model.name(of: id))."
-                                         : "Faces you confirmed. Move faces that are someone else.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text({
+                        switch model.personTab {
+                        case .toCheck: return "Less certain matches, least certain first. Confirm the right ones and mark wrong ones as not \(name); you can stop whenever they look right."
+                        case .automatic: return "Very similar to faces you confirmed, so they count as \(name) without checking. If one is someone else, mark it as not \(name)."
+                        case .confirmed: return "Faces you named or confirmed. Move faces that are someone else."
+                        }
+                    }()).font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     selectionButtons
-                    if showSuggestions {
+                    if model.personTab != .confirmed {
                         Button("Confirm \(model.selected.count)") { model.assign(model.selected, to: id) }.disabled(model.selected.isEmpty)
                     }
-                    Button("Not \(model.name(of: id))") { model.reject(model.selected, from: id) }.disabled(model.selected.isEmpty)
+                    Button("Not \(name)") { model.reject(model.selected, from: id) }.disabled(model.selected.isEmpty)
                     nameButton(title: "Move to…", excluding: id)
                 }
-                faceGrid(showSuggestions ? suggestions : confirmed)
+                if model.faces.isEmpty && model.loaded {
+                    Text(model.personTab == .toCheck ? "Nothing to check for \(name) right now." : "No faces here yet.")
+                        .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else { faceGrid(model.faces) }
             }.padding(14)
         case nil:
             ContentUnavailableView {
@@ -328,6 +362,8 @@ struct PeopleView: View {
             }
         }
     }
+
+    static func faces(_ count: Int) -> String { count == 1 ? "1 more face" : "\(count) more faces" }
 
     private var selectionButtons: some View {
         HStack {
