@@ -113,7 +113,8 @@ native UI, lifecycle including paused/retry wake-up, and lab-independent checks 
   checks exact status/failure/retry state. It aborts with the live
   `NSException` against the old logic and passes with the fix on `ludi`
   (25 Swift / 202 Python tests pass).
-- [ ] Package, sign and activate a release containing the fix; record it in RELEASE.md.
+- [x] Installed `prototype-20261001T083445972243Z` on 2026-10-01 (RELEASE.md); it
+  started and resumed index, face and Photos-import work.
 
 ## Issues already assigned to the scaling work
 

@@ -1,10 +1,13 @@
 # Persistent search / packed previews — release and recovery
 
-Status: **deployed and verified**. Active build: `prototype-20260930T113445153565Z`
-(same-moment matches, face index schema v4, per-edit summaries, fatal-error capture
-in `~/Library/Caches/Mami/app-errors.log`, launch-time face recheck). Previous:
-`prototype-20260930T112112445817Z` at
-`~/Applications/.Mami-install-0d0a140571484523b1c149eef2272bca.app`.
+Status: **deployed and verified**. Active build: `prototype-20261001T083445972243Z`
+(revision `5891401`: maintenance workers wait for their observed exit before
+reading termination status — fixes both live click crashes; app crashes at the
+source of main-thread exceptions via `NSApplicationCrashOnExceptions`). Signed
+through the GUI session; bundle `--worker-pipe-test`, 25 Swift / 202 Python tests
+pass. No data migration. Previous: `prototype-20260930T113445153565Z` at
+`~/Applications/.Mami-install-d76fe74de15c435f8c3c6a4143aa8b5e.app`; roll back by
+quitting Mami and installing that bundle with `install_production.py`.
 Face index schema v2 (origin column) is migrated in place; older face builds refuse
 v2 and rebuild into a new directory, so roll back by moving `Derived/Faces` aside.
 Personal store: additive `people`, `face_labels`, `people_history` tables (older
