@@ -38,22 +38,22 @@ import Darwin
         } catch { status = "Could not start model download: \(error.localizedDescription)" }
     }
 
+    private static let exitGrace: Duration = .seconds(2)
     private struct Progress: Decodable { let status: String }
     private func update(_ message: String) { status = message }
     private func finished(_ task: Process) async {
         guard process === task else { return }
-        if task.isRunning {
+        // Output EOF usually precedes the observed exit of a successful download.
+        if !(await ProcessExit.wait(for: task, grace: Self.exitGrace)) {
             task.terminate()
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-            while task.isRunning && ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(25)) }
-            if task.isRunning {
+            if !(await ProcessExit.wait(for: task, grace: Self.exitGrace)) {
                 _ = Darwin.kill(task.processIdentifier, SIGKILL)
                 running = false; process = nil; status = "Model download stopped after a protocol failure. Try again."
                 return
             }
         }
         running = false; process = nil
-        if task.terminationStatus == 0 {
+        if ProcessExit.succeeded(task) == true {
             status = "Indexing models installed."
             Indexing.shared.retry()
             Indexing.faces.retry()

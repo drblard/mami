@@ -92,6 +92,29 @@ native UI, lifecycle including paused/retry wake-up, and lab-independent checks 
 - [x] Use a pure probe-to-metadata function; keep file inventory loading as an adapter.
 - [x] Verify capture dates, camera labels and error behavior with fixtures.
 
+### R9 — maintenance workers read exit status before the exit is observed (live crash)
+
+- **Evidence:** both live crashes (2026-09-30 14:18 and 2026-10-01 11:24) were
+  `SwiftUI/Button.swift: Incorrect actor executor assumption` on a click, long after
+  the real failure. Unified logs show `-[NSConcreteTask terminationStatus]: task still
+  running` from `SearchMaintenance.finished` at 13:50:39 and 19:05:15. Output EOF
+  arrives before Foundation observes the exit; AppKit swallowed the exception after
+  it unwound a main-actor job, so imports/indexing stopped until the next click
+  crashed the app (about 16 hours without processing in the second case).
+- [x] Wait for the observed exit (then SIGTERM/SIGKILL) before reading termination
+  state in `SearchMaintenance`; never read it while running (`ProcessExit`).
+- [x] Same EOF-before-exit wait in `ModelDownloads`, which falsely reported
+  successful downloads as protocol failures after terminating them.
+- [x] `NSApplicationCrashOnExceptions` so any future main-thread exception crashes
+  at its source with a backtrace instead of silently stopping work.
+- [x] Maintenance worker stderr uses `AppDiagnostics.workerErrorOutput`, not the
+  app error log.
+- [x] `--worker-pipe-test` reproduces EOF 0.5 s before exit (statuses 0 and 3) and
+  checks exact status/failure/retry state. It aborts with the live
+  `NSException` against the old logic and passes with the fix on `ludi`
+  (25 Swift / 202 Python tests pass).
+- [ ] Package, sign and activate a release containing the fix; record it in RELEASE.md.
+
 ## Issues already assigned to the scaling work
 
 - Full-catalog browsing/refresh and corpus-sized snapshot rebuilding are not a

@@ -14,6 +14,7 @@ import Darwin
     private var quitting = false
     private var failures: [String: String] = [:]
     private static let shutdownGrace: Duration = .seconds(2)
+    private static let exitGrace: Duration = .seconds(5)
     private var configuration: Configuration?
     private var checking = false
     private var lastVectorAttempt = Date.distantPast
@@ -85,9 +86,13 @@ import Darwin
         process.environment = environment
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = FileHandle.standardError
+        process.standardError = AppDiagnostics.workerErrorOutput
         process.qualityOfService = .utility
         try process.run()
+        watch(name, process: process, input: input, output: output)
+    }
+
+    private func watch(_ name: String, process: Process, input: Pipe, output: Pipe) {
         workers[name] = process
         inputs[name] = input.fileHandleForWriting
         Task.detached { [weak self] in
@@ -101,6 +106,9 @@ import Darwin
                 }
             } catch WorkerTransportError.closed { }
             catch { await self?.report(error, worker: name) }
+            // Output EOF usually precedes the observed exit. A worker that closed
+            // its output but keeps running is reaped rather than left holding locks.
+            _ = await ProcessExit.reap(process, grace: Self.exitGrace)
             await self?.finished(name, process: process)
         }
     }
@@ -125,7 +133,7 @@ import Darwin
         workers[name] = nil
         try? inputs.removeValue(forKey: name)?.close()
         if !quitting {
-            if process.terminationStatus == 0 {
+            if ProcessExit.succeeded(process) == true {
                 setFailure(nil, for: name)
                 if name == "projection" { CatalogUpdates.shared.notify() }
             } else {
@@ -187,5 +195,33 @@ import Darwin
             throw AppError.message("Unresponsive maintenance writer survived shutdown")
         }
         print("MAINTENANCE SHUTDOWN TEST PASSED: unresponsive owned writer reaped")
+    }
+
+    /// Reproduces the live crash: output EOF arrives while the worker still runs.
+    static func checkExitAfterOutputCloses() async throws {
+        let python = try Configuration.load().python
+        let fixture = "import os,sys,time; print('{\"stage\":\"building\"}', flush=True); os.close(1); time.sleep(0.5); sys.exit(int(sys.argv[1]))"
+        for (exitStatus, expectedFailure) in [(0, nil), (3, "Maintenance stopped; retrying after a short delay")] {
+            let owner = SearchMaintenance()
+            let process = Process(), input = Pipe(), output = Pipe()
+            process.executableURL = python
+            process.arguments = ["-c", fixture, String(exitStatus)]
+            process.standardInput = input; process.standardOutput = output
+            try process.run()
+            defer { if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) } }
+            owner.watch("fixture", process: process, input: input, output: output)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+            while owner.workers["fixture"] != nil && ContinuousClock.now < deadline {
+                try await Task.sleep(for: ProcessExit.pollInterval)
+            }
+            guard owner.workers.isEmpty, owner.inputs.isEmpty, !process.isRunning, process.terminationStatus == exitStatus else {
+                throw AppError.message("Maintenance worker exiting with \(exitStatus) was not finished after its exit")
+            }
+            guard owner.status == "Updating visual search in the background", owner.failures["fixture"] == expectedFailure,
+                  (owner.retryAfter["fixture"] != nil) == (expectedFailure != nil) else {
+                throw AppError.message("Maintenance worker exiting with \(exitStatus) reported status '\(owner.status)', failure \(owner.failures["fixture"] ?? "none")")
+            }
+        }
+        print("MAINTENANCE EXIT TEST PASSED: output EOF before exit waits for the exit status")
     }
 }

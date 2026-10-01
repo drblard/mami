@@ -813,8 +813,13 @@ struct MamiApp: App {
             return
         }
         if CommandLine.arguments.contains("--worker-pipe-test") {
-            do { try WorkerPipe.check(); try SearchMaintenance.checkShutdown(); exit(0) }
+            do { try WorkerPipe.check(); try SearchMaintenance.checkShutdown() }
             catch { fputs("WORKER PIPE TEST FAILED: \(error)\n", stderr); exit(1) }
+            Task {
+                do { try await SearchMaintenance.checkExitAfterOutputCloses(); exit(0) }
+                catch { fputs("WORKER PIPE TEST FAILED: \(error)\n", stderr); exit(1) }
+            }
+            dispatchMain()
         }
         if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--encode-text" {
             do {

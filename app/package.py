@@ -102,6 +102,9 @@ with (contents / 'Info.plist').open('xb') as f:
                   'CFBundlePackageType': 'APPL', 'CFBundleVersion': str(int(datetime.now(timezone.utc).timestamp())),
                   'CFBundleShortVersionString': '0.2.0', 'LSMinimumSystemVersion': runtime_report['minimum_macos'] if runtime_report else '14.0',
                   'NSHighResolutionCapable': True,
+                  # AppKit otherwise swallows main-thread Objective-C exceptions after
+                  # unwinding Swift frames, leaving the app running without main-actor work.
+                  'NSApplicationCrashOnExceptions': True,
                   'NSPhotoLibraryUsageDescription': 'Mami imports full originals from your synced Photos library into independent, verified local copies. Mami never deletes from Photos or iCloud.'}, f)
 signing.sign(bundle,nested=nested)
 print(bundle)
