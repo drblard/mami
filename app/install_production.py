@@ -9,6 +9,16 @@ import subprocess
 import uuid
 
 
+RENAME_SWAP,RENAME_EXCL=2,4  # renamex_np flags
+
+
+def publish_new(source,target):
+    """Atomic no-clobber publication, including a destination-created race."""
+    library=ctypes.CDLL(None,use_errno=True)
+    if library.renamex_np(os.fsencode(source),os.fsencode(target),RENAME_EXCL):
+        raise OSError(ctypes.get_errno(),'Cannot publish application',str(target))
+
+
 def install(bundle,destination,receipt):
     bundle=bundle.resolve();destination=destination.absolute()
     if bundle==destination:raise ValueError('Use a new immutable source bundle')
@@ -22,12 +32,11 @@ def install(bundle,destination,receipt):
         if destination.name!='Mami.app':raise ValueError('Unexpected application destination')
         previous=str(destination.resolve())
         library=ctypes.CDLL(None,use_errno=True)
-        if library.renamex_np(os.fsencode(temporary),os.fsencode(destination),2):
+        if library.renamex_np(os.fsencode(temporary),os.fsencode(destination),RENAME_SWAP):
             raise OSError(ctypes.get_errno(),'Atomic application exchange failed')
         # Keep the displaced app/link as a recovery artifact; never edit either bundle.
     else:
-        from storage_migration import publish_directory
-        publish_directory(temporary,destination)
+        publish_new(temporary,destination)
     descriptor=os.open(destination.parent,os.O_RDONLY)
     try:os.fsync(descriptor)
     finally:os.close(descriptor)

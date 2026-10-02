@@ -1,14 +1,14 @@
 # People: face recognition, tagging and filtering
 
-Status: **installed; live backfill running** (2026-09-29). Build
-`prototype-20260929T204729959318Z` (revision `56ce062`) is installed at
-`~/Applications/Mami.app`; the face lane started automatically and is indexing the
-current library newest first. Measured facts are marked as such below.
+Status: **in use** since 2026-09-29; the current library is backfilled (6.6 h,
+16,805 assets, zero face failures, measured). Face index schema v4. Open items are
+in [REMAINING.md](REMAINING.md); the build-up log is in git history (`app/FACES.md`
+up to `2281c35`). Measured facts are marked as such below.
 Goal from the user: best achievable accuracy; slower indexing is acceptable. The
 current library should finish in days, and the planned ~2 TB of pre-2026 media
 must not take weeks. Personal, non-commercial use only.
 
-## Recommended design
+## Design
 
 ### Recognition model
 
@@ -170,90 +170,15 @@ requeues on quit (no attempt spent) and bounds failures at 3 attempts. A face
 that yields no heartbeat for 120 s fails its asset and restarts the worker.
 Progress appears as a third footer lane (“Faces”).
 
-## Checklist
+## Implemented
 
-- [x] Pinned models (archive + file SHA-256), verified atomic install via Settings'
-      model download; isolated benchmark environment and sample on `ludi`.
-- [x] Feasibility benchmark rerun (GPU units, checkpointed): final timings,
-      projected library duration and visual group-purity review (above).
-  - [x] First run: resolution comparison (above). It hung in an ANE prediction
-        at 430/440 files; results were in memory only. Rerun saves checkpoints.
-- [x] Generated face schema and queue; worker with pause, retry, stop/requeue,
-      upstream yielding and stall watchdog (Python tests, fake extractor).
-- [x] Personal people/label tables, exact scoped undo, history, revision bump
-      (native `--catalog-test` check written; Mac run pending).
-- [x] Grouping (mutual nearest neighbours, confirmed faces linked), suggestions
-      (closest confirmed face, margin), rejections honored, track propagation;
-      exact tests on synthetic identities and on the store.
-- [x] Correction actions: deselect then name, add/move to person, not-this-person,
-      confirm suggestions, rename, merge, remove person, multi-step undo.
-- [ ] Split a mixed group at a stricter threshold (deselect-and-name covers the
-      common case; dedicated split view not implemented yet).
-- [ ] Face boxes in the media preview; click a face to name it.
-- [x] People filter (media with all selected people) and People review sheet.
-- [x] Native build/tests on `ludi` (21 Swift / 191 Python, catalog + people store
-      check), isolated end-to-end `--people-test` on 36 real assets, signed release
-      with the ONNX-enabled runtime (`~/mami-lab/runtime-env-faces`, runtime tree
-      `prototype-20260929T202434970792Z/runtime-faces`).
-  - [x] The end-to-end check found and fixed: text-bound `HAVING` comparison (no
-        groups), read-only WAL reader failure after worker exit, CoreML writing to
-        the protocol descriptor, a dirty-fixture false failure (now guarded) and
-        blank controls over a transparent sheet background.
-- [x] Installed; personal-table digests unchanged; people tables added (empty).
-      Face model installed through the verified installer. Previous app retained
-      at `~/Applications/.Mami-install-eb63285b24a34e4195fa8a03b155f745.app`.
-- [x] Live backfill of the current library: 6.6 h, 16,805 assets, zero face failures.
-- [x] Grouping revision after user review (above), installed as
-      `prototype-20260930T052835652908Z`; personal digests unchanged.
-- [ ] Reported 2026-09-30 08:48: after naming four groups ~20–40 s apart the fourth
-      stayed listed and every group then showed 0 faces. Her labels (4 people, 328
-      confirmations) and the worker's recompute were correct on disk; the app kept the
-      worker alive ~20 min without acting on it (same symptom as the first night).
-  - [x] Fixed two real races: commands sent while an idle worker is retiring were
-        lost (now deferred and replayed); People reloads could discard each other
-        (now serialized with one follow-up pass).
-  - [x] A native `--people-sequence-test` replaying rapid naming passes, but it also
-        passes on the old code, so it does not reproduce the live failure.
-  - [ ] Bounded `~/Library/Caches/Mami/lane-events.log` records launches, exits,
-        dropped/unreadable messages and failed commands; install and read it after
-        the next occurrence. Installed `prototype-20260930T060015094166Z` after the
-        user quit Mami; personal digests unchanged. The stuck worker exited on quit,
-        which is inconclusive (input EOF stops even an untracked worker).
-- [x] Name/Rename fields focus automatically. The first attempt (SwiftUI focus state)
-      did not work inside popovers, as the user reported; replaced by an AppKit field
-      that becomes first responder, verified in a real `NSPopover` by the native
-      people check (focus and typed text). Installed `prototype-20260930T061801173802Z`;
-      personal digests unchanged.
-- [x] Review flow: naming opens the person with an explanation; To check /
-      Matched automatically (≥ 0.65) / Confirmed tabs; groups show outliers first.
-      Native checks assert the navigation and exact per-tab counts. Installed
-      `prototype-20260930T064702762470Z`: face index migrated to v3 and regrouped,
-      personal digests unchanged, worker launched and retired normally.
-- [x] "To check" grew after confirming (1,046 → 1,048, reproduced exactly by replay):
-      6 confirmed, 5 new candidates surfaced by the new examples (expected), and 3
-      frames of already-settled video tracks were pulled back into review (bug).
-      Frames of a confirmed or automatically matched track now stay accepted.
-- [x] Faster review (user: one click per face is tedious): Shift-click selects or
-      clears a range (anchor state, `RangeSelection` unit tests + native model check),
-      ⌘A selects all, ⌘↩ confirms, ⌘⌫ marks as not this person.
-- [x] Same moment (user approved): a user confirmation also accepts that person's
-      suggestions from the same video or photos within 60 s when they resemble the
-      confirmed face itself ≥ 0.5 (same-clip frames traced 0.51–0.61). Anchors are
-      only confirmations; a second face in one photo is excluded; rejections win.
-      Face index schema v4 (`moment` source). Live-copy dry run: Lucia's To check
-      1,048 → 789 (88 same-moment matches plus settled-track frames), 1.6 s recompute.
-      Person pages show what each edit changed once the worker has recomputed.
-- [ ] **Crash, 5 times on 2026-09-30** (09:13, 09:26, 10:25, 11:48, 14:18 local), all
-      `EXC_BREAKPOINT` in SwiftUI `ButtonAction` → `MainActor.assumeIsolated` on the
-      main thread, from a mouse click; no app frame and no message in the reports or
-      unified log. A click that crashes saves nothing (the check precedes the
-      action). Not reproduced by programmatic presses. The app now writes its own
-      fatal-error text to `~/Library/Caches/Mami/app-errors.log` (workers excluded)
-      so the next occurrence names the assertion.
-- [x] Edits made while no worker ran (e.g. the app quit or crashed right after an
-      edit) were not recomputed until the next edit. Grouping staleness now includes
-      a digest of people and labels, and each launch runs the face check once.
-- [ ] Observed once, not reproduced: the first-night face worker stayed alive ~8 h
-      after finishing and the footer kept showing early counts ("441"). A native
-      `--face-lifecycle-test` passes and the worker retired normally after reinstall.
-- [ ] User acceptance: name people, correct groups, People filter (physical use).
+- Generated face schema/queue; worker with pause, retry, stop/requeue, upstream
+  yielding and a stall watchdog; catalog mirrored only when the catalog changes.
+- Personal `people`/`face_labels`/`people_history` tables with exact scoped undo.
+- Grouping (mutual nearest neighbours), suggestions, rejections, track propagation
+  and same-moment matches (a confirmation accepts that person's resembling faces in
+  the same clip or photos within 60 s).
+- Review: To check / Matched automatically (≥ 0.65) / Confirmed tabs, outliers
+  first, Shift-click ranges, ⌘A, ⌘↩ confirm, ⌘⌫ not this person; edits save off the
+  main thread and each person page shows what an edit changed.
+- People filter (media with all selected people).

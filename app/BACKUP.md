@@ -17,8 +17,8 @@ Mami's byte verification confirms the local saved original, not its cloud upload
 ## Rebuildable / excluded data
 
 The installed application has a real home at `~/Applications/Mami.app` and its
-Python/media tools are bundled. After the recorded lab-unavailable acceptance,
-the whole `~/mami-lab/` may be excluded from backup.
+Python/media tools are bundled. `~/mami-lab/` holds only build snapshots and old
+experiment data and may be excluded from backup.
 
 Additional exclusions:
 
@@ -26,8 +26,8 @@ Additional exclusions:
 - `~/Library/Application Support/Mami/Models/`
 - `~/Library/Caches/Mami/`
 
-`~/Library/Application Support/Mami/Recovery/` contains a reinstallable, signed
-previous app, not the personal database. It is optional backup material.
+Previous installed bundles are kept as `~/Applications/.Mami-install-*.app`
+(see [RELEASE.md](RELEASE.md)); they are reinstallable apps, not personal data.
 
 Derived and Models remain persistent for offline use; they are marked excluded
 from Apple-managed backups. Backblaze's handling depends on its settings, so use
@@ -53,13 +53,10 @@ These are not runtime dependencies of Mami.
 5. Verify selections, roots and annotations reconnect by content identity. Rebuilt
    previews require originals to be accessible; already retained SSD previews work offline.
 
-The migration preserves the old tree for initial recovery. Once new user changes
-exist, its personal database is stale: never restore that old copy over current
-Personal data simply to undo an application update.
-
-For an application rollback, quit Mami and reinstall the self-contained recovery
-bundle recorded in `Personal/installation-final.json`; keep the current Personal
-folder in place. Do not switch back to a pre-migration lab-backed executable.
+Never restore an older personal database over current Personal data simply to
+undo an application update. For an application rollback, follow
+[RELEASE.md](RELEASE.md) and keep the current Personal folder in place. Do not switch
+back to a pre-migration (September 2026) lab-backed executable.
 
 Backblaze Computer Backup does not cover NAS/network shares or follow a symlink
 as a substitute for selecting its physical drive. If originals move to an external

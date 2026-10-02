@@ -1,8 +1,16 @@
-"""Single production worker-resource manifest used by deployment and packaging."""
+"""Production file manifests: workers bundled into the app, and Mac-side release tools."""
 WORKER_RESOURCES = (
     'app_paths.py', 'prepare_storage.py', 'download_models.py',
     'search_worker.py', 'packed_search_worker.py', 'search_logic.py', 'model_config.py', 'sampling.py', 'text_encoder.py', 'vector_selection.py', 'packed_vectors.py', 'vector_overlay.py', 'vector_sync.py',
     'index_worker.py', 'index_queue.py', 'index_store.py', 'preview_pipeline.py', 'preview_atlas.py', 'preview_retention.py', 'preview_cache_worker.py', 'index_backend.py', 'metadata.py',
     'import_media.py', 'media_deletion.py', 'gpu_activity.py', 'photos_batch.py', 'user_store.py', 'search_store.py', 'search_sync.py',
     'face_worker.py', 'face_engine.py', 'face_index.py', 'face_people.py', 'faces_store.py', 'face_assignments.py',
+)
+
+# Run on the Mac from a deployed source snapshot (build, package, check, install).
+RELEASE_TOOLS = (
+    'Package.swift', 'Package.resolved', 'Sources', 'Tests', 'verify.py', 'package.py', 'signing.py', 'bundle_runtime.py',
+    'bundle_resources.py', 'run_gui_command.py', 'install_production.py', 'check_mac_installation.py',
+    'check_idle_app.py', 'check_media_pipeline.py', 'check_dji_responsiveness.py', 'restore_catalog.py', 'prepare_text_encoder.py',
+    'personal_audit.py',
 )

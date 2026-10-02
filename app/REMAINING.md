@@ -1,148 +1,45 @@
-# Mami — completion tracker
+# Open work
 
-Updated: 2026-09-29. Checkboxes mean verified outcomes, not merely implemented code.
-Detailed measurements/history: [SCALING.md](SCALING.md).
-Code review: [CODE_REVIEW.md](CODE_REVIEW.md). Queue contract: [PIPELINE.md](PIPELINE.md).
+Only open items live here; finished work is in git history and the findings in
+[CODE_REVIEW.md](CODE_REVIEW.md). Keep failed checks and unexplained reports listed
+until they are understood.
 
-**Status: complete and deployed.**
-**Live app:** `prototype-20260929T090709977496Z`, launched through
-`~/Applications/Mami.app`. Production revision: `0d43d1f`.
-Final audit: `~/mami-lab/catalog/release-audit-20260929-final/` on `ludi`.
+## To confirm on the installed build
 
-## Follow-up requests — 2026-09-29 (open)
+- [ ] Delete flow by hand: select, trash button / ⌘⌫ / context menu, confirmation,
+  preview advancing to the next take; Put Back restoring an item.
+- [ ] Photos keep-alive: relaunch after Photos is quit (launch hidden and prompt
+  incremental passes are confirmed in the log, 2026-10-02).
+- [ ] Click latency feels immediate (user feedback; no remote UI automation).
+- [ ] People: user acceptance of naming, group correction and the People filter.
 
-**Installed 2026-09-29** at the user's request: `prototype-20260929T185222406970Z`
-(signed; binary SHA-256 prefix `29888a96a3ea0bde` matches the tested candidate).
-Previous app retained at `~/Applications/.Mami-install-b11a90e27c2a47e89b0d7377c1872f9d.app`;
-receipt `Personal/installation-20260929T185222.json`. Quit normally with no workers
-running (Mac locked, idle 44 min); relaunched with workers resuming.
-Validation: 21 Swift /
-156 Python tests pass on the Mac; full native UI test passes on a fresh copy of the
-clean 498-item fixture (`~/Library/Caches/MamiMigration/ui-fixes-20260929b/`).
-A first attempt reused `ui-latest-catalog`, which retains the previous run's
-synthetic grid-arrival row, and correctly failed the relocation check.
+## Unexplained reports (watch for recurrence)
 
-- [x] Drag grid media onto Selected clips (in-app drags only; appends without duplicates).
-  - [x] Physical drag onto the panel on the Mac (user confirmed it works).
-- [x] Second plain click on the only selected card deselects it; double-click and
-      keyboard focus keep the selection (`GridClickSelection` unit + native UI checks).
-- [x] Progress lanes compacted to one row each (footer ~70 pt, previously ~160 pt).
-- [x] Idle progress lanes collapse after `ProgressVisibility.idleHideDelay` (10 s);
-      active, paused and errored lanes stay visible for their controls.
-- [x] Install the signed candidate (user approved an immediate install).
-- [ ] Reported once after install: grid thumbnails vanished after All → Videos → Photos → Videos.
-      Not reproduced: all 400 sampled projection frame files existed; a native check driving the
-      real kind picker on copies of the live catalog/projection/personal store rendered thumbnails
-      at every step (`Mami --kind-switch-test`, `MamiMigration/kind-switch-20260929/`); the user
-      could not reproduce it after quitting/reopening. Unexplained; live workers and preview
-      maintenance were not part of the check.
-- [x] One DJI clip stuck at "needs attention": metadata-only changes (xattrs/hard link)
-      altered ctime during preview work, failing 3 attempts against a stale signature;
-      the later scan re-verified content but kept the failure. Scans now requeue such
-      failures (regression test), and failed items keep their progress row and Retry
-      visible when no worker is running.
-- [x] Routine library check (every 5 min, "AI search · Checking media") no longer
-      moves the screen: it shows only when requested (Scan now) or when it finds
-      work. Measured on a copy of the live catalog (17,422 files, warm cache):
-      21.6 s → 1.4 s per routine check (one preload read instead of two write
-      transactions per file); the ~140k-file artifact audit now runs hourly (4.9 s).
-- [x] Face detection, people tagging and a people filter: installed; backfill and acceptance in [FACES.md](FACES.md).
+- [ ] The 2026-09-30 click crashes (5×, `MainActor.assumeIsolated` in a button
+  action) are explained by R9 and fixed in `5891401`; keep this open until a week
+  passes without one. `~/Library/Caches/Mami/app-errors.log` names any new one.
+- [ ] Grid thumbnails vanished once after All → Videos → Photos → Videos
+  (2026-09-29). Not reproduced, including by `--kind-switch-test` on live copies.
+- [ ] After naming four face groups 20–40 s apart, the fourth stayed listed and all
+  groups showed 0 faces (2026-09-30); labels on disk were correct. Two races were
+  fixed; read `~/Library/Caches/Mami/lane-events.log` after any recurrence.
+- [ ] The first-night face worker stayed alive ~8 h after finishing (2026-09-29);
+  `--face-lifecycle-test` passes.
 
-## Verified foundations
+## Planned features
 
-- [x] Separate authoritative personal data and personal-only backups; verify migration/restore.
-- [x] Independent import visibility, preview and AI queues; fast real-DJI preview checks.
-- [x] Persistent projection and vector generations; real-process insert/replace/delete,
-      compaction, generation switch and restart checks on the earlier candidate.
-- [x] Native 50× browsing/search run: 723,700 files / 5.83M vectors, paged loading.
-- [x] Offline atlas fixture: 82 frames → 3 sheets, ~86% smaller; protected retirement.
-- [x] Native atlas crop rendering and stale-frame-reference recovery.
-- [x] Independent text/visual services; 256-query 50× test: 35.6 ms median / 58 ms p95.
-- [x] Projection v6 facet migration and failure/retry tests on Linux.
+- [ ] People: split a mixed face group at a stricter threshold (deselect-and-name
+  covers the common case today).
+- [ ] People: face boxes in the preview; click a face to name it.
+- [ ] Archiving to NFS/HDD: map content identities to multiple locations and stable
+  volume IDs; tell offline storage from missing files; keep thumbnails/search local;
+  move by copy, flush, fresh hash and durable receipt before removing the local
+  original; resumable moves; playback/CapCut export request offline archives. Missing
+  files or offline mounts must never clear Photos import history.
+- [ ] Reclaim preview sheets and frame artifacts of deleted media (their originals
+  are freed; generated leftovers are small).
 
-## 1. Finish correctness and recovery
+## Engineering
 
-- [x] Complete worker review: bounded request writes as well as replies, malformed
-      protocol, startup/query timeout, EOF, descendant cleanup and restart exhaustion.
-  - [x] Visual transport Linux checks: blocked writes, partial replies/EOF, invalid
-        JSON/shapes, size bounds, controllable startup deadline, exact restart budget.
-  - [x] Isolated process-group cleanup, including an encoder child retaining a pipe.
-  - [x] Combined queries keep transcript results after visual recovery is exhausted.
-  - [x] Repeat native/UI behavior with these fixes on the Mac: combined visual failure
-        preserves 60 transcript hits, and speech-only recovery passes.
-- [x] Complete atlas backfill review: queue priority, cancellation, publication
-      interruption, retries, restart and retained/orphan generation handling.
-  - [x] Yield before publication for stop, active editor or newly pending previews.
-  - [x] Publication rollback/retry preserves raw frames; directory entries are fsynced.
-  - [x] Worker EOF exits; exactly three failed attempts persist; repaired frames retry.
-  - [x] Frame inserts/updates/deletes invalidate stale completion/error/retirement state.
-  - [x] Retirement requires exact manifest/source/projection crop and timestamp parity.
-  - [x] Registered generations retain current + one superseded pack; stale projection
-        references pin old packs, and altered/unknown files are retained for review.
-        Publication-orphan cleanup/retry tests pass locally and on the Mac.
-- [x] Validate v6 counts/filtering/page boundaries and locked-grid arrivals natively.
-- [x] Repeat actual process lifecycle checks with the latest schema and split workers.
-- [x] Validate rapid typing/cancellation, visual failure with speech available,
-      off-page results and preview refresh in the native UI.
-  - [x] Verify the new per-query native metadata-cache bound.
-
-## 2. Close performance and quality gates
-
-- [x] Measure native v6 first-page/text readiness (goal <1 s): 76 ms at 50×.
-- [x] Measure cold startup after an authorized macOS disk-buffer purge (not reboot):
-      process launch → text 1.30 s; → visual 3.19 s, including diagnostic preflight.
-- [x] Run full-path 50× latency and exact-search distinct-file recall together,
-      including camera/date/shape/kind/favorite filters and narrow scopes.
-      Final 144-query pass: 100% recall in all six scopes, ~70 ms overall p95.
-      Earlier day-filter failure is retained in the evidence log; exact small-scope
-      scoring fixed it. Real-library comparison also reached 100% recall (~33 ms p95).
-- [x] Verify typing-to-layout through SwiftUI debounce/latest-query cancellation:
-      latest 196 ms at 50×; 113 ms on the offline single-clip fixture (warm caches).
-- [x] Resolve memory gate: [RELEASE.md](RELEASE.md) documents the format's memory floor
-      and the revised 3.5 GiB steady / 7 GiB transient budget on the 64 GiB Mac.
-- [x] Measure sustained search cache growth and generation-swap peaks: 4,096 queries,
-      35 ms median / 41 ms p95, ~3 GiB steady and 5.57 GiB visual-process peak.
-      Kernel counters replace intrusive vmmap sampling; earlier timing tails retained.
-- [x] Finish overlay/deletion boundary checks: tombstones are bounded, empty
-      replacement generations work, and pending maintenance is checked every 5 s.
-- [x] Validate import/indexing/editing contention in an agreed idle test window;
-      do not benchmark against her active editing session.
-      CapCut present + controlled DJI decode/import/previews/actual inference:
-      speech p95 <2 ms, combined p95 26–39 ms. No project-editing gestures were used.
-
-## 3. Finish SSD preview acceptance
-
-- [x] Verify first/middle/last packed scrub frames in the latest native offline run:
-      82 cached frames, unavailable original, three native samples decoded.
-- [x] Representative DJI backfill: six clips / 159 frames, 9.07 MB → 1.57 MB;
-      packing 0.65 s total, copied raw caches safely retired, originals untouched.
-- [x] Preview availability while AI paused: six real imports visible by 1.45 s;
-      first thumbnails ~1 s, full-range scrub 2.7–3.8 s. Restart/retry checks pass.
-- [x] Crop-aware legacy rollback passes search, offline packed scrubbing and stale
-      cache-reference reconnection (`081741386944Z-fallback`).
-
-## 4. Release
-
-- [x] Compare live-derived projection against current live results and state:
-      17,257 distinct assets match; exact ranking and personal-state parity pass.
-- [x] Complete [CODE_REVIEW.md](CODE_REVIEW.md) implementation/integration review.
-- [x] Build/sign a fresh immutable release; complete native catalog/UI/transport checks.
-- [x] Record migration/rollback steps and retained builds in [RELEASE.md](RELEASE.md).
-- [x] Activate only after acceptance; verify live workers, matched catalog/projection
-      and all personal tables (16,906 Photos verification rows, selection and roots).
-- [x] Record the deployed revision and close this tracker with evidence.
-
-## Final live checks
-
-Live backfill completed **4,467 packs** with no pending pack/retirement work in the
-live library, and **zero maintenance errors**. The final patch materializes pending/obsolete queues
-so maintenance does not repeatedly scan all completed assets/generations. Schema
-migration took 29 ms on the snapshot; indexed query plans and worker idle exit pass.
-The unchanged native executable was reused only after exact Swift-source checksums
-matched the fully tested build (14 Swift tests); the patch passes 143 Mac Python tests.
-
-Live combined searches returned 60 hits in **21–24 ms**, with sixteen returned
-preview images/crops checked. All personal-table digests stayed identical through
-both activations, including 16,906 Photos verification records, selection and roots.
-The stable application link is registered with Launch Services; the signed crop-aware
-fallback is retained. See [RELEASE.md](RELEASE.md) for recovery and measurement scope.
+- [ ] Blocking worker readers still run on Swift's cooperative thread pool; move to
+  dedicated threads if pool starvation appears (CODE_REVIEW R10).

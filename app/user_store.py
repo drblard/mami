@@ -6,6 +6,10 @@ import sqlite3
 import json
 from app_paths import personal_database
 
+# Every personal table; must match PersonalDataMigration.tables (Swift), checked by tests.
+PERSONAL_TABLES = ('annotations', 'annotation_history', 'imported_events', 'clip_selection', 'photos_import_history',
+                   'media_roots', 'people', 'face_labels', 'people_history', 'deleted_media')
+
 
 @contextlib.contextmanager
 def connection(catalog, write=False):

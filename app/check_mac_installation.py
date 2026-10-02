@@ -21,6 +21,7 @@ def main(args):
     isolated=dict(MAMI_CATALOG=str(args.output/'catalog-global'))
     run('catalog','--catalog-test',isolated)
     run('transport','--worker-pipe-test',isolated)
+    run('media-deletion','--media-deletion-test',isolated)
     fixture=args.output/'worker-support'
     run('workers','--worker-lifecycle-test',dict(MAMI_SUPPORT_ROOT=str(fixture),
         MAMI_MEDIA_ROOT=str(args.output/'originals'),MAMI_MODELS=str(args.support/'Models')),timeout=300)
