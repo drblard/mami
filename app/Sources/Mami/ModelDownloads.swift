@@ -24,12 +24,13 @@ import Darwin
             Task.detached { [weak self] in
                 var reader = LineReader(handle: output.fileHandleForReading)
                 do {
-                    while task.isRunning {
+                    while true {
                         do {
                             let line = try reader.readLine(timeout: .seconds(65))
                             let value = try JSONDecoder().decode(Progress.self, from: line)
                             await self?.update(value.status)
-                        } catch WorkerTransportError.timedOut { continue }
+                        } catch WorkerTransportError.timedOut where !task.isRunning { break }
+                        catch WorkerTransportError.timedOut { continue }
                     }
                 } catch WorkerTransportError.closed { }
                 catch { await self?.update("Model download failed: \(error.localizedDescription)") }

@@ -43,9 +43,27 @@ def catalog_rows(catalog):
             "SELECT j.asset,j.path,j.kind,j.signature,j.capture_time,json_extract(m.payload,'$.metadata.camera') "
             "FROM index_jobs j JOIN preview_jobs p ON p.asset=j.asset LEFT JOIN media m ON m.path=j.path "
             "WHERE p.state='complete'")]
-        upstream = any(db.execute(f'SELECT 1 FROM {view} LIMIT 1').fetchone()
-                       for view in ('mami_preview_work', 'mami_index_work') if view in present)
-        return rows, upstream
+        return rows, pending_work(db, present)
+
+
+def pending_work(db, present):
+    return any(db.execute(f'SELECT 1 FROM {view} LIMIT 1').fetchone()
+               for view in ('mami_preview_work', 'mami_index_work') if view in present)
+
+
+def upstream_pending(catalog):
+    with contextlib.closing(sqlite3.connect(Path(catalog).resolve().as_uri() + '?mode=ro', uri=True, timeout=10)) as db:
+        return pending_work(db, {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='view'")})
+
+
+def catalog_token(catalog):
+    """The catalog's change token, bumped by every catalog write; None if unavailable."""
+    try:
+        with contextlib.closing(sqlite3.connect(Path(catalog).resolve().as_uri() + '?mode=ro', uri=True, timeout=10)) as db:
+            row = db.execute('SELECT change_token FROM state WHERE id=1').fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
 
 
 def media_origin(path, camera):
@@ -78,6 +96,7 @@ class FaceQueue:
         self.extractor_factory, self.extractor = extractor_factory, None
         self.emit, self.pipeline = emit, pipeline
         self.stop, self.wake, self.paused, self.recompute = (threading.Event() for _ in range(4))
+        self.synced_token = None
         from gpu_activity import EditorActivity
         self.editor = EditorActivity(self.faces.parent / 'editor-activity.jsonl')
         self.phase, self.current, self.done, self.total = 'Checking faces', '', 0, 0
@@ -161,9 +180,18 @@ class FaceQueue:
                 return
 
     def sync(self):
+        """Mirror completed catalog assets into face jobs; returns whether upstream work is pending.
+
+        Reading every catalog row per face job made a backfill quadratic, so the
+        mirror runs only when the catalog has changed since the last one.
+        """
+        token = catalog_token(self.catalog)
+        if token is not None and token == self.synced_token:
+            return upstream_pending(self.catalog)
         rows, upstream = catalog_rows(self.catalog)
         with self.store.connection(self.faces) as db:
             self.store.sync_jobs(db, rows, self.pipeline)
+        self.synced_token = token
         return upstream
 
     def regroup(self):

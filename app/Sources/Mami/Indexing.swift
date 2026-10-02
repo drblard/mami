@@ -9,8 +9,12 @@ import MamiCore
 enum LaneLog {
     static let limit = 1024 * 1024
     static var file: URL { AppPaths().caches.appendingPathComponent("lane-events.log") }
+    private static let writer = DispatchQueue(label: "local.mami.lane-log", qos: .utility)
     static func record(_ lane: String, _ event: String) {
-        let line = "\(ISO8601DateFormatter().string(from: Date())) \(lane) \(event)\n"
+        let line = "\(Date().formatted(.iso8601)) \(lane) \(event)\n"
+        writer.async { append(line) }
+    }
+    private static func append(_ line: String) {
         let url = file
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int, size >= limit {

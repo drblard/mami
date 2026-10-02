@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -30,8 +31,14 @@ def check(command, timeout):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--python-only', action='store_true', help='Run Python checks on the Linux development machine')
+    parser.add_argument('--python-only', action='store_true',
+                        help='Linux development checks: Python, plus the platform-independent MamiCore Swift tests when Swift is installed')
     args = parser.parse_args()
     if not args.python_only:
         check(['swift', 'test', '-c', 'release', '--disable-xctest'], SWIFT_CHECK_TIMEOUT_SECONDS)
+    elif shutil.which('swift'):
+        # The Mami app target needs AppKit, so build only the test product; keep build output out of the tree.
+        scratch = str(Path.home() / '.cache' / 'mami-swift-build')
+        check(['swift', 'build', '--scratch-path', scratch, '--product', 'MamiPackageTests'], SWIFT_CHECK_TIMEOUT_SECONDS)
+        check(['swift', 'test', '--scratch-path', scratch, '--skip-build', '--disable-xctest'], SWIFT_CHECK_TIMEOUT_SECONDS)
     check([sys.executable, '-B', '-m', 'unittest', 'discover', '-s', '.', '-p', 'test_*.py'], PYTHON_CHECK_TIMEOUT_SECONDS)

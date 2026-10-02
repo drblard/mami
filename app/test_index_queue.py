@@ -349,8 +349,8 @@ q.work()
         with patch.object(q, 'db', side_effect=counted), patch.object(q, 'fingerprint', side_effect=AssertionError('rehashed')), \
              patch.object(q, 'repair_missing_artifacts', side_effect=AssertionError('audit ran within the hour')):
             q.scan()
-        # Preload, metadata-version check and a status count; per-file work would add 2 per file.
-        self.assertEqual(len(opened), 3, 'unchanged files must not open per-file transactions')
+        # Only the preload takes the writer lock (status counts read without it); per-file work would add 2 per file.
+        self.assertEqual(len(opened), 1, 'unchanged files must not open per-file transactions')
         q.last_artifact_audit -= 3600
         audited = []
         with patch.object(q, 'repair_missing_artifacts', side_effect=lambda: audited.append(1)):

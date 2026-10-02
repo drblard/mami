@@ -199,6 +199,7 @@ import OSLog
             if photos { task.arguments?.append("--direct-destination") }
             let policyDirectory = Catalog.standard.directory.appendingPathComponent("import-policies")
             try FileManager.default.createDirectory(at: policyDirectory, withIntermediateDirectories: true)
+            Self.removeStalePolicyFiles(in: policyDirectory)
             let policyFile = policyDirectory.appendingPathComponent(UUID().uuidString + ".json")
             try JSONEncoder().encode(policies).write(to: policyFile, options: .atomic)
             task.arguments?.append(contentsOf: ["--policy-file", policyFile.path])
@@ -225,9 +226,21 @@ import OSLog
                     await self?.receive(data)
                 }
                 task.waitUntilExit()
+                // The worker reads its policy/manifest file only at startup.
+                try? FileManager.default.removeItem(at: policyFile)
                 await self?.finished(task.terminationStatus)
             }
         } catch { self.error = error.localizedDescription }
+    }
+    /// Files left by imports before policy files were removed on exit.
+    static let stalePolicyAge: TimeInterval = 24 * 60 * 60
+    private static func removeStalePolicyFiles(in directory: URL, now: Date = Date()) {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for file in files where file.pathExtension == "json" {
+            guard let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  now.timeIntervalSince(modified) > stalePolicyAge else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
     }
     private func finished(_ status: Int32) {
         running = false

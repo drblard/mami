@@ -25,6 +25,12 @@ import OSLog
     }
     private var timer: Task<Void, Never>?
     private var cancellation: PhotosCancellation?
+    private let changes = PhotosChangeTracker()
+    private var observer: PhotosLibraryObserver?
+    private var changeScan: Task<Void, Never>?
+    static let passInterval: Duration = .seconds(300)
+    /// Collects a burst of library changes (an iCloud sync batch) into one pass.
+    static let changeDelay: Duration = .seconds(10)
 
     init() {
         // Persist the initial January 1 default; it is a start date, not a rolling year filter.
@@ -35,11 +41,24 @@ import OSLog
 
     func startAutomatic() {
         guard !CommandLine.arguments.contains("--ui-test"), timer == nil else { return }
+        changes.requireFullPass()
+        let observer = PhotosLibraryObserver { Task { @MainActor in PhotosImporting.shared.libraryChanged() } }
+        PHPhotoLibrary.shared().register(observer)
+        self.observer = observer
         timer = Task {
             while !Task.isCancelled {
-                if enabled { await scan() }
-                do { try await Task.sleep(for: .seconds(300)) } catch { return }
+                if enabled { PhotosSync.keepRunning(); await scan() }
+                do { try await Task.sleep(for: Self.passInterval) } catch { return }
             }
+        }
+    }
+    private func libraryChanged() {
+        guard enabled, changeScan == nil else { return }
+        changeScan = Task {
+            try? await Task.sleep(for: Self.changeDelay)
+            while running || Importing.shared.running { try? await Task.sleep(for: Self.changeDelay) }
+            changeScan = nil
+            await scan()
         }
     }
     func enable() {
@@ -73,17 +92,23 @@ import OSLog
             guard FileManager.default.isWritableFile(atPath: destination.path) else {
                 throw AppError.message("Choose an available, writable destination in Settings. Reconnect the destination drive if it is offline.")
             }
-            try Catalog.standard.registerMediaRoot(destination)
+            try await Task.detached(priority: .utility) { try Catalog.standard.registerMediaRoot(destination) }.value
             let incoming = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Incoming/.mami-photos")
             let pipeline = PhotosPipeline(cancellation: cancellation)
+            let changes = self.changes
             let producer = Task.detached(priority: .utility) { [self] in
                 do {
-                    let report = try PhotosExporter.export(to: incoming, range: range, cancellation: cancellation, ready: { url, size in
+                    let library = PHPhotoLibrary.shared()
+                    let token = PhotosChangeTracker.currentToken(of: library)
+                    let only = token == nil ? nil : changes.changedAssets(in: library, rangeStart: range.start)
+                    var report = try PhotosExporter.export(to: incoming, range: range, only: only, cancellation: cancellation, ready: { url, size in
                         try pipeline.enqueue(url, size: size)
                     }) { message in
                         Task { @MainActor in self.status = message }
                     }
                     pipeline.finish()
+                    report.changeToken = token
+                    report.fullPass = only == nil
                     return report
                 } catch {
                     pipeline.finish(error)
@@ -106,13 +131,16 @@ import OSLog
                 throw error
             }
             CatalogBackups.shared.schedule()
+            if report.failures.isEmpty, !report.needsAccess, let token = report.changeToken {
+                changes.record(token: token, rangeStart: range.start, fullPass: report.fullPass)
+            } else { changes.requireFullPass() }  // Retry failed resources by examining everything.
             needsPhotosAccess = report.needsAccess
             if report.needsAccess {
                 status = "Photos access required — library import is incomplete · \(transferred) staged originals saved this pass"
             } else if !report.failures.isEmpty {
                 status = "Photos import incomplete — \(report.failures.count) resources need attention · \(transferred) originals saved this pass"
             } else {
-                status = "Photos check complete · \(report.assets) matching library items checked · \(report.downloaded) resources fetched · \(transferred) originals saved this pass"
+                status = "Photos check complete · \(report.assets) \(report.fullPass ? "matching" : "changed") library items checked · \(report.downloaded) resources fetched · \(transferred) originals saved this pass"
             }
             if report.unsupported > 0 { status += " · \(report.unsupported) unsupported resources left in Photos" }
             if report.needsAccess { error = "Allow Photos access to continue fetching the remaining library. Completed transfers are saved." }
@@ -154,6 +182,8 @@ enum PhotosExporter {
         var downloaded = 0
         var unsupported = 0
         var failures: [String] = []
+        var fullPass = true
+        var changeToken: Data?
     }
     static func markImported(_ receipts: [URL], catalog: Catalog = .standard) throws {
         for url in receipts {
@@ -175,7 +205,8 @@ enum PhotosExporter {
         }) {}
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
-    static func export(to root: URL, range: DateInterval, cancellation: PhotosCancellation,
+    /// `only`: local identifiers to examine (changed assets), or nil for every asset in range.
+    static func export(to root: URL, range: DateInterval, only: Set<String>? = nil, cancellation: PhotosCancellation,
                        ready: @escaping @Sendable (URL, Int64) throws -> Void,
                        progress: @escaping @Sendable (String) -> Void) throws -> Report {
         let fm = FileManager.default
@@ -193,8 +224,11 @@ enum PhotosExporter {
         for (url, receipt) in saved {
             let key = url.deletingPathExtension().lastPathComponent
             if receipt.imported == true {
-                try Catalog.standard.recordPhotosImport(resource: key, digest: receipt.digest, size: receipt.size)
-                history.insert(key)
+                // Already-recorded receipts (nearly all of them) need no locked write per pass.
+                if !history.contains(key) {
+                    try Catalog.standard.recordPhotosImport(resource: key, digest: receipt.digest, size: receipt.size)
+                    history.insert(key)
+                }
                 if fm.isReadableFile(atPath: root.appendingPathComponent(receipt.file).path) { try ready(url, receipt.size) }
             }
             else if history.contains(key) {
@@ -218,7 +252,13 @@ enum PhotosExporter {
             report.failures.append("Photos access is unavailable for this app build. Re-enable Photos import in Settings to request access. Completed downloads can still be saved.")
             return report
         }
-        var assets = autoreleasepool { PHAsset.fetchAssets(with: fetchOptions(range: range)) }
+        func fetch() -> PHFetchResult<PHAsset> {
+            autoreleasepool {
+                only.map { PHAsset.fetchAssets(withLocalIdentifiers: Array($0), options: fetchOptions(range: range)) }
+                    ?? PHAsset.fetchAssets(with: fetchOptions(range: range))
+            }
+        }
+        var assets = fetch()
         report.assets = assets.count
         var index = 0
         var refreshed = Date()
@@ -226,7 +266,7 @@ enum PhotosExporter {
         while index < assets.count {
             try cancellation.check()
             if Date().timeIntervalSince(refreshed) >= 60 {
-                assets = autoreleasepool { PHAsset.fetchAssets(with: fetchOptions(range: range)) }
+                assets = fetch()
                 report.assets = assets.count
                 index = 0; refreshed = Date()
                 if assets.count == 0 { break }
@@ -296,12 +336,26 @@ enum PhotosExporter {
         let options = PHAssetResourceRequestOptions(); options.isNetworkAccessAllowed = true
         let finished = DispatchSemaphore(value: 0)
         let state = PhotosDownloadState(handle: handle, cancellation: cancellation)
-        PHAssetResourceManager.default().requestData(for: resource, options: options, dataReceivedHandler: { data in autoreleasepool { state.receive(data) } }, completionHandler: {
+        let manager = PHAssetResourceManager.default()
+        let request = manager.requestData(for: resource, options: options, dataReceivedHandler: { data in autoreleasepool { state.receive(data) } }, completionHandler: {
             state.complete($0); finished.signal()
         })
-        finished.wait()
+        // Stop promptly when import is turned off, and give up on an iCloud fetch that stops delivering data.
+        while finished.wait(timeout: .now() + downloadPollInterval) == .timedOut {
+            if state.stopped || state.stalled(after: downloadStallTimeout) {
+                manager.cancelDataRequest(request)
+                if finished.wait(timeout: .now() + downloadCancelGrace) == .timedOut {
+                    throw AppError.message("Photos did not stop the download of \(resource.originalFilename)")
+                }
+                guard state.stopped else { throw AppError.message("Photos stopped delivering \(resource.originalFilename); it is retried on the next pass.") }
+                return try state.result()  // Throws the import-stopped error.
+            }
+        }
         return try state.result()
     }
+    static let downloadPollInterval: DispatchTimeInterval = .seconds(1)
+    static let downloadStallTimeout: TimeInterval = 300
+    static let downloadCancelGrace: DispatchTimeInterval = .seconds(30)
 }
 
 private final class PhotosDownloadState: @unchecked Sendable {
@@ -310,12 +364,19 @@ private final class PhotosDownloadState: @unchecked Sendable {
     private let cancellation: PhotosCancellation
     private var hash = SHA256()
     private var error: Error?
+    private var lastProgress = Date()
     init(handle: FileHandle, cancellation: PhotosCancellation) { self.handle = handle; self.cancellation = cancellation }
     func receive(_ data: Data) {
         lock.lock(); defer { lock.unlock() }
         guard error == nil else { return }
+        lastProgress = Date()
         do { try cancellation.check(); try handle.write(contentsOf: data); hash.update(data: data) }
         catch { self.error = error }
+    }
+    var stopped: Bool { (try? cancellation.check()) == nil }
+    func stalled(after seconds: TimeInterval) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastProgress) > seconds
     }
     func complete(_ failure: Error?) { lock.lock(); defer { lock.unlock() }; if let failure { error = failure } }
     func result() throws -> String {

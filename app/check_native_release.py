@@ -30,7 +30,8 @@ def main(args):
         results.append(dict(name=name,wall_seconds=time.monotonic()-started,result=report))
         print(json.dumps(results[-1]),flush=True)
     environment=dict(base_environment,MAMI_CATALOG=str(args.output/'catalog-global'))
-    for name,arguments in [('catalog',['--catalog-test',str(args.output/'catalog')]),('worker-pipe',['--worker-pipe-test'])]:
+    for name,arguments in [('catalog',['--catalog-test',str(args.output/'catalog')]),('worker-pipe',['--worker-pipe-test']),
+                           ('media-deletion',['--media-deletion-test',str(args.output/'media-deletion')])]:
         with (args.output/(name+'.log')).open('x') as log:
             process=subprocess.run([str(executable),*arguments],env=environment,stdout=log,stderr=log,timeout=120)
         if process.returncode:raise RuntimeError(name+' failed; see retained log')

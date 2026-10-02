@@ -37,6 +37,15 @@ def connection(database):
                 yield db
 
 
+@contextlib.contextmanager
+def readonly(database, timeout=5):
+    """A consistent read without the writer lock: SQLite's shared lock suffices, and
+    the app's personal-data writes must not queue behind worker status reads."""
+    with contextlib.closing(sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True, timeout=timeout)) as db:
+        db.row_factory = sqlite3.Row
+        yield db
+
+
 def ensure_schema(db):
     present = db.execute("SELECT 1 FROM sqlite_master WHERE name='index_schema'").fetchone()
     version = db.execute('SELECT version FROM index_schema').fetchone()[0] if present else 0

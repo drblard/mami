@@ -6,10 +6,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import face_worker
 
 try:
     import numpy as np
-    import face_worker
     import faces_store
 except ImportError:
     np = None
@@ -89,6 +91,23 @@ class FaceWorkerTests(unittest.TestCase):
         with faces_store.connection(self.faces) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM face_groups').fetchone()[0], 3)
             self.assertFalse(faces_store.grouping_stale(db, faces_store.labels_token({}, [])))
+
+    def test_catalog_is_mirrored_once_per_catalog_change(self):
+        reads, original = [], face_worker.catalog_rows
+        def counted(catalog):
+            reads.append(catalog)
+            return original(catalog)
+        extractor = FakeExtractor()
+        queue = self.queue(extractor)
+        with patch.object(face_worker, 'catalog_rows', side_effect=counted):
+            queue.run(once=True)
+            self.assertEqual((extractor.calls, len(reads)), (['c', 'b', 'a'], 1))
+            with contextlib.closing(sqlite3.connect(self.catalog)) as db, db:
+                db.execute("INSERT INTO index_jobs VALUES('d','/m/d.jpg','image','s','complete',9)")
+                db.execute("INSERT INTO preview_jobs VALUES('d','complete')")
+                db.execute("UPDATE state SET change_token='after-d'")
+            queue.run(once=True)
+        self.assertEqual((extractor.calls[-1], len(reads)), ('d', 2))
 
     def test_waits_for_previews_and_ai_search_without_extracting(self):
         with contextlib.closing(sqlite3.connect(self.catalog)) as db, db:

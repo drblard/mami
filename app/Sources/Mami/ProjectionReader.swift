@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 /// Read-only paged access to generated search data; no original-media I/O.
-struct ProjectionReader: Sendable {
+struct ProjectionReader: Sendable, Equatable {
     static let schemaVersion = "6"
     static let pageSize = 100
     let database: URL

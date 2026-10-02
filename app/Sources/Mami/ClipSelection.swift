@@ -50,16 +50,29 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
         }
         // URLs and cached frames are derived. Reconnection should not create a
         // personal-data revision or backup unless the user edits the selection.
-        items = updated
+        if updated != items { items = updated }
     }
+    /// Shows the change at once and saves off the main thread, in order; a failed
+    /// save is undone and reported.
     func save(_ updated: [SelectedClip]) {
         guard ready, updated != items else { return }
-        do {
-            try catalog.saveSelectedClips(updated)
-            items = updated; error = nil
-            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule(urgent: true) }
-        } catch { self.error = "Could not save selection: \(error.localizedDescription)" }
+        let previous = items
+        items = updated; error = nil
+        let catalog = catalog, prior = writes
+        writes = Task {
+            await prior?.value
+            do {
+                try await Task.detached(priority: .userInitiated) { try catalog.saveSelectedClips(updated) }.value
+                if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule(urgent: true) }
+            } catch {
+                if items == updated { items = previous }
+                self.error = "Could not save selection: \(error.localizedDescription)"
+            }
+        }
     }
+    private var writes: Task<Void, Never>?
+    /// Waits for queued saves (integration checks read the store afterwards).
+    func flush() async { await writes?.value }
     func toggle(_ media: Media, sample: Sample? = nil) {
         if contains(media) { remove(media.assetID) }
         else { save(items + [SelectedClip(media, sample: sample)]) }

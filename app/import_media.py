@@ -22,6 +22,7 @@ import uuid
 
 from index_queue import EXTENSIONS, Queue, Stopped
 from index_store import register_verified_import
+from media_deletion import deleted
 
 CHUNK = 4 * 1024 * 1024
 
@@ -254,6 +255,8 @@ class Importer:
                 db.execute('INSERT INTO files VALUES(?,?,?,?,?,?,?,NULL)', (*key, digest, date, date_source, str(part)))
                 row = db.execute('SELECT * FROM files WHERE source=? AND signature=? AND device=?', key).fetchone()
         digest = row['digest']
+        if self.catalog and Path(self.catalog).is_file() and deleted(self.catalog, digest):
+            return 'deleted'  # Moved to the Trash in Mami; keep the card copy, do not import it again.
         for candidate in self.candidates(digest):
             self.phase = 'Verifying existing copy'
             if candidate.is_file() and self.digest(candidate) == digest:
@@ -368,9 +371,12 @@ class Importer:
                     if self.source.stat().st_dev != source_device:
                         raise RuntimeError('Camera disconnected or changed; reconnect and retry to resume')
                     result = self.copy_one(source)
-                    if result == 'copied': self.copied += 1
-                    else: self.duplicates += 1
-                    if self.policy(source) == 'remove': self.remove_verified(source)
+                    if result == 'deleted':
+                        self.skipped += 1
+                    else:
+                        if result == 'copied': self.copied += 1
+                        else: self.duplicates += 1
+                        if self.policy(source) == 'remove': self.remove_verified(source)
                 except Stopped:
                     raise
                 except Exception as error:

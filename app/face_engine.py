@@ -4,10 +4,11 @@ Pure array functions are separate from model sessions so decoding, alignment and
 quality measures are testable without model files.
 """
 from dataclasses import dataclass
-import hashlib
 from pathlib import Path
 
 import numpy as np
+
+from model_config import verify_file
 
 DETECTION_SCORE_THRESHOLD = 0.5
 DETECTION_NMS_THRESHOLD = 0.4
@@ -184,15 +185,6 @@ def frontalness(keypoints):
 def eye_distance(keypoints):
     points = np.asarray(keypoints, dtype=np.float64)
     return float(np.hypot(*(points[1] - points[0])))
-
-
-def verify_file(path, digest):
-    hasher = hashlib.sha256()
-    with Path(path).open('rb') as handle:
-        for block in iter(lambda: handle.read(1 << 20), b''):
-            hasher.update(block)
-    if hasher.hexdigest() != digest:
-        raise ValueError(f'Model file checksum mismatch: {path}')
 
 
 # GPU execution: as fast as the Neural Engine here (48 ms / 5 ms), and an ANE

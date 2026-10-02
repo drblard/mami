@@ -521,6 +521,16 @@ successful verified recovery to a new destination.
 
 ## Cable-free Photos imports
 
+**iCloud sync latency (2026-10-01):** PhotoKit reads only what macOS has already
+synced into the System Photo Library. With Photos closed, that sync ran about two
+hours behind the phone (IMG_0588–0610 arrived at 17:55, seconds after Photos was
+opened; Mami imported them on its next pass). There is no API to request a sync, so
+while automatic import is on, `PhotosSync` launches Photos hidden and without
+activation before each 5-minute pass if it is not running, including after a quit.
+Passes use the library's persistent change history (`PhotosChanges.swift`) and also
+start 10 s after a library change. **Pending:** confirm hidden launch, relaunch after
+a quit and prompt sync on the installed build.
+
 ### 2026-09-27 memory incident
 
 The overnight native process (PID 16145) reached a confirmed **95.6 GiB physical
@@ -705,6 +715,32 @@ offline (or explicitly restore a local working copy). Neither missing-file detec
 nor an offline mount should clear Photos import history; re-import needs an explicit
 repair action. Until this exists, manual moves do not automatically reconnect the
 browser to an arbitrary archive path.
+
+## Deleting media (2026-10-01)
+
+Select one or more cards (click, ⌘-click), then use the **trash button** that
+appears in the top bar, **⌘⌫**, or **Move to Trash** in a card's context menu.
+Preview has the same button and shortcut and moves on to the next item, for
+choosing between takes. One confirmation follows. The original moves to the macOS
+Trash (`MediaDeletion.swift`), then `media_deletion.py` records the deletion in
+`user.sqlite` (`deleted_media`) and removes the generated catalog/index/preview
+state; search, vectors, preview packs and faces follow through their existing
+change triggers and sync. If recording fails, the originals are moved back.
+
+- **Undo:** Finder's Put Back returns the original to its folder and the next scan
+  indexes it again. A deleted item stays hidden until relaunch.
+- **No re-import:** camera/card and Photos imports skip deleted content and keep the
+  card copy. Index publication requires a live job, so work in flight cannot
+  restore a deleted row.
+- **Disk space:** the hidden `.mami-imports` staging hard link of the same file is
+  unlinked, so emptying the Trash frees the space. Superseded preview sheets and
+  frame artifacts of deleted media are not yet reclaimed.
+- Files already deleted in Finder can be removed from Mami the same way; only the
+  records are removed.
+- Validation: 9 Python tests (put-back, failed-deletion and Photos-receipt cases
+  included); `--media-deletion-test` passes on the signed bundle on `ludi` (real
+  Trash, rejected-deletion restore, fixture removed from the Trash afterwards).
+  **Pending:** install and a manual UI check.
 
 ## Selected clips island
 

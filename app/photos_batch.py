@@ -47,6 +47,18 @@ class PhotosBatch:
             except FileNotFoundError:
                 pass
         result = 'duplicate' if completed else imp.copy_one(source)
+        if result == 'deleted':
+            # Moved to the Trash in Mami. Photos still holds the original, so the
+            # staging download is released and the resource is not offered again.
+            with self.catalog() as db:
+                db.execute('INSERT OR IGNORE INTO photos_import_history VALUES(?,?,?)',
+                           (key, receipt['digest'], str(receipt['size'])))
+            receipt['imported'] = True
+            receipt['deleted'] = True
+            self.write_receipt(receipt_path, receipt)
+            source.unlink()
+            imp.skipped += 1
+            return
         signature = Queue.signature(source)
         with imp.db() as db:
             row = db.execute('SELECT * FROM files WHERE source=? AND signature=? AND device=?',
@@ -66,15 +78,7 @@ class PhotosBatch:
                        (key, receipt['digest'], str(receipt['size'])))
         receipt['imported'] = True
         receipt['destination'] = str(target)
-        temporary = receipt_path.with_suffix('.updating')
-        with temporary.open('w') as saved:
-            json.dump(receipt, saved)
-            saved.flush()
-            sync_original(saved.fileno())
-        os.replace(temporary, receipt_path)
-        fd = os.open(receipt_path.parent, os.O_RDONLY)
-        try: os.fsync(fd)
-        finally: os.close(fd)
+        self.write_receipt(receipt_path, receipt)
         imp.remove_verified(source)
         part = Path(row['part'])
         if part.is_file() and not part.is_symlink() and os.path.samefile(part, target):
@@ -84,6 +88,18 @@ class PhotosBatch:
         imp.publish_catalog(source, target, row)
         if result == 'copied': imp.copied += 1
         else: imp.duplicates += 1
+
+    @staticmethod
+    def write_receipt(receipt_path, receipt):
+        temporary = receipt_path.with_suffix('.updating')
+        with temporary.open('w') as saved:
+            json.dump(receipt, saved)
+            saved.flush()
+            sync_original(saved.fileno())
+        os.replace(temporary, receipt_path)
+        fd = os.open(receipt_path.parent, os.O_RDONLY)
+        try: os.fsync(fd)
+        finally: os.close(fd)
 
     @contextlib.contextmanager
     def catalog(self):

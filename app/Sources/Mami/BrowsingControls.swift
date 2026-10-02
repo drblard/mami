@@ -206,6 +206,7 @@ struct ShortcutHelp: View {
         ("←  →", "Previous or next media"),
         ("↑  ↓", "Move by a row in the grid"),
         ("B", "Add/remove highlighted media in Selected clips"),
+        ("⌘ ⌫", "Move highlighted or previewed media to the Trash"),
         ("M", "Mute/unmute video in preview"),
         ("Esc", "Close preview or popup"),
         ("⌘ hover", "Invert thumbnail scrubbing scope"),

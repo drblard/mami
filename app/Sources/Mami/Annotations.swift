@@ -65,16 +65,30 @@ enum ContentIdentity {
         } catch { self.error = "Could not load saved tags: \(error.localizedDescription)" }
     }
 
+    /// Shows the edit at once, then saves off the main thread, in order: the catalog
+    /// lock can be held by a worker transaction. A failed save is undone and reported.
     func save(_ value: Annotation, for media: Media) {
         guard ready else { error = "Saved metadata is still loading."; return }
-        guard values[media.assetID] != value else { return }
-        do {
-            try catalog.save(value, asset: media.assetID)
-            values[media.assetID] = value
-            error = nil
-            if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule(urgent: true) }
-        } catch { self.error = "Could not save metadata: \(error.localizedDescription)" }
+        let asset = media.assetID
+        guard values[asset] != value else { return }
+        let previous = values[asset]
+        values[asset] = value
+        error = nil
+        let catalog = catalog, prior = writes
+        writes = Task {
+            await prior?.value
+            do {
+                try await Task.detached(priority: .userInitiated) { try catalog.save(value, asset: asset) }.value
+                if catalog.directory == Catalog.standard.directory { CatalogBackups.shared.schedule(urgent: true) }
+            } catch {
+                if values[asset] == value { values[asset] = previous }
+                self.error = "Could not save metadata: \(error.localizedDescription)"
+            }
+        }
     }
+    private var writes: Task<Void, Never>?
+    /// Waits for queued saves (integration checks read the store afterwards).
+    func flush() async { await writes?.value }
 
     func toggleFavorite(_ media: Media) {
         var value = value(for: media)

@@ -15,6 +15,8 @@ import Darwin
     private var failures: [String: String] = [:]
     private static let shutdownGrace: Duration = .seconds(2)
     private static let exitGrace: Duration = .seconds(5)
+    /// Idle limit per read; a worker that has exited and stays silent this long is done.
+    nonisolated private static let readTimeout: Duration = .seconds(65)
     private var configuration: Configuration?
     private var checking = false
     private var lastVectorAttempt = Date.distantPast
@@ -98,11 +100,13 @@ import Darwin
         Task.detached { [weak self] in
             var reader = LineReader(handle: output.fileHandleForReading, maximumLineBytes: 1024 * 1024)
             do {
-                while process.isRunning {
+                // Drain to EOF: the final lines (errors, "changed") often follow the exit.
+                while true {
                     do {
-                        let line = try reader.readLine(timeout: .seconds(65))
+                        let line = try reader.readLine(timeout: Self.readTimeout)
                         await self?.receive(line, from: name)
-                    } catch WorkerTransportError.timedOut { continue }
+                    } catch WorkerTransportError.timedOut where !process.isRunning { break }
+                    catch WorkerTransportError.timedOut { continue }
                 }
             } catch WorkerTransportError.closed { }
             catch { await self?.report(error, worker: name) }

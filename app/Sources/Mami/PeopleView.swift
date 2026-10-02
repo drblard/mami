@@ -108,22 +108,29 @@ import MamiCore
         if people.isEmpty { filterAssets = [] } else { Task { await reload() } }
     }
 
-    private func perform(_ description: String, _ changes: [PeopleChange], hiding: Set<Int64> = []) {
-        var undo: [PeopleSnapshot] = []
-        do {
-            for change in changes { undo.append(try catalog.apply(change)) }
-        } catch {
-            // Keep partial multi-step edits undoable rather than leaving them hidden.
-            if !undo.isEmpty { edits.append(Edit(description: description, undo: undo)) }
-            self.error = "Could not save people changes: \(error.localizedDescription)"
-            changed()
-            return
-        }
-        edits.append(Edit(description: description, undo: undo))
+    /// Reviewed faces leave the view at once; the edit is saved off the main thread,
+    /// in order with other edits, and `then` runs once it is saved.
+    private func perform(_ description: String, _ changes: [PeopleChange], hiding: Set<Int64> = [], then: @escaping () -> Void = {}) {
         faces.removeAll { hiding.contains($0.id) }
         selected.subtract(hiding)
-        error = nil
-        changed()
+        let catalog = catalog
+        write {
+            let (undo, failure) = await Task.detached(priority: .userInitiated) { () -> ([PeopleSnapshot], Error?) in
+                var undo: [PeopleSnapshot] = []
+                do { for change in changes { undo.append(try catalog.apply(change)) } } catch { return (undo, error) }
+                return (undo, nil)
+            }.value
+            // Keep partial multi-step edits undoable rather than leaving them hidden.
+            if !undo.isEmpty { self.edits.append(Edit(description: description, undo: undo)) }
+            if let failure { self.error = "Could not save people changes: \(failure.localizedDescription)" }
+            else { self.error = nil; then() }
+            self.changed()
+        }
+    }
+    private var writes: Task<Void, Never>?
+    private func write(_ body: @escaping @MainActor () async -> Void) {
+        let prior = writes
+        writes = Task { await prior?.value; await body() }
     }
 
     private func changed() {
@@ -149,16 +156,18 @@ import MamiCore
         }
         let person = newPerson(trimmed)
         let fromGroup = isGroupFocused
-        perform("Name \(ids.count) faces “\(trimmed)”", [.create(person), .confirm(refs(ids), as: person.id)], hiding: hidden(ids, keptFor: person.id))
-        if fromGroup { showNamed(person.id, faces: ids.count) }
+        perform("Name \(ids.count) faces “\(trimmed)”", [.create(person), .confirm(refs(ids), as: person.id)], hiding: hidden(ids, keptFor: person.id)) {
+            if fromGroup { self.showNamed(person.id, faces: ids.count) }
+        }
     }
 
     func assign(_ ids: Set<Int64>, to person: String) {
         guard !ids.isEmpty else { return }
         let fromGroup = isGroupFocused
         if !fromGroup { noteChange(person, "Confirmed \(ids.count)") }
-        perform("Add \(ids.count) faces to \(name(of: person))", [.confirm(refs(ids), as: person)], hiding: hidden(ids, keptFor: person))
-        if fromGroup { showNamed(person, faces: ids.count) }
+        perform("Add \(ids.count) faces to \(name(of: person))", [.confirm(refs(ids), as: person)], hiding: hidden(ids, keptFor: person)) {
+            if fromGroup { self.showNamed(person, faces: ids.count) }
+        }
     }
 
     private func noteChange(_ person: String, _ action: String) {
@@ -189,23 +198,23 @@ import MamiCore
     func merge(_ source: String, into target: String) {
         guard source != target else { return }
         let description = "Merge \(name(of: source)) into \(name(of: target))"
-        perform(description, [.merge(source, into: target)])
-        focus = .person(target)
-        Task { await reload() }
+        perform(description, [.merge(source, into: target)]) { self.focus = .person(target) }
     }
 
     func delete(_ person: String) {
-        perform("Remove \(name(of: person))", [.delete(person)])
-        focus = nil; faces = []
+        perform("Remove \(name(of: person))", [.delete(person)]) { self.focus = nil; self.faces = [] }
     }
 
     func undo() {
         guard let edit = edits.popLast() else { return }
-        do {
-            for snapshot in edit.undo.reversed() { try catalog.restore(snapshot) }
-            error = nil
-        } catch { self.error = "Could not undo: \(error.localizedDescription)" }
-        changed()
+        let catalog = catalog
+        write {
+            do {
+                try await Task.detached(priority: .userInitiated) { for snapshot in edit.undo.reversed() { try catalog.restore(snapshot) } }.value
+                self.error = nil
+            } catch { self.error = "Could not undo: \(error.localizedDescription)" }
+            self.changed()
+        }
     }
 
     /// Faces leave the current view unless it is the person they now belong to.

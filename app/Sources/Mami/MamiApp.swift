@@ -128,24 +128,37 @@ func timeLabel(_ seconds: Double?) -> String {
     return String(format: "%02d:%02d", value / 60, value % 60)
 }
 
-struct MediaCard: View {
+/// Inputs are values so SwiftUI can skip unchanged cards (`.equatable()`); a card
+/// observing the shared annotation/selection models redrew on every change anywhere.
+struct MediaCard: View, Equatable {
     let media: Media
     var projection: ProjectionReader? = nil
     let nearby: Bool
-    @ObservedObject var annotations: Annotations
-    @ObservedObject var clips: ClipSelection
+    var annotation = Annotation()
+    var annotationsReady = true
+    var inClips = false
+    var clipsReady = true
     var focused = false
+    var dragEnabled = true
+    // Actions read current state when invoked, so they are not compared.
+    var toggleFavorite: () -> Void = {}
+    var toggleClip: (Sample) -> Void = { _ in }
     var select: () -> Void = {}
     var dragItems: () -> [Media] = { [] }
-    var dragEnabled = true
     let open: (Media, Double?) -> Void
+    var trash: (() -> Void)? = nil
+
+    static func == (a: MediaCard, b: MediaCard) -> Bool {
+        a.media == b.media && a.projection == b.projection && a.nearby == b.nearby && a.annotation == b.annotation
+            && a.annotationsReady == b.annotationsReady && a.inClips == b.inClips && a.clipsReady == b.clipsReady
+            && a.focused == b.focused && a.dragEnabled == b.dragEnabled && (a.trash == nil) == (b.trash == nil)
+    }
     @ViewState private var hovered: Int?
     @ViewState private var hoverFraction: CGFloat?
     @ViewState private var image: NSImage?
     @ViewState private var unavailable = false
     @ViewState private var pointerInside = false
     @ViewState private var loadedFrames: [Sample]?
-    private var annotation: Annotation { annotations.value(for: media) }
     private var subtitle: String {
         let labels = ([annotation.place].filter { !$0.isEmpty } + annotation.tags.map { "#" + $0 })
         if !labels.isEmpty { return labels.joined(separator: " · ") }
@@ -185,21 +198,21 @@ struct MediaCard: View {
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    Button { annotations.toggleFavorite(media) } label: {
+                    Button(action: toggleFavorite) {
                         Image(systemName: annotation.favorite ? "heart.fill" : "heart")
                             .foregroundStyle(annotation.favorite ? Color.pink : Color.white)
                             .padding(7).background(.black.opacity(0.6), in: Circle())
-                    }.buttonStyle(.plain).padding(7).disabled(!annotations.ready)
+                    }.buttonStyle(.plain).padding(7).disabled(!annotationsReady)
                         .help(annotation.favorite ? "Remove from favorites" : "Add to favorites")
                 }
                 .overlay(alignment: .topLeading) {
-                    Button { clips.toggle(media, sample: sample) } label: {
-                        Image(systemName: clips.contains(media) ? "checkmark.circle.fill" : "plus.circle.fill")
-                            .foregroundStyle(clips.contains(media) ? Color.accentColor : Color.white)
+                    Button { toggleClip(sample) } label: {
+                        Image(systemName: inClips ? "checkmark.circle.fill" : "plus.circle.fill")
+                            .foregroundStyle(inClips ? Color.accentColor : Color.white)
                             .padding(7).background(.black.opacity(0.6), in: Circle())
-                    }.buttonStyle(.plain).padding(7).disabled(!clips.ready)
-                        .help(clips.contains(media) ? "Remove from selected clips" : "Add to selected clips")
-                        .accessibilityLabel(clips.contains(media) ? "Remove from selected clips" : "Add to selected clips")
+                    }.buttonStyle(.plain).padding(7).disabled(!clipsReady)
+                        .help(inClips ? "Remove from selected clips" : "Add to selected clips")
+                        .accessibilityLabel(inClips ? "Remove from selected clips" : "Add to selected clips")
                 }
                 .contentShape(Rectangle())
                 .onContinuousHover { phase in
@@ -271,10 +284,18 @@ struct MediaCard: View {
         .contextMenu {
             Button("Play from match") { open(media, media.match.timestamp) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([media.url]) }
+            if let trash {
+                Divider()
+                Button("Move to Trash", role: .destructive, action: trash)
+            }
         }
         .help("Click to select · ⌘ click to add/remove · Drag originals · Space or double-click to preview")
     }
 }
+
+/// The displayed order for actions that run later (drags); not observed, so
+/// updating it while rendering causes no further updates.
+final class GridItems { var items: [Media] = [] }
 
 struct Selection: Identifiable {
     let id = UUID()
@@ -310,6 +331,7 @@ struct Playback: View {
     @ObservedObject var clips: ClipSelection
     var close: () -> Void = {}
     var position: String = ""
+    var trash: (() -> Void)? = nil
     @StateObject private var transport = PlaybackTransport()
     @ViewState private var photo: NSImage?
     @ViewState private var failure: String?
@@ -385,6 +407,10 @@ struct Playback: View {
                 Button(clips.contains(selection.media) ? "Remove from selection" : "Add to selection") { clips.toggle(selection.media) }
                     .disabled(!clips.ready).keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([selection.media.url]) }
+                if let trash {
+                    Button(role: .destructive, action: trash) { Image(systemName: "trash") }
+                        .help("Move to Trash (⌘⌫)").accessibilityLabel("Move to Trash")
+                }
                 Button("Done", action: close).keyboardShortcut(.cancelAction)
             }
             if let failure { ContentUnavailableView("Media unavailable", systemImage: "externaldrive.badge.exclamationmark", description: Text(failure)) }
@@ -456,29 +482,31 @@ struct LibraryView: View {
     @ViewState private var selectedLabels = Set<String>()
     @ViewState private var selectedPeople = Set<String>()
     @ViewState private var showPeople = false
-    @StateObject private var people = PeopleLibrary()
+    @StateObject private var people: PeopleLibrary
     @ViewState private var showImport = false
     @ViewState private var showDateRange = false
     @ViewState private var showShortcuts = false
-    private let importing = Importing.shared
-    @StateObject private var annotations = Annotations()
+    @StateObject private var annotations: Annotations
     private let backups = CatalogBackups.shared
-    private let indexing = Indexing.shared
-    @ObservedObject private var catalogUpdates = CatalogUpdates.shared
     @ViewState private var scrollTarget: String?
+    @ViewState private var grid = GridItems()
+    @ViewState private var pendingTrash: [Media]?
+    @ViewState private var trashing = false
+    @ViewState private var trashError: String?
     @FocusState private var searchFocused: Bool
     private var visibleItems: [Media] {
+        let annotated = favoritesOnly || !selectedLabels.isEmpty
         let filtered = library.items.filter {
+            guard !library.deletedAssets.contains($0.assetID), kind == "all" || $0.kind == kind,
+                  library.matchesFormat($0), library.matchesDevice($0), library.matchesDate($0),
+                  selectedPeople.isEmpty || people.filterAssets.contains($0.assetID) else { return false }
+            guard annotated else { return true }
             let value = annotations.value(for: $0)
-            let labels = Set([value.place] + value.tags)
-            return (kind == "all" || $0.kind == kind) && (!favoritesOnly || value.favorite)
-                && library.matchesFormat($0)
-                && library.matchesDevice($0)
-                && library.matchesDate($0)
-                && (selectedLabels.isEmpty || !labels.isDisjoint(with: selectedLabels))
-                && (selectedPeople.isEmpty || people.filterAssets.contains($0.assetID))
+            return (!favoritesOnly || value.favorite)
+                && (selectedLabels.isEmpty || selectedLabels.contains(value.place) || value.tags.contains(where: selectedLabels.contains))
         }
-        if sort == "default" && library.showingMatches { return filtered }
+        // Browsing pages arrive in capture order (oldest-first applied by the query); only matches need sorting.
+        if library.showingMatches ? sort == "default" : library.usesProjection { return filtered }
         return filtered.sorted {
             let a = $0.metadata?.sortDate ?? "", b = $1.metadata?.sortDate ?? ""
             if a == b { return $0.path < $1.path }
@@ -524,6 +552,47 @@ struct LibraryView: View {
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
     private var highlightedItems: [Media] { visibleItems.filter { navigation.selectedIDs.contains($0.id) } }
+    /// The previewed item, else the selection. A right-clicked card outside the selection stands alone.
+    private func trashTargets(for media: Media? = nil) -> [Media] {
+        if let previewed = selection?.media { return [previewed] }
+        if let media, !navigation.selectedIDs.contains(media.id) { return [media] }
+        return highlightedItems
+    }
+    private func requestTrash(_ items: [Media]) {
+        guard !items.isEmpty, !trashing else { return }
+        trashError = nil
+        pendingTrash = items
+    }
+    private func trashTitle(_ items: [Media]) -> String {
+        guard items.count == 1 else { return "Move \(items.count) items to the Trash?" }
+        return items[0].kind == "image" ? "Move this photo to the Trash?" : "Move this video to the Trash?"
+    }
+    private func moveToTrash(_ items: [Media]) {
+        trashing = true
+        let previewScope = navigation.previewItems ?? visibleItems
+        Task {
+            defer { trashing = false }
+            do {
+                let configuration = try Configuration.load()
+                let outcome = try await MediaDeletion.moveToTrash(items, configuration: configuration)
+                let removed = Set(items.map(\.id))
+                if let current = selection, removed.contains(current.media.id) {
+                    // Keep reviewing takes: show the next remaining item, else close.
+                    let remaining = previewScope.filter { !outcome.assets.contains($0.assetID) }
+                    let index = previewScope.firstIndex { $0.id == current.media.id } ?? 0
+                    let next = previewScope[index...].first { !outcome.assets.contains($0.assetID) } ?? remaining.last
+                    if navigation.previewItems != nil { navigation.previewItems = remaining.isEmpty ? nil : remaining }
+                    selection = next.map { Selection(media: $0, timestamp: $0.match.timestamp) }
+                    if let next, navigation.previewItems == nil { navigation.selectedIDs = [next.id] }
+                }
+                navigation.selectedIDs.subtract(removed)
+                if let focused = focusedMedia, removed.contains(focused.id) { focusedMedia = nil }
+                library.forget(outcome.assets)
+                for asset in outcome.assets where clips.items.contains(where: { $0.assetID == asset }) { clips.remove(asset) }
+                CatalogUpdates.shared.notify()
+            } catch { trashError = error.localizedDescription }
+        }
+    }
     private func open(_ media: Media, timestamp: Double?) {
         focus(media); navigation.previewItems = nil; selection = Selection(media: media, timestamp: timestamp)
     }
@@ -577,19 +646,33 @@ struct LibraryView: View {
         guard let index = items.firstIndex(where: { $0.id == selection.media.id }), items.indices.contains(index + offset) else { return nil }
         return items[index + offset]
     }
-    @MainActor init(library: Library? = nil, clips: ClipSelection? = nil, navigation: BrowserSelection? = nil) {
+    @MainActor init(library: Library? = nil, clips: ClipSelection? = nil, navigation: BrowserSelection? = nil,
+                    annotations: Annotations? = nil, people: PeopleLibrary? = nil) {
         _library = StateObject(wrappedValue: library ?? Library())
         _clips = StateObject(wrappedValue: clips ?? ClipSelection())
         _navigation = StateObject(wrappedValue: navigation ?? BrowserSelection())
+        _annotations = StateObject(wrappedValue: annotations ?? Annotations())
+        _people = StateObject(wrappedValue: people ?? PeopleLibrary())
     }
     var body: some View {
         let displayed = visibleItems
         let positions = Dictionary(uniqueKeysWithValues: displayed.enumerated().map { ($0.element.id, $0.offset) })
+        let highlighted = displayed.filter { navigation.selectedIDs.contains($0.id) }
+        let clipped = Set(clips.items.map(\.assetID))
+        let scrubNearby = (nearby && library.showingMatches) != commandHover
+        let dragEnabled = selection == nil && !showImport
+        let _ = grid.items = displayed
         VStack(spacing: 0) {
             VStack(spacing: 14) {
                 HStack {
                     Text("Mami").font(.system(size: 25, weight: .semibold, design: .rounded))
                     Spacer()
+                    if !highlighted.isEmpty {
+                        Button(role: .destructive) { requestTrash(highlighted) } label: {
+                            Label("\(highlighted.count)", systemImage: "trash")
+                        }.disabled(trashing).help("Move selected media to the Trash (⌘⌫)")
+                            .accessibilityLabel("Move \(highlighted.count) selected to the Trash")
+                    }
                     Button { showShortcuts.toggle() } label: { Image(systemName: "questionmark.circle") }
                         .help("Keyboard shortcuts (?)").accessibilityLabel("Keyboard shortcuts")
                         .popover(isPresented: $showShortcuts) { ShortcutHelp { showShortcuts = false } }
@@ -684,6 +767,7 @@ struct LibraryView: View {
             }.controlSize(.regular).padding(.horizontal, 24).padding(.bottom, 12)
             if let error = library.error { Text(error).foregroundStyle(.red).padding() }
             if let error = annotations.error { Text(error).foregroundStyle(.red).font(.caption).padding() }
+            if let trashError { Text(trashError).foregroundStyle(.red).font(.caption).padding() }
             Divider()
             HStack(spacing: 0) {
             ScrollViewReader { proxy in
@@ -699,9 +783,17 @@ struct LibraryView: View {
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240, maximum: 360), spacing: 14)], spacing: 14) {
                     ForEach(displayed) { media in
-                        MediaCard(media: media, projection: library.projectionReader, nearby: (nearby && library.showingMatches) != commandHover, annotations: annotations, clips: clips,
-                                    focused: navigation.selectedIDs.contains(media.id), select: { selectCard(media) },
-                                     dragItems: { navigation.itemsForDrag(media, in: displayed) }, dragEnabled: selection == nil && !showImport, open: { open($0, timestamp: $1) }).id(media.id)
+                        MediaCard(media: media, projection: library.projectionReader, nearby: scrubNearby,
+                                  annotation: annotations.value(for: media), annotationsReady: annotations.ready,
+                                  inClips: clipped.contains(media.assetID), clipsReady: clips.ready,
+                                  focused: navigation.selectedIDs.contains(media.id), dragEnabled: dragEnabled,
+                                  toggleFavorite: { annotations.toggleFavorite(media) },
+                                  toggleClip: { clips.toggle(media, sample: $0) },
+                                  select: { selectCard(media) },
+                                  dragItems: { navigation.itemsForDrag(media, in: grid.items) },
+                                  open: { open($0, timestamp: $1) },
+                                  trash: { requestTrash(trashTargets(for: media)) })
+                            .equatable().id(media.id)
                             .onAppear {
                                 if media.id == library.items.last?.id { Task { await library.loadMore() } }
                             }
@@ -754,6 +846,16 @@ struct LibraryView: View {
         .onChange(of: annotations.values) { _, _ in if favoritesOnly || !selectedLabels.isEmpty { updatePagedFilters() } }
         .onChange(of: library.ready) { _, ready in if ready { updatePagedFilters() } }
         .background(Button("Focus search") { searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden())
+        // Text fields keep ⌘⌫ for deleting to the start of the line.
+        .background(Button("Move to Trash") { requestTrash(trashTargets()) }.keyboardShortcut(.delete, modifiers: .command)
+            .disabled(searchFocused || showImport || trashing || (selection == nil && highlighted.isEmpty)).hidden())
+        .alert(pendingTrash.map(trashTitle) ?? "", isPresented: Binding(get: { pendingTrash != nil }, set: { if !$0 { pendingTrash = nil } }),
+               presenting: pendingTrash) { items in
+            Button("Move to Trash", role: .destructive) { moveToTrash(items) }
+            Button("Cancel", role: .cancel) { }
+        } message: { items in
+            Text("\(items.count == 1 ? "It is" : "They are") removed from Mami and the \(items.count == 1 ? "original moves" : "originals move") to the Trash. Until you empty the Trash, Put Back in Finder restores \(items.count == 1 ? "it" : "them").")
+        }
         .task { await library.load() }
         .task { await annotations.load() }
         .task { await clips.load() }
@@ -765,12 +867,14 @@ struct LibraryView: View {
                 backups.schedule()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in importing.shutdown(); indexing.stop(); Indexing.previews.stop(); Indexing.faces.stop(); SearchMaintenance.shared.stop(); ModelDownloads.shared.stop(); backups.flush() }
-        .task(id: catalogUpdates.generation) {
-            if catalogUpdates.generation > 0 {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        .task {
+            let updates = CatalogUpdates.shared
+            var seen = updates.generation
+            while !Task.isCancelled {
+                await updates.changed(after: seen)
+                do { try await Task.sleep(for: CatalogUpdates.refreshInterval) } catch { return }
+                seen = updates.generation
                 await library.refreshCatalog()
-                guard !Task.isCancelled else { return }
                 clips.reconnect(library.catalogMedia)
             }
         }
@@ -780,7 +884,7 @@ struct LibraryView: View {
                     ZStack {
                         Color.black.opacity(0.72).contentShape(Rectangle()).onTapGesture { selection = nil }
                         Playback(selection: item, annotations: annotations, clips: clips, close: { selection = nil },
-                                 position: previewPosition(item, items: displayed))
+                                 position: previewPosition(item, items: displayed), trash: { requestTrash([item.media]) })
                             .id(item.id)
                             .frame(width: max(1, geometry.size.width - 40), height: max(1, geometry.size.height - 40))
                             .background(Color(red: 0.08, green: 0.09, blue: 0.11), in: RoundedRectangle(cornerRadius: 14))
@@ -793,9 +897,29 @@ struct LibraryView: View {
     }
 }
 
+/// Shutdown belongs to the application, not a window that may already be closed.
+final class MamiAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            Importing.shared.shutdown(); Indexing.shared.stop(); Indexing.previews.stop(); Indexing.faces.stop()
+            SearchMaintenance.shared.stop(); ModelDownloads.shared.stop(); CatalogBackups.shared.flush()
+        }
+    }
+}
+
 struct MamiApp: App {
+    @NSApplicationDelegateAdaptor(MamiAppDelegate.self) private var delegate
+    // One library per process: a second window's models would overwrite the
+    // first window's selection and run a second search worker.
+    @StateObject private var library = Library()
+    @StateObject private var clips = ClipSelection()
+    @StateObject private var navigation = BrowserSelection()
+    @StateObject private var annotations = Annotations()
+    @StateObject private var people = PeopleLibrary()
     var body: some Scene {
-        WindowGroup("Mami") { LibraryView() }
+        Window("Mami", id: "library") {
+            LibraryView(library: library, clips: clips, navigation: navigation, annotations: annotations, people: people)
+        }
             .defaultSize(width: 1200, height: 800)
         Settings { MamiSettings() }
     }
@@ -811,6 +935,13 @@ struct MamiApp: App {
             }
             NSApplication.shared.run()
             return
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--media-deletion-test"), CommandLine.arguments.indices.contains(index + 1) {
+            Task {
+                do { try await checkMediaDeletion(at: URL(fileURLWithPath: CommandLine.arguments[index + 1])); exit(0) }
+                catch { fputs("MEDIA DELETION TEST FAILED: \(error)\n", stderr); exit(1) }
+            }
+            dispatchMain()
         }
         if CommandLine.arguments.contains("--worker-pipe-test") {
             do { try WorkerPipe.check(); try SearchMaintenance.checkShutdown() }
@@ -1019,6 +1150,7 @@ struct MamiApp: App {
         let clips = ClipSelection(catalog: selectionCatalog)
         await clips.load()
         selectedMedia.forEach { clips.toggle($0) }
+        await clips.flush()
         let savedSelection = try selectionCatalog.snapshotIfChanged()
         clips.save(clips.items)
         guard try selectionCatalog.snapshotIfChanged().file == savedSelection.file else { throw AppError.message("Unchanged selection created a backup") }

@@ -20,7 +20,8 @@ Keep their checklists current, including failed checks and the live deployment.
 - Use parameterized SQL and preserve transaction boundaries. Propagate actionable
   failures; intentional best-effort cleanup should preserve the original error.
 - Preserve original media and unfamiliar user work. Source deletion is limited to
-  the existing explicitly selected, verified import-cleanup flow.
+  the existing explicitly selected, verified import-cleanup flow; library deletion
+  is limited to the confirmed Move to Trash flow (`MediaDeletion`), never permanent.
 - Use the established style and meaningful checks appropriate to each change.
   Prefer focused changes with tests over broad cosmetic rewrites or premature frameworks.
 - Build/test Swift on `ludi`. Deploy new immutable signed bundles; never patch a

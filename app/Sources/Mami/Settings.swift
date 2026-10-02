@@ -38,7 +38,7 @@ struct MamiSettings: View {
                 }
                 DatePicker("Import from", selection: $photos.fromDate, in: ...Date(), displayedComponents: .date)
                     .disabled(busy)
-                Text("Includes this date and newer photos and videos. Files are organized as year/date inside the chosen directory. Mami never deletes from Photos or iCloud.")
+                Text("Includes this date and newer photos and videos. Files are organized as year/date inside the chosen directory. Mami never deletes from Photos or iCloud. While automatic import is on, Mami keeps Photos open and hidden so new iCloud items reach this Mac promptly.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Check Photos now") { Task { await photos.scan() } }
                     .disabled(!photos.enabled || busy || importing.running)

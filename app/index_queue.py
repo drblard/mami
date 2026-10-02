@@ -16,7 +16,7 @@ import time
 import uuid
 from user_store import connection as user_connection
 from model_config import PIPELINE
-from index_store import connection, ensure_schema, signature, MEDIA_EXTENSIONS, MAX_JOB_ATTEMPTS, PENDING_PREVIEW_PREDICATE
+from index_store import connection, ensure_schema, readonly, signature, MEDIA_EXTENSIONS, MAX_JOB_ATTEMPTS, PENDING_PREVIEW_PREDICATE
 
 EXTENSIONS = MEDIA_EXTENSIONS
 # Re-verifying ~140k stored frame/vector files takes seconds; missing files are
@@ -91,7 +91,7 @@ class Queue:
         if force or changed or error or now - self.last_emit >= .2:
             self.last_emit = now
             if force or now - self.last_queue_count >= 2:
-                with self.db() as db:
+                with readonly(self.database) as db:
                     counts = dict(db.execute(f'SELECT state,count(*) FROM {self.jobs_table} GROUP BY state').fetchall())
                 self.queue_counts = dict(remaining=sum(value for state, value in counts.items() if state != 'complete'),
                                          completed=counts.get('complete', 0), failed=counts.get('error', 0))
@@ -156,7 +156,7 @@ class Queue:
     def pending_previews(self):
         if self.role == 'preview' or self.processing_preview:
             return False
-        with self.db() as db:
+        with readonly(self.database) as db:
             if db.execute('SELECT paused FROM preview_control WHERE id=1').fetchone()[0]:
                 return False
             return db.execute('SELECT 1 FROM preview_jobs WHERE '+PENDING_PREVIEW_PREDICATE+' LIMIT 1').fetchone() is not None
@@ -288,6 +288,8 @@ class Queue:
                     self.status(changed=True)
             except Stopped:
                 raise
+            except FileNotFoundError:
+                pass  # Moved away (e.g. to the Trash) after the folder walk; not an error.
             except Exception as error:
                 self.scan_errors += 1
                 self.status(error=f'{path.name}: {error}')
@@ -298,10 +300,15 @@ class Queue:
             self.last_artifact_audit = time.monotonic()
         version = getattr(self.backend, 'metadata_version', 0)
         if version:
-            with self.db() as db:
-                for row in db.execute("SELECT asset,payload FROM index_units WHERE pipeline=? AND stage='metadata' AND ordinal=0", (PIPELINE,)).fetchall():
-                    if json.loads(row['payload']).get('metadataVersion', 0) < version:
-                        db.execute("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state IN ('complete','error')", (row['asset'],))
+            # Filter in SQL without the writer lock; most scans find nothing to requeue.
+            with readonly(self.database) as db:
+                stale = [row[0] for row in db.execute(
+                    "SELECT asset FROM index_units WHERE pipeline=? AND stage='metadata' AND ordinal=0 "
+                    "AND coalesce(json_extract(payload,'$.metadataVersion'),0)<?", (PIPELINE, version))]
+            if stale:
+                with self.db() as db:
+                    db.executemany("UPDATE index_jobs SET state='queued',attempts=0,error=NULL WHERE asset=? AND state IN ('complete','error')",
+                                   [(asset,) for asset in stale])
 
     @staticmethod
     def unchanged(path, signature, asset, known_paths, known_jobs, imported_times):
@@ -334,7 +341,7 @@ class Queue:
                 db.executemany("UPDATE preview_jobs SET state='queued',stage=0,attempts=0,error=NULL WHERE asset=?", [(asset,) for asset in damaged])
 
     def unit(self, asset, stage, ordinal):
-        with self.db() as db:
+        with readonly(self.database) as db:
             row = db.execute('SELECT payload FROM index_units WHERE asset=? AND pipeline=? AND stage=? AND ordinal=?', (asset, PIPELINE, stage, ordinal)).fetchone()
         if row:
             value = json.loads(row[0])
@@ -369,8 +376,10 @@ class Queue:
             if existing and existing['asset'] == job['asset'] and len(json.loads(existing['payload'])['frames']) > len(frames):
                 return
             before = db.total_changes
-            db.execute('INSERT INTO media VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET asset=excluded.asset,payload=excluded.payload WHERE media.payload != excluded.payload',
-                       (job['path'], job['asset'], json.dumps(value, sort_keys=True)))
+            # A user deletion removes the job; work already in flight must not republish it.
+            db.execute('INSERT INTO media SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM index_jobs WHERE asset=?) '
+                       'ON CONFLICT(path) DO UPDATE SET asset=excluded.asset,payload=excluded.payload WHERE media.payload != excluded.payload',
+                       (job['path'], job['asset'], json.dumps(value, sort_keys=True), job['asset']))
             changed = db.total_changes != before
         if changed:
             self.status(changed=True)

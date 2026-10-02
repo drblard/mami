@@ -15,6 +15,11 @@ enum DurableFile {
         defer { Darwin.close(descriptor) }
         guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
+
+    /// Best-effort removal of an unpublished SQLite copy and its persistent journal.
+    static func removeDatabaseFiles(_ url: URL) {
+        for suffix in ["", "-journal"] { try? FileManager.default.removeItem(atPath: url.path + suffix) }
+    }
 }
 
 /// Publishes verified SQLite snapshots and receipts. The caller holds the writer lock.
@@ -76,6 +81,10 @@ struct SnapshotStore {
                 }
             }
             guard try copy.scalar("PRAGMA integrity_check") == "ok" else { throw AppError.message("Snapshot failed integrity checking") }
+        } catch {
+            // Unreceipted copies are never retained or pruned; best effort, original error wins.
+            DurableFile.removeDatabaseFiles(destination)
+            throw error
         }
         try DurableFile.synchronize(destination)
         let snapshot = CatalogSnapshot(identity: state[0], revision: state[1], changeToken: state[2], file: name, created: created)

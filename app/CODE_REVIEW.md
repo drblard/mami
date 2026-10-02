@@ -116,6 +116,48 @@ native UI, lifecycle including paused/retry wake-up, and lab-independent checks 
 - [x] Installed `prototype-20261001T083445972243Z` on 2026-10-01 (RELEASE.md); it
   started and resumed index, face and Photos-import work.
 
+### R10 — 2026-10-02 deep pass: responsiveness, deletion follow-ups, worker contention
+
+- **Evidence (UI lag):** idle main thread was free (sample: 2,783/2,875 waiting), so
+  lag came from work triggered per change: every worker `changed` event refreshed
+  the grid and republished identical data; every card observed the whole
+  annotation/selection models and got new closures, so all visible cards redrew;
+  the grid re-filtered (allocating a tag set per item) and re-sorted pages that
+  already arrive in capture order; favorite/selection/people saves ran SQLite and
+  `flock(catalog.lock)` on the main thread, behind worker transactions and backups.
+- [x] Grid refresh is throttled (`CatalogUpdates.changed(after:)`, ≤2/s) and
+  publishes only changed values; `MediaCard` takes values and is `.equatable()`.
+- [x] Browsing skips the redundant client sort; filtering allocates nothing per item.
+- [x] Annotation, selection, people edits and media-root registration save off the
+  main thread, in order, showing the change at once and undoing it on failure.
+- [x] Lane log writes moved off the main thread.
+- [x] Single `Window` scene, models owned by the App, shutdown in the app delegate
+  (⌘N previously created a second library whose selection overwrote the first).
+- [x] Deletion: a record blocks imports only while the content is absent from the
+  library (Put Back / rolled-back failure no longer block); Photos receipts for
+  deleted content are skipped and released instead of crashing the batch; jobs are
+  deleted before frame units; a file trashed mid-scan is not an error; personal
+  table list includes people/face labels/deletions for full exports.
+- [x] Failed snapshots/migrations remove their unpublished copies (previously one
+  orphan full copy per failed minute); import policy files are removed on exit.
+- [x] Photos downloads are cancellable and give up after 5 min without data;
+  SearchMaintenance/ModelDownloads read worker output to EOF before reaping.
+- [x] Photos passes use the persistent change history (full pass at launch, after
+  failures, on start-date change and every 6 h) and run 10 s after a library
+  change; per-pass redundant history writes for ~17.5k receipts removed. Measured
+  before: a full pass kept Mami at ~39% CPU idle (sample, `PhotosImporting.swift:239`).
+- [x] Workers read status/pending/unit state without the writer lock; the scan's
+  metadata-version filter runs in SQL; the face worker mirrors the catalog only
+  when its change token moves (was a full join per face job).
+- [x] `verify.py --python-only` also runs MamiCore Swift tests on Linux; numpy-only
+  imports no longer break 4 Linux tests. 25 Swift / 212 Python pass on Linux and
+  on `ludi`; installation and media-deletion checks pass on the signed bundle.
+- [ ] Measure click latency and idle CPU on the installed build (no remote UI
+  automation: SSH lacks accessibility access, deliberately not granted).
+- [ ] Not done, owner decision: Swift 6 language mode / `@Observable` migration,
+  splitting `MamiApp.swift`, consolidating docs, retiring lab-era scripts, a
+  scripted release, dedicated threads for blocking worker readers.
+
 ## Issues already assigned to the scaling work
 
 - Full-catalog browsing/refresh and corpus-sized snapshot rebuilding are not a

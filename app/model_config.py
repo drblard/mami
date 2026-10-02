@@ -1,5 +1,7 @@
 """Production model pins and cache policy; independent of experiment tooling."""
+import hashlib
 import os
+from pathlib import Path
 from app_paths import models_directory,cache_directory
 
 VISUAL_MODEL = ('google/siglip2-base-patch16-224', '75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2')
@@ -46,3 +48,13 @@ def cached_model_path(kind):
     return snapshot_download(repository, revision=revision, local_files_only=True,
                               cache_dir=models_directory() / 'huggingface/hub',
                              allow_patterns=['*.json', '*.safetensors', '*.npz', '*.bin', '*.model', '*.txt', '*.jinja'])
+
+
+def verify_file(path, digest):
+    """Raise unless the file matches its pinned SHA-256 digest."""
+    hasher = hashlib.sha256()
+    with Path(path).open('rb') as handle:
+        for block in iter(lambda: handle.read(1 << 20), b''):
+            hasher.update(block)
+    if hasher.hexdigest() != digest:
+        raise ValueError(f'Model file checksum mismatch: {path}')

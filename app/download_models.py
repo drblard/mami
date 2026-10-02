@@ -9,7 +9,7 @@ import urllib.request
 import zipfile
 
 from app_paths import models_directory
-from model_config import FACE_MODEL, MODELS
+from model_config import FACE_MODEL, MODELS, verify_file
 
 
 def face_model_directory():
@@ -23,7 +23,6 @@ def face_model_ready(directory=None):
 
 def install_face_model(archive=None, directory=None):
     """Verify the pinned archive and its two model files, then publish atomically."""
-    from face_engine import verify_file
     directory = Path(directory or face_model_directory())
     if face_model_ready(directory):
         for name, digest in (FACE_MODEL['detector'], FACE_MODEL['recognizer']):

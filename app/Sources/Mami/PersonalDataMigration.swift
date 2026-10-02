@@ -3,7 +3,10 @@ import Foundation
 /// Explicit personal-data boundary. New generated tables never enter this copy.
 enum PersonalDataMigration {
     static let version = 1
-    static let tables = ["annotations", "annotation_history", "imported_events", "clip_selection", "photos_import_history", "media_roots"]
+    /// Every personal table, including those created after the original migration
+    /// (people/face labels, deletions); full exports mirror exactly this list.
+    static let tables = ["annotations", "annotation_history", "imported_events", "clip_selection", "photos_import_history", "media_roots",
+                         "people", "face_labels", "people_history", "deleted_media"]
     private static let requiredTables: Set<String> = ["annotations", "annotation_history", "imported_events"]
 
     /// Caller holds the catalog writer lock. SQLite copies values without a
@@ -40,6 +43,9 @@ enum PersonalDataMigration {
                 try copy.execute("PRAGMA user_version=\(version)")
             }
             guard try copy.scalar("PRAGMA integrity_check") == "ok" else { throw AppError.message("Personal-data migration failed integrity checking") }
+        } catch {
+            DurableFile.removeDatabaseFiles(temporary)
+            throw error
         }
         try DurableFile.synchronize(temporary)
         try FileManager.default.moveItem(at: temporary, to: destination)

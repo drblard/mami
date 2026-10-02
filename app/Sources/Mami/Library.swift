@@ -53,7 +53,7 @@ enum MediaFormat: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct Sample: Codable, Sendable {
+struct Sample: Codable, Sendable, Equatable {
     let path: String
     let kind: String
     let timestamp: Double?
@@ -70,7 +70,7 @@ struct Manifest: Decodable {
     let samples: [Sample]
 }
 
-struct CaptureMetadata: Codable, Sendable {
+struct CaptureMetadata: Codable, Sendable, Equatable {
     let date: String
     let details: [String]
     let location: String?
@@ -83,7 +83,7 @@ struct CaptureMetadata: Codable, Sendable {
     var subtitle: String { ([location].compactMap { $0 } + details).joined(separator: " · ") }
 }
 
-struct Media: Identifiable, Codable, Sendable {
+struct Media: Identifiable, Codable, Sendable, Equatable {
     var id: String { path }
     let path: String
     let kind: String
@@ -514,6 +514,16 @@ actor SearchWorker {
         } catch { self.error = error.localizedDescription; status = "Could not open library" }
     }
 
+    /// Media moved to the Trash this session. They disappear at once; the search
+    /// projection drops them when its sync catches up.
+    @Published private(set) var deletedAssets = Set<String>()
+    func forget(_ assets: Set<String>) {
+        deletedAssets.formUnion(assets)
+        all.removeAll { assets.contains($0.assetID) }
+        items.removeAll { assets.contains($0.assetID) }
+        byPath = byPath.filter { !assets.contains($0.value.assetID) }
+    }
+
     func refreshCatalog() async {
         do {
             if let projection {
@@ -523,7 +533,7 @@ actor SearchWorker {
                 projectedCameras = refreshed.0.cameras
                 projectedEarliest = refreshed.0.earliest
                 latestSequence = refreshed.0.sequence
-                projectedArrivals = refreshed.1
+                if projectedArrivals != refreshed.1 { projectedArrivals = refreshed.1 }
                 if !showingMatches && !gridLocked {
                     let scope = projectionScope()
                     let count = max(ProjectionReader.pageSize, all.count)
@@ -531,13 +541,15 @@ actor SearchWorker {
                     let page = try await Task.detached { try projection.page(scope: scope, limit: count) }.value
                     guard !Task.isCancelled, generation == version, !showingMatches else { return }
                     pageGeneration += 1
-                    loadingPage = false
+                    if loadingPage { loadingPage = false }
                     all = page.items
                     byPath = Dictionary(uniqueKeysWithValues: all.map { ($0.path, $0) })
-                    formats = MediaFormat.read(all)
+                    let readFormats = MediaFormat.read(all)
+                    if formats != readFormats { formats = readFormats }
                     pageScope = scope; pageCursor = page.cursor
-                    totalMediaCount = page.total
-                    items = all
+                    if totalMediaCount != page.total { totalMediaCount = page.total }
+                    // Most refreshes during indexing change nothing visible; skip the grid update.
+                    if items != all { items = all }
                 } else if !showingMatches {
                     let paths = all.map(\.path)
                     let refreshed = try await Task.detached { try projection.media(paths: paths) }.value
@@ -545,8 +557,9 @@ actor SearchWorker {
                     let updated = Dictionary(uniqueKeysWithValues: refreshed.map { ($0.path,$0) })
                     all = all.map { updated[$0.path] ?? $0 }
                     byPath.merge(updated) { _, new in new }
-                    formats.merge(MediaFormat.read(refreshed)) { _, new in new }
-                    items = all
+                    let merged = formats.merging(MediaFormat.read(refreshed)) { _, new in new }
+                    if formats != merged { formats = merged }
+                    if items != all { items = all }
                 }
                 return
             }

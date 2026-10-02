@@ -8,7 +8,7 @@ import signal
 import sys
 import threading
 
-from index_store import connection,PENDING_PREVIEW_PREDICATE
+from index_store import connection,readonly,PENDING_PREVIEW_PREDICATE
 from preview_atlas import MAX_PACK_ATTEMPTS,ensure_pack_schema,pack_asset,retire_raw_frames
 from preview_retention import prune_generations
 
@@ -19,7 +19,7 @@ RETRY_DELAY_SECONDS = 5
 def check_backfill_priority(database, stop, busy):
     if stop.is_set():raise InterruptedError('Preview packing stopped')
     if busy.is_set():raise InterruptedError('Preview packing yields to active editing')
-    with connection(database) as db:
+    with readonly(database) as db:
         if db.execute('SELECT 1 FROM preview_jobs WHERE '+PENDING_PREVIEW_PREDICATE+' LIMIT 1').fetchone():
             raise InterruptedError('Preview packing yields to pending previews')
 
