@@ -147,8 +147,11 @@ is recorded in [RELEASE.md](RELEASE.md); open work is in [REMAINING.md](REMAININ
   on `ludi`; installation and media-deletion checks pass on the signed bundle.
 - [x] Installed (`2281c35`): idle CPU fell from ~39% to ~5% with change-history
   Photos passes (measured with `ps` after the launch pass).
-- [ ] Measure click latency on the installed build (no remote UI automation: SSH
-  lacks accessibility access, deliberately not granted); user feedback so far only.
+- [x] Found by the user: clicking a card image took ~0.5 s, below it was instant. The
+  image had both a double-tap and a tap gesture, so every click waited for the
+  double-click interval (0.5 s on `ludi`). Replaced by one gesture using the click count.
+- [ ] Measure click latency from real use: `InteractionLatency` logs release-to-render
+  times without UI automation (SSH accessibility deliberately not granted).
 - [x] Owner-approved follow-up: Swift 6 language mode (tools 6.0, no warnings),
   `@Observable` models, `MamiApp.swift` split by responsibility with a table of
   integration checks, consolidated docs, lab-era scripts and experiments removed,

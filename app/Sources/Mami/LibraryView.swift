@@ -92,6 +92,7 @@ struct LibraryView: View {
         else { navigation.click(media, extending: NSEvent.modifierFlags.contains(.command)) }
         searchFocused = false
         NSApp.keyWindow?.makeFirstResponder(nil)
+        InteractionLatency.shared.applied("select")
     }
     private var highlightedItems: [Media] { visibleItems.filter { navigation.selectedIDs.contains($0.id) } }
     /// The previewed item, else the selection. A right-clicked card outside the selection stands alone.
@@ -137,6 +138,7 @@ struct LibraryView: View {
     }
     private func open(_ media: Media, timestamp: Double?) {
         focus(media); navigation.previewItems = nil; selection = Selection(media: media, timestamp: timestamp)
+        InteractionLatency.shared.applied("open preview")
     }
     private func handleKey(_ code: UInt16) -> Bool {
         guard !showImport else { return false }
@@ -329,8 +331,8 @@ struct LibraryView: View {
                                   annotation: annotations.value(for: media), annotationsReady: annotations.ready,
                                   inClips: clipped.contains(media.assetID), clipsReady: clips.ready,
                                   focused: navigation.selectedIDs.contains(media.id), dragEnabled: dragEnabled,
-                                  toggleFavorite: { annotations.toggleFavorite(media) },
-                                  toggleClip: { clips.toggle(media, sample: $0) },
+                                  toggleFavorite: { annotations.toggleFavorite(media); InteractionLatency.shared.applied("favorite") },
+                                  toggleClip: { clips.toggle(media, sample: $0); InteractionLatency.shared.applied("selected clips") },
                                   select: { selectCard(media) },
                                   dragItems: { navigation.itemsForDrag(media, in: grid.items) },
                                   open: { open($0, timestamp: $1) },
@@ -424,7 +426,9 @@ struct LibraryView: View {
             if let item = selection {
                 GeometryReader { geometry in
                     ZStack {
-                        Color.black.opacity(0.72).contentShape(Rectangle()).onTapGesture { selection = nil }
+                        Color.black.opacity(0.72).contentShape(Rectangle()).onTapGesture {
+                            selection = nil; InteractionLatency.shared.applied("close preview")
+                        }
                         Playback(selection: item, annotations: annotations, clips: clips, close: { selection = nil },
                                  position: previewPosition(item, items: displayed), trash: { requestTrash([item.media]) })
                             .id(item.id)

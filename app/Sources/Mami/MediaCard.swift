@@ -108,8 +108,11 @@ struct MediaCard: View, @MainActor Equatable {
                     case .ended: hovered = nil; hoverFraction = nil
                     }
                 }
-                .onTapGesture(count: 2) { open(media, sample.timestamp) }
-                .onTapGesture { select() }
+                // One gesture that reacts to every click: a separate double-tap gesture
+                // held each single click for the double-click interval (0.5 s) first.
+                .onTapGesture {
+                    if (NSApp.currentEvent?.clickCount ?? 1) >= 2 { open(media, sample.timestamp) } else { select() }
+                }
             }.frame(height: 175).clipShape(RoundedRectangle(cornerRadius: 8))
             HStack(spacing: 6) {
                 Text(media.metadata?.date ?? "Capture date unavailable").font(.system(size: 12, weight: .medium)).lineLimit(1)

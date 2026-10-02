@@ -7,25 +7,8 @@ import MamiCore
 /// Bounded diagnostic trail of lane lifecycle events (launch, exit, dropped or
 /// unreadable messages, failed commands) for problems seen only in the live app.
 enum LaneLog {
-    static let limit = 1024 * 1024
-    static var file: URL { AppPaths().caches.appendingPathComponent("lane-events.log") }
-    private static let writer = DispatchQueue(label: "local.mami.lane-log", qos: .utility)
-    static func record(_ lane: String, _ event: String) {
-        let line = "\(Date().formatted(.iso8601)) \(lane) \(event)\n"
-        writer.async { append(line) }
-    }
-    private static func append(_ line: String) {
-        let url = file
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int, size >= limit {
-            try? FileManager.default.removeItem(at: url.appendingPathExtension("1"))
-            try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("1"))
-        }
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data(line.utf8))
-        } else { try? Data(line.utf8).write(to: url) }
-    }
+    static let log = BoundedLog("lane-events.log")
+    static func record(_ lane: String, _ event: String) { log.write("\(lane) \(event)") }
 }
 
 @MainActor @Observable final class Indexing {

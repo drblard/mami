@@ -10,7 +10,8 @@ until they are understood.
   preview advancing to the next take; Put Back restoring an item.
 - [ ] Photos keep-alive: relaunch after Photos is quit (launch hidden and prompt
   incremental passes are confirmed in the log, 2026-10-02).
-- [ ] Click latency feels immediate (user feedback; no remote UI automation).
+- [ ] Click latency: read `~/Library/Caches/Mami/interaction-latency.log` after a day of
+  normal use (median/p95 per action); confirm image clicks no longer wait 0.5 s.
 - [ ] People: user acceptance of naming, group correction and the People filter.
 
 ## Unexplained reports (watch for recurrence)

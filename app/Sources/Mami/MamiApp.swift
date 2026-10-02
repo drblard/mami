@@ -9,6 +9,9 @@ typealias ViewState<Value> = SwiftUI.State<Value>
 
 /// Shutdown belongs to the application, not a window that may already be closed.
 final class MamiAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { InteractionLatency.shared.start() }
+    }
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             Importing.shared.shutdown(); Indexing.shared.stop(); Indexing.previews.stop(); Indexing.faces.stop()

@@ -65,6 +65,9 @@ library. Failed recording puts the originals back.
 **UI responsiveness:** models are `@Observable`; grid cards are value-driven and
 `.equatable()`; catalog refreshes are throttled (`CatalogUpdates`) and publish only
 changes; personal-data saves run off the main thread and are undone on failure.
+Real clicks are timed from release to rendered result (`InteractionLatency.swift`,
+`interaction-latency.log`; named actions include gesture delays). Card images use one
+click gesture: a separate double-click gesture held every click for 0.5 s.
 
 ## Data
 
@@ -74,7 +77,7 @@ changes; personal-data saves run off the main thread and are undone on failure.
 | Personal data (authoritative) | `~/Library/Application Support/Mami/Personal/user.sqlite` | Yes, plus snapshots in `Personal/Backups/user-state/` |
 | Generated catalog, search, previews, faces | `…/Mami/Derived/` | No (rebuildable) |
 | Indexing models | `…/Mami/Models/` | No (re-downloadable in Settings) |
-| Logs | `~/Library/Caches/Mami/` (`app-errors.log`, `lane-events.log`) | No |
+| Logs | `~/Library/Caches/Mami/` (`app-errors.log`, `lane-events.log`, `interaction-latency.log`) | No |
 | Photos staging | `~/Media/Incoming/.mami-photos/` | Transient: released after each verified import |
 
 Personal tables: annotations (favourites, tags, place) and their history, the clip
