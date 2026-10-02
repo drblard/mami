@@ -13,12 +13,12 @@ struct VideoSurface: NSViewRepresentable {
     func updateNSView(_ view: AVPlayerView, context: Context) { view.player = player }
 }
 
-@MainActor final class PlaybackTransport: ObservableObject {
-    @Published private(set) var player: AVPlayer?
-    @Published var position = 0.0
-    @Published private(set) var duration = 0.0
-    @Published private(set) var playing = false
-    @Published var muted = false {
+@MainActor @Observable final class PlaybackTransport {
+    private(set) var player: AVPlayer?
+    var position = 0.0
+    private(set) var duration = 0.0
+    private(set) var playing = false
+    var muted = false {
         didSet { player?.isMuted = muted }
     }
     private var observer: Any?
@@ -100,7 +100,7 @@ struct VideoSurface: NSViewRepresentable {
 }
 
 struct TransportBar: View {
-    @ObservedObject var transport: PlaybackTransport
+    @Bindable var transport: PlaybackTransport
     var shortcutsEnabled = true
     var navigationShortcutsEnabled = true
     var body: some View {

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Darwin
 import MamiCore
 import AppKit
@@ -320,28 +321,28 @@ actor SearchWorker {
     }
 }
 
-@MainActor final class Library: ObservableObject {
-    @Published var items: [Media] = []
-    @Published var query = "" {
+@MainActor @Observable final class Library {
+    var items: [Media] = []
+    var query = "" {
         didSet {
             // Invalidate in-flight results immediately, before the typing debounce.
             pendingSearch?.cancel()
             generation += 1
         }
     }
-    @Published var status = "Opening library…"
-    @Published var error: String?
-    @Published var ready = false
-    @Published var searching = false
-    @Published var showingMatches = false
-    @Published var mode = "both"
-    @Published var format = MediaFormat.all
-    @Published var deviceFilter = "All devices"
-    @Published var dateEnabled = false
-    @Published var dateFrom = Calendar.current.date(from: DateComponents(year: Calendar.current.component(.year, from: Date()), month: 1, day: 1))!
-    @Published var dateThrough = Date()
-    @Published private(set) var queryDates: CaptureRange?
-    @Published var gridLocked = false {
+    var status = "Opening library…"
+    var error: String?
+    var ready = false
+    var searching = false
+    var showingMatches = false
+    var mode = "both"
+    var format = MediaFormat.all
+    var deviceFilter = "All devices"
+    var dateEnabled = false
+    var dateFrom = Calendar.current.date(from: DateComponents(year: Calendar.current.component(.year, from: Date()), month: 1, day: 1))!
+    var dateThrough = Date()
+    private(set) var queryDates: CaptureRange?
+    var gridLocked = false {
         didSet {
             if projection != nil {
                 lockedSequence = gridLocked ? latestSequence : nil
@@ -372,9 +373,9 @@ actor SearchWorker {
     }
     var devices: [String] { projection != nil ? projectedCameras : Set(all.map(\.device)).sorted() }
     func matchesDevice(_ media: Media) -> Bool { deviceFilter == "All devices" || media.device == deviceFilter }
-    @Published private(set) var formats: [String: MediaFormat] = [:]
+    private(set) var formats: [String: MediaFormat] = [:]
     func matchesFormat(_ media: Media) -> Bool { format == .all || formats[media.path, default: .unknown] == format }
-    @Published var speechAvailable = false
+    var speechAvailable = false
     private var all: [Media] = []
     private var projection: ProjectionReader?
     private var pageCursor: ProjectionReader.Cursor?
@@ -384,12 +385,12 @@ actor SearchWorker {
     private var lockedSequence: Int64?
     private var projectedCameras: [String] = []
     private var projectedEarliest: String?
-    @Published private(set) var projectedArrivals = 0
-    @Published private(set) var totalMediaCount = 0
-    @Published private(set) var loadingPage = false
-    @Published var browseKind: String? = nil
-    @Published var browseAssets: Set<String>? = nil
-    @Published var oldestFirst = false
+    private(set) var projectedArrivals = 0
+    private(set) var totalMediaCount = 0
+    private(set) var loadingPage = false
+    var browseKind: String? = nil
+    var browseAssets: Set<String>? = nil
+    var oldestFirst = false
     var usesProjection: Bool { projection != nil }
     var projectionReader: ProjectionReader? { projection }
     var canLoadMore: Bool { usesProjection && !searching && !showingMatches && all.count < totalMediaCount && pageCursor != nil }
@@ -516,7 +517,7 @@ actor SearchWorker {
 
     /// Media moved to the Trash this session. They disappear at once; the search
     /// projection drops them when its sync catches up.
-    @Published private(set) var deletedAssets = Set<String>()
+    private(set) var deletedAssets = Set<String>()
     func forget(_ assets: Set<String>) {
         deletedAssets.formUnion(assets)
         all.removeAll { assets.contains($0.assetID) }

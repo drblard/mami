@@ -5,7 +5,8 @@ import Foundation
 /// diagnostics do not fill the file.
 enum AppDiagnostics {
     static let errorLogLimit = 1024 * 1024
-    private(set) static var workerErrorOutput = FileHandle.standardError
+    /// Set once by `captureAppErrors()` at launch, before any worker starts; read-only afterwards.
+    nonisolated(unsafe) private(set) static var workerErrorOutput = FileHandle.standardError
 
     static func captureAppErrors() {
         let url = AppPaths().caches.appendingPathComponent("app-errors.log")

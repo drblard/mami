@@ -174,7 +174,8 @@ extension Optional {
     let deadline = ContinuousClock.now.advanced(by: .seconds(3))
     func focusedField() -> AutofocusTextField.Field? {
         guard let editor = popover.contentViewController?.view.window?.firstResponder as? NSTextView else { return nil }
-        return editor.delegate as? AutofocusTextField.Field
+        // The field editor's delegate is the focused text field itself (a runtime relationship).
+        return (editor.delegate as AnyObject?) as? AutofocusTextField.Field
     }
     while focusedField() == nil {
         guard ContinuousClock.now < deadline else {

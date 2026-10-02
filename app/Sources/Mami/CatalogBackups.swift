@@ -1,11 +1,12 @@
 import Foundation
+import Observation
 import MamiCore
 
 /// Coalesces backup requests; persistence and retention live in SnapshotStore.
-@MainActor final class CatalogBackups: ObservableObject {
+@MainActor @Observable final class CatalogBackups {
     static let shared = CatalogBackups()
-    @Published private(set) var status = "Personal-data backup pending"
-    @Published private(set) var error: String?
+    private(set) var status = "Personal-data backup pending"
+    private(set) var error: String?
 
     private let clock = ContinuousClock()
     private var task: Task<Void, Never>?

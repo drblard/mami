@@ -6,9 +6,10 @@ import Photos
 /// CPU); later passes read the library's persistent change history and examine only
 /// inserted or updated assets. A full pass still runs at launch, after any failed
 /// pass, when the start date changes, and at least every `fullPassInterval`.
-struct PhotosChangeTracker {
+struct PhotosChangeTracker: Sendable {
     static let fullPassInterval: TimeInterval = 6 * 60 * 60
-    private let defaults: UserDefaults
+    /// UserDefaults is documented thread-safe but not annotated Sendable in the SDK.
+    nonisolated(unsafe) private let defaults: UserDefaults
     private static let tokenKey = "photos-import-change-token"
     private static let rangeKey = "photos-import-change-range-start"
     private static let fullPassKey = "photos-import-last-full-pass"

@@ -1,13 +1,14 @@
 import AppKit
 import Foundation
+import Observation
 import MamiCore
 import Darwin
 
 /// Owns derived-index writers independently of interactive search requests.
-@MainActor final class SearchMaintenance: ObservableObject {
+@MainActor @Observable final class SearchMaintenance {
     static let shared = SearchMaintenance()
-    @Published private(set) var status = ""
-    @Published private(set) var error: String?
+    private(set) var status = ""
+    private(set) var error: String?
     private var workers: [String: Process] = [:]
     private var inputs: [String: FileHandle] = [:]
     private var activityTimer: Timer?

@@ -28,7 +28,7 @@ enum LaneLog {
     }
 }
 
-@MainActor final class Indexing: ObservableObject {
+@MainActor @Observable final class Indexing {
     enum Lane: String, Sendable {
         case search = "index"
         case previews = "preview"
@@ -91,19 +91,19 @@ enum LaneLog {
         let gpu_utilization: Double?
         let queue_counts: Counts?
     }
-    @Published private(set) var phase = "Automatic scanning starts with the library"
-    @Published private(set) var current = ""
-    @Published private(set) var done = 0
-    @Published private(set) var total = 0
-    @Published private(set) var paused = false
-    @Published private(set) var waiting = false
-    @Published private(set) var error: String?
-    @Published private(set) var running = false
-    @Published private(set) var catalogGeneration = 0
-    @Published private(set) var gpuUtilization: Double?
-    @Published private(set) var queueCounts: Progress.Counts?
+    private(set) var phase = "Automatic scanning starts with the library"
+    private(set) var current = ""
+    private(set) var done = 0
+    private(set) var total = 0
+    private(set) var paused = false
+    private(set) var waiting = false
+    private(set) var error: String?
+    private(set) var running = false
+    private(set) var catalogGeneration = 0
+    private(set) var gpuUtilization: Double?
+    private(set) var queueCounts: Progress.Counts?
     /// Set by Scan now until the worker reports an idle phase.
-    @Published private(set) var userRequestedScan = false
+    private(set) var userRequestedScan = false
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -360,7 +360,7 @@ enum LaneLog {
 }
 
 struct IndexQueueSummary: View {
-    @ObservedObject var indexing = Indexing.shared
+    var indexing = Indexing.shared
     var body: some View {
         HStack(spacing: 8) {
             if let counts = indexing.queueCounts {
@@ -373,7 +373,7 @@ struct IndexQueueSummary: View {
 }
 
 struct IndexingBar: View {
-    @ObservedObject var indexing = Indexing.shared
+    var indexing = Indexing.shared
     @ViewState private var shown = true
     private struct ProgressKey: Hashable {
         let phase: String, current: String, done: Int, total: Int

@@ -1,11 +1,12 @@
 import Foundation
+import Observation
 import MamiCore
 import Darwin
 
-@MainActor final class ModelDownloads: ObservableObject {
+@MainActor @Observable final class ModelDownloads {
     static let shared = ModelDownloads()
-    @Published private(set) var running = false
-    @Published private(set) var status = "Indexing models are stored locally for offline use."
+    private(set) var running = false
+    private(set) var status = "Indexing models are stored locally for offline use."
     private var process: Process?
 
     func download() {

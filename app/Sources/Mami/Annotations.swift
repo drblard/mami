@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 struct Annotation: Codable, Sendable, Equatable {
     var favorite = false
@@ -29,10 +30,10 @@ enum ContentIdentity {
 
 /// Transactional current labels plus append-only history in the SQLite catalog.
 /// Earlier JSON events are imported once and retained at their original paths.
-@MainActor final class Annotations: ObservableObject {
-    @Published private(set) var values: [String: Annotation] = [:]
-    @Published var error: String?
-    @Published private(set) var ready = false
+@MainActor @Observable final class Annotations {
+    private(set) var values: [String: Annotation] = [:]
+    var error: String?
+    private(set) var ready = false
     var directory: URL { catalog.legacyAnnotationsDirectory }
     let catalog: Catalog
 

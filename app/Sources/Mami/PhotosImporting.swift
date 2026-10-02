@@ -5,22 +5,22 @@ import OSLog
 
 /// PhotoKit reads the Mac's System Photo Library and downloads cloud-only originals.
 /// No Photos change requests or deletion APIs are used.
-@MainActor final class PhotosImporting: ObservableObject {
+@MainActor @Observable final class PhotosImporting {
     static let shared = PhotosImporting()
-    @Published private(set) var enabled = UserDefaults.standard.bool(forKey: "photos-import-enabled")
-    @Published var destination: URL = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "photos-import-destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals/iCloud").path) {
+    private(set) var enabled = UserDefaults.standard.bool(forKey: "photos-import-enabled")
+    var destination: URL = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "photos-import-destination") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Media/Originals/iCloud").path) {
         didSet { UserDefaults.standard.set(destination.path, forKey: "photos-import-destination") }
     }
-    @Published var fromDate: Date = (UserDefaults.standard.object(forKey: "photos-import-from") as? Date) ?? PhotosExporter.yearRange().start {
+    var fromDate: Date = (UserDefaults.standard.object(forKey: "photos-import-from") as? Date) ?? PhotosExporter.yearRange().start {
         didSet { UserDefaults.standard.set(fromDate, forKey: "photos-import-from") }
     }
-    @Published private(set) var running = false
-    @Published private(set) var status = "Import originals from your synced Photos library." {
+    private(set) var running = false
+    private(set) var status = "Import originals from your synced Photos library." {
         didSet { Logger(subsystem: "local.mami.prototype", category: "PhotosImport").notice("\(self.status, privacy: .public)") }
     }
-    @Published private(set) var transferred = 0
-    @Published private(set) var needsPhotosAccess = false
-    @Published private(set) var error: String? {
+    private(set) var transferred = 0
+    private(set) var needsPhotosAccess = false
+    private(set) var error: String? {
         didSet { if let error { Logger(subsystem: "local.mami.prototype", category: "PhotosImport").error("\(error, privacy: .public)") } }
     }
     private var timer: Task<Void, Never>?

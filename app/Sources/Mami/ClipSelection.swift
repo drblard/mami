@@ -23,10 +23,10 @@ struct SelectedClip: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
-@MainActor final class ClipSelection: ObservableObject {
-    @Published private(set) var items: [SelectedClip] = []
-    @Published private(set) var ready = false
-    @Published var error: String?
+@MainActor @Observable final class ClipSelection {
+    private(set) var items: [SelectedClip] = []
+    private(set) var ready = false
+    var error: String?
     private let catalog: Catalog
     init(catalog: Catalog = .standard) { self.catalog = catalog }
     func contains(_ media: Media) -> Bool { items.contains { $0.assetID == media.assetID } }
@@ -191,7 +191,7 @@ struct SelectionDrop: DropDelegate {
 }
 
 struct SelectionIsland: View {
-    @ObservedObject var clips: ClipSelection
+    var clips: ClipSelection
     var projection: ProjectionReader? = nil
     var dragged: () -> [Media] = { [] }
     let open: (SelectedClip) -> Void

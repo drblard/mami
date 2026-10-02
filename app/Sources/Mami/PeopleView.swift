@@ -3,32 +3,32 @@ import MamiCore
 
 /// People review state. Edits go to the personal store first; the face worker
 /// then recomputes suggestions and groups, and the view reloads its results.
-@MainActor final class PeopleLibrary: ObservableObject {
+@MainActor @Observable final class PeopleLibrary {
     enum Focus: Hashable { case group(Int64), person(String) }
     struct Edit { let description: String; let undo: [PeopleSnapshot] }
-    @Published private(set) var people: [Person] = []
-    @Published private(set) var counts: [String: PersonCounts] = [:]
-    @Published private(set) var groups: [FaceGroup] = []
-    @Published private(set) var focus: Focus?
-    @Published private(set) var faces: [FaceItem] = []
-    @Published var selected = Set<Int64>() { didSet { if selected.isEmpty { selectionAnchor = nil } } }
+    private(set) var people: [Person] = []
+    private(set) var counts: [String: PersonCounts] = [:]
+    private(set) var groups: [FaceGroup] = []
+    private(set) var focus: Focus?
+    private(set) var faces: [FaceItem] = []
+    var selected = Set<Int64>() { didSet { if selected.isEmpty { selectionAnchor = nil } } }
     /// Last face clicked; Shift-click extends from here.
     private(set) var selectionAnchor: Int64?
-    @Published private(set) var edits: [Edit] = []
-    @Published var error: String?
-    @Published private(set) var filterAssets = Set<String>()
-    @Published private(set) var loaded = false
+    private(set) var edits: [Edit] = []
+    var error: String?
+    private(set) var filterAssets = Set<String>()
+    private(set) var loaded = false
     /// The person just named from a group, so their page can explain what Mami found.
-    @Published private(set) var justNamed: (person: String, faces: Int)?
+    private(set) var justNamed: (person: String, faces: Int)?
     /// The last edit on a person's page and their counts before it, so the page can
     /// say what the edit did once the worker has recomputed.
-    @Published private(set) var lastChange: (person: String, action: String, before: PersonCounts)?
+    private(set) var lastChange: (person: String, action: String, before: PersonCounts)?
     /// Which kind of faces the person page shows; changing it reloads them.
-    @Published var personTab: PersonFaces = .toCheck {
+    var personTab: PersonFaces = .toCheck {
         didSet { if personTab != oldValue { selected = []; faces = []; Task { await reload() } } }
     }
     /// Screenshots and saved/shared media mostly show strangers; off by default.
-    @Published var includeSavedMedia = false { didSet { if includeSavedMedia != oldValue { Task { await reload() } } } }
+    var includeSavedMedia = false { didSet { if includeSavedMedia != oldValue { Task { await reload() } } } }
     private(set) var filterPeople = Set<String>()
     private let catalog: Catalog
     private var reloading = false
@@ -239,8 +239,8 @@ struct FaceThumbnail: View {
 }
 
 struct PeopleView: View {
-    @ObservedObject var model: PeopleLibrary
-    @ObservedObject private var indexing = Indexing.faces
+    @Bindable var model: PeopleLibrary
+    private var indexing = Indexing.faces
     let close: () -> Void
     @ViewState private var newName = ""
     @ViewState private var naming = false
@@ -480,8 +480,8 @@ struct PeopleView: View {
 }
 
 struct PeopleFilterPicker: View {
-    @ObservedObject var model: PeopleLibrary
-    @ObservedObject private var faces = Indexing.faces
+    @Bindable var model: PeopleLibrary
+    private var faces = Indexing.faces
     @Binding var selected: Set<String>
     let manage: () -> Void
     @ViewState private var open = false

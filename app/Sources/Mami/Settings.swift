@@ -2,9 +2,9 @@ import SwiftUI
 import AppKit
 
 struct MamiSettings: View {
-    @ObservedObject private var photos = PhotosImporting.shared
-    @ObservedObject private var importing = Importing.shared
-    @ObservedObject private var models = ModelDownloads.shared
+    @Bindable private var photos = PhotosImporting.shared
+    @Bindable private var importing = Importing.shared
+    private var models = ModelDownloads.shared
     @ViewState private var reviewCamera = false
     private var busy: Bool { photos.running || importing.photosTransfer }
     private var cameraBusy: Bool { importing.running && !importing.photosTransfer }

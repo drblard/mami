@@ -3,7 +3,7 @@ import SwiftUI
 import MamiCore
 import OSLog
 
-@MainActor final class Importing: ObservableObject {
+@MainActor @Observable final class Importing {
     static let shared = Importing()
     struct Progress: Decodable {
         let phase: String
@@ -22,34 +22,34 @@ import OSLog
         let ejection: String?
         let catalog_changed: Bool?
     }
-    @Published var source: URL?
-    @Published var device = "DJI-Pocket-4P"
-    @Published var automaticDJI = UserDefaults.standard.object(forKey: "dji.automatic") as? Bool ?? true {
+    var source: URL?
+    var device = "DJI-Pocket-4P"
+    var automaticDJI = UserDefaults.standard.object(forKey: "dji.automatic") as? Bool ?? true {
         didSet { UserDefaults.standard.set(automaticDJI, forKey: "dji.automatic") }
     }
-    @Published var removeSource = UserDefaults.standard.bool(forKey: "dji.removeSource") {
+    var removeSource = UserDefaults.standard.bool(forKey: "dji.removeSource") {
         didSet { UserDefaults.standard.set(removeSource, forKey: "dji.removeSource") }
     }
-    @Published var includeProxies = UserDefaults.standard.bool(forKey: "dji.includeProxies") {
+    var includeProxies = UserDefaults.standard.bool(forKey: "dji.includeProxies") {
         didSet { UserDefaults.standard.set(includeProxies, forKey: "dji.includeProxies") }
     }
-    @Published var ejectAfter = UserDefaults.standard.object(forKey: "dji.ejectAfter") as? Bool ?? true {
+    var ejectAfter = UserDefaults.standard.object(forKey: "dji.ejectAfter") as? Bool ?? true {
         didSet { UserDefaults.standard.set(ejectAfter, forKey: "dji.ejectAfter") }
     }
-    @Published private(set) var cameraStatus = "Waiting for DJI camera"
-    @Published private(set) var cameraError: String?
+    private(set) var cameraStatus = "Waiting for DJI camera"
+    private(set) var cameraError: String?
     private var cameraTimer: Timer?
     private var cameraObservers: [NSObjectProtocol] = []
     private var connections = CameraConnections()
     private var manualCameraPending = false
     private let cameraLog = Logger(subsystem: "local.mami.prototype", category: "CameraOffload")
-    @Published var policies: [String: String] = [:]
-    @Published private(set) var sourceFiles: [String] = []
-    @Published private(set) var listing = false
-    @Published private(set) var photosTransfer = false
-    @Published private(set) var running = false
-    @Published private(set) var progress: Progress?
-    @Published private(set) var error: String?
+    var policies: [String: String] = [:]
+    private(set) var sourceFiles: [String] = []
+    private(set) var listing = false
+    private(set) var photosTransfer = false
+    private(set) var running = false
+    private(set) var progress: Progress?
+    private(set) var error: String?
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -291,8 +291,8 @@ import OSLog
 }
 
 struct ImportSheet: View {
-    @ObservedObject var importing = Importing.shared
-    @ObservedObject var photos = PhotosImporting.shared
+    @Bindable var importing = Importing.shared
+    var photos = PhotosImporting.shared
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

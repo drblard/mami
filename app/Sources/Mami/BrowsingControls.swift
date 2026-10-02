@@ -3,11 +3,11 @@ import AVFoundation
 import ImageIO
 import MamiCore
 
-@MainActor final class BrowserSelection: ObservableObject {
-    @Published var columns = 1
-    @Published var focused: Media?
-    @Published var preview: Selection?
-    @Published var selectedIDs = Set<String>()
+@MainActor @Observable final class BrowserSelection {
+    var columns = 1
+    var focused: Media?
+    var preview: Selection?
+    var selectedIDs = Set<String>()
     var previewItems: [Media]?
     func itemsForDrag(_ media: Media, in items: [Media]) -> [Media] {
         if !selectedIDs.contains(media.id) { select(media, extending: false) }
@@ -31,9 +31,9 @@ import MamiCore
 }
 
 struct LibraryFooter: View {
-    @ObservedObject var library: Library
-    @ObservedObject private var backups = CatalogBackups.shared
-    @ObservedObject private var searchMaintenance = SearchMaintenance.shared
+    @Bindable var library: Library
+    private var backups = CatalogBackups.shared
+    private var searchMaintenance = SearchMaintenance.shared
     var body: some View {
         VStack(spacing: 0) {
             Divider().padding(.bottom, 4)
@@ -107,7 +107,7 @@ struct MediaDragSurface: NSViewRepresentable {
             return nil
         }
     }
-    deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    isolated deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
     /// Media in the current in-app drag session. In-window drop targets use it
     /// instead of mapping file URLs back to catalog items.
     private(set) var draggedMedia: [Media] = []
@@ -191,7 +191,7 @@ struct BrowserKeys: NSViewRepresentable {
             }
         }
         required init?(coder: NSCoder) { fatalError() }
-        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+        isolated deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
     }
 }
 
