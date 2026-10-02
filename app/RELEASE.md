@@ -5,8 +5,8 @@
 | | |
 |---|---|
 | Installed | `~/Applications/Mami.app` (a real signed bundle, not a link) |
-| Build | `prototype-20261002T094634040401Z`, revision `9f7b733`, installed 2026-10-02 with `release.py --install` |
-| Previous | `~/Applications/.Mami-install-0666f14f04d64399ad8d457d0090c28b.app` (`prototype-20261002T090035678054Z`, `2281c35`) |
+| Build | `prototype-20261002T101500180033Z`, revision `7ca583c`, installed 2026-10-02 with `release.py --install` |
+| Previous | `~/Applications/.Mami-install-4edeb5401bb740aa976ad17eac9591f3.app` (`prototype-20261002T094634040401Z`, `9f7b733`) |
 | Source snapshots | `~/mami-lab/apps/<build>/` on `ludi` (immutable; `REVISION` file from 2026-10-02 on) |
 
 Check the installed revision: `plutil -extract MamiSourceRevision raw ~/Applications/Mami.app/Contents/Info.plist`
@@ -64,6 +64,7 @@ personal data is never reconstructed from generated caches.
 
 | Date | Build | Revision | Notes |
 |---|---|---|---|
+| 2026-10-02 | `prototype-20261002T101500180033Z` | `7ca583c` | Immediate card-image clicks; real click latency log |
 | 2026-10-02 | `prototype-20261002T094634040401Z` | `9f7b733` | Swift 6 mode, Observation, release script; first `release.py` install (all checks passed, personal tables unchanged) |
 | 2026-10-02 | `prototype-20261002T090035678054Z` | `2281c35` | Move to Trash, Photos kept syncing and change-history passes, responsive grid, deep-pass fixes |
 | 2026-10-01 | `prototype-20261001T083445972243Z` | `5891401` | Fix for the click crash (worker exit-status race) |
