@@ -17,7 +17,10 @@ build-up (September 2026) are in git history up to commit `2281c35`.
   lock that holds the view while new media arrives. Hovering a video scrubs through
   SSD previews; double-click or Space opens the preview (originals for playback).
 - **Search:** one field searches visuals and Romanian speech together (or either
-  alone); dates in the query ("in June") become a date filter.
+  alone); dates in the query ("in June") become a date filter. Focusing the field
+  starts the search worker, so its visual model (~2–3 s to load) is usually ready by
+  the time the query is typed; it stays loaded 10 minutes after the last search
+  (60 s while CapCut is in active use).
 - **Select and hand off:** click, ⌘-click, then drag originals into CapCut, or
   collect them in the Selected clips panel (B) and drag them all at once.
 - **Delete:** with media selected, the trash button, ⌘⌫ or the context menu's

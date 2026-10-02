@@ -181,8 +181,31 @@ actor SearchWorker {
     private var configuration: Configuration?
     private var idleTask: Task<Void, Never>?
     private var activityGeneration = 0
-    private static let idleTimeout: Duration = .seconds(60)
+    /// Keeping visual search warm (~3 GiB) spares the next search a 2–3 s start.
+    static let idleTimeout: Duration = .seconds(10 * 60)
+    /// Released sooner while CapCut is in active use, which needs the memory more.
+    static let editingIdleTimeout: Duration = .seconds(60)
+    static let idleCheckInterval: Duration = .seconds(15)
+    private let idleTimeout: Duration
     var isRunning: Bool { process?.isRunning == true }
+
+    init(idleTimeout: Duration = SearchWorker.idleTimeout) { self.idleTimeout = idleTimeout }
+
+    /// Starts the worker and its visual model ahead of a query (search field focused
+    /// or typing), so the 2–3 s model load overlaps typing.
+    func prepare() {
+        guard let configuration else { return }
+        activityGeneration += 1
+        idleTask?.cancel(); idleTask = nil
+        defer { scheduleIdleExit() }
+        guard process?.isRunning != true else { return }  // Already warm or warming.
+        do {
+            try launch(configuration)
+            guard let input else { return }
+            try WorkerPipe.write(Data("{\"action\":\"warm\"}\n".utf8), to: input)
+            _ = try readLine(timeout: Deadlines.query)
+        } catch { abortWorker() }  // The next search reports a real failure.
+    }
 
     func start(_ config: Configuration) throws {
         abortWorker()
@@ -307,10 +330,18 @@ actor SearchWorker {
     }
 
     private func scheduleIdleExit() {
-        let generation = activityGeneration
+        let generation = activityGeneration, idleTimeout = idleTimeout
         idleTask = Task { [weak self] in
-            do { try await Task.sleep(for: Self.idleTimeout) } catch { return }
-            await self?.expire(generation)
+            let started = ContinuousClock.now
+            while true {
+                do { try await Task.sleep(for: min(Self.idleCheckInterval, idleTimeout)) } catch { return }
+                let idle = started.duration(to: .now)
+                let editing = await MainActor.run { SearchMaintenance.editorActive() }
+                if idle >= idleTimeout || (editing && idle >= Self.editingIdleTimeout) {
+                    await self?.expire(generation)
+                    return
+                }
+            }
         }
     }
 
@@ -407,7 +438,14 @@ actor SearchWorker {
     }
     private var byPath: [String: Media] = [:]
     private var generation = 0
-    let worker = SearchWorker()
+    let worker: SearchWorker
+    init(searchIdleTimeout: Duration = SearchWorker.idleTimeout) { worker = SearchWorker(idleTimeout: searchIdleTimeout) }
+    /// Warm search ahead of a query; cheap when the worker is already running.
+    func prepareSearch() {
+        guard ready else { return }
+        let worker = worker
+        Task { await worker.prepare() }
+    }
 
     nonisolated static func readMedia(_ index: URL) throws -> [Media] {
         let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: index.appendingPathComponent("samples.json")))

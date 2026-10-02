@@ -158,8 +158,8 @@ class VisualClient:
     def _kill_group(self):
         try:
             os.killpg(self.process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            pass  # macOS reports EPERM when only exited (unreaped) members remain.
 
 
 class VisualRuntime:
@@ -281,6 +281,16 @@ def run(args):
                 started = time.monotonic()
                 try:
                     request = json.loads(line)
+                    if request.get('action') == 'warm':
+                        # Load the visual model ahead of the first query (search field focused).
+                        if visual_runtime is None:
+                            try:
+                                resolve_generation(args.packed_index)
+                                visual_runtime = VisualClient(args, executable)
+                            except FileNotFoundError:
+                                pass
+                        print(json.dumps(dict(warming=visual_runtime is not None)), flush=True)
+                        continue
                     query = request['query'].strip()
                     if not query or len(query) > 2000:
                         raise ValueError('Query must contain between 1 and 2000 characters')

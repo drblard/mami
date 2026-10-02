@@ -148,7 +148,7 @@ import Darwin
         }
     }
 
-    private static func editorActive() -> Bool {
+    static func editorActive() -> Bool {
         let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
         return Indexing.activeEditing(bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, idleSeconds: idle)
     }

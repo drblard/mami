@@ -8,7 +8,7 @@ import AppKit
     }
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
     try FileManager.default.createDirectory(atPath: mediaRoot, withIntermediateDirectories: true)
-    let library = Library()
+    let library = Library(searchIdleTimeout: .seconds(5))
     await library.load()
     guard library.ready else { throw AppError.message(library.error ?? "Library not ready") }
     let configuration = try Configuration.load()

@@ -230,6 +230,9 @@ struct LibraryView: View {
                         .font(.system(size: 21)).textFieldStyle(.plain).onSubmit { library.search() }
                         .focused($searchFocused)
                         .accessibilityLabel("Search your media")
+                        // Start search (and its 2–3 s visual model load) while the query is typed.
+                        .onChange(of: searchFocused) { _, focused in if focused { library.prepareSearch() } }
+                        .onChange(of: library.query) { _, query in if !query.isEmpty { library.prepareSearch() } }
                         .task(id: library.query) {
                             do { try await Task.sleep(for: SearchTiming.typingDebounce) } catch { return }
                             guard library.ready, !Task.isCancelled else { return }

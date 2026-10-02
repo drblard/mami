@@ -157,6 +157,37 @@ class ReadinessTests(unittest.TestCase):
     def test_combined_queries_preserve_speech_when_visual_service_fails(self):
         self.check_text_readiness(fail_visual=True,mode='both')
 
+    def test_warm_request_starts_visual_model_once_before_the_first_query(self):
+        class Projection:
+            def __init__(self, *args, **kwargs): self.db = self
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, *args): return self
+            def fetchone(self): return dict(identity='fixture', epoch='epoch')
+            def speech(self, *args, **kwargs): return []
+        started = []
+        class Visual:
+            samples=0
+            def __init__(self,*args): started.append(1)
+            def search(self,*args): return [], True  # Still loading, as the real client reports it.
+            def close(self): pass
+        output = io.StringIO()
+        def requests():
+            yield json.dumps(dict(action='warm'))+'\n'
+            self.assertEqual(json.loads(output.getvalue().splitlines()[1]), dict(warming=True))
+            self.assertEqual(started, [1])
+            yield json.dumps(dict(query='beach', mode='visual'))+'\n'
+            self.assertTrue(json.loads(output.getvalue().splitlines()[2])['visual_pending'])
+            self.assertEqual(started, [1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'manifest.json').write_text(json.dumps(dict(source_identity='fixture', epoch='epoch', rows=1)))
+            args = SimpleNamespace(native_encoder='artifact', native_executable='helper', projection='projection', packed_index=root)
+            with patch.multiple(worker, SearchStore=Projection, VisualClient=Visual, resolve_generation=lambda _: root), \
+                 patch.object(worker.sys, 'stdin', requests()), patch.object(worker.sys, 'stdout', output):
+                worker.run(args)
+        self.assertEqual(len(output.getvalue().splitlines()), 3)
+
     def check_text_readiness(self, fail_visual, mode='speech'):
         class Projection:
             def __init__(self, *args, **kwargs): self.db = self

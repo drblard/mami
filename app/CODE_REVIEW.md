@@ -156,5 +156,10 @@ is recorded in [RELEASE.md](RELEASE.md); open work is in [REMAINING.md](REMAININ
   `@Observable` models, `MamiApp.swift` split by responsibility with a table of
   integration checks, consolidated docs, lab-era scripts and experiments removed,
   `release.py` with revision stamping and personal-data audit.
+- [x] First search took seconds (user report): the search worker exited 60 s after
+  each search, and the visual model only began loading (~2.0 s measured warm-cache,
+  3.2 s after purge) once a query was submitted. It now warms when the search field
+  is focused and stays 10 min (60 s during active CapCut use). The worker also crashed
+  at shutdown on macOS `EPERM` for an exited encoder group; now tolerated.
 - [ ] Blocking worker readers (`availableData`, `readLine`, semaphores) still run on
   Swift's cooperative pool; move them to dedicated threads if pool starvation shows.
